@@ -28,7 +28,7 @@ public:
     // 2: the Info panel joined the layout (S3d). 3: the Display panel (S5e).
     // 4: S6's 3D and Playback docks. 5: the Plot panel and the central splitter (P2-S3).
     // 6: the Run and Console docks (P3-S4). 7: the Telemetry dock (P3-S5).
-    static constexpr int kLayoutVersion = 7;
+    static constexpr int kLayoutVersion = 8;  // P3-S7: the Study dock added
     static constexpr int kMaxRecent = 10;
 
     static std::unique_ptr<AppSettings> userDefault();

@@ -42,6 +42,12 @@ Methods:
                         "swept": {contact, start, stop, step}}
                        -> [{"label", "value", "job_text"}], QML's family; P3 S6
     comparison.job     {"spec"} -> {"label", "job_text"}: every model off; P3 S6
+    study.templates    -> [{"id", "title", "description", "params"}], every
+                          device template's parameter list; P3 S7
+    study.rows         {"template_id", "base", "splits"}
+                       -> {"axes", "rows": [{"params", "status", "error",
+                          "job_text"}]}, the split matrix as QML's Study
+                          builds it, each row's equilibrium-only job; P3 S7
 
   P1 S4 (section 15.3) -- bulk arrays never travel as JSON: a derived map
   is written as a small RESULT FILE (the result grammar: axes, field__*,
@@ -280,6 +286,47 @@ def _comparison_job(params):
     return {"label": family_jobs.COMPARISON_LABEL, "job_text": buf.getvalue()}
 
 
+def _study_templates(params):
+    """-> [{"id", "title", "description", "params": [{"name", "label",
+    "unit", "default", "lo", "hi", "integer"}]}], every template the
+    Study dock's template combo and base/splits tables read their
+    bounds from (gui.services.study_jobs.template_info)."""
+    from gui.services import study_jobs
+    from workbench.core.templates import get_template, list_templates
+    return [study_jobs.template_info(get_template(tid)) for tid in list_templates()]
+
+
+def _study_rows(params):
+    """{"template_id", "base", "splits"} -> {"axes", "rows"}: `rows` is
+    [{"params", "status", "error", "job_text"}], one per split-matrix
+    row, exactly as StudyController.configureStudy builds them
+    (gui.services.study_jobs.study_rows); a row's `job_text` is the
+    equilibrium-only job file byte-identical to the QML pool runner's,
+    or null for a 'build_error' row."""
+    import io
+    from gui.services import study_jobs
+    method = "study.rows"
+    template_id = _param(params, "template_id", str, method)
+    base = params.get("base") if isinstance(params, dict) else None
+    if base is not None and not isinstance(base, dict):
+        raise TypeError(f"{method}: 'base' must be an object or null")
+    splits = params.get("splits") if isinstance(params, dict) else None
+    if splits is not None and not isinstance(splits, dict):
+        raise TypeError(f"{method}: 'splits' must be an object or null")
+    axes, rows = study_jobs.study_rows(template_id, base, splits)
+    out_rows = []
+    for row in rows:
+        job_text = None
+        if row["status"] != "build_error":
+            spec = study_jobs.row_spec(row["device"])
+            buf = io.StringIO()
+            json.dump(spec.to_dict(), buf)      # DeviceSpec.to_json's own call
+            job_text = buf.getvalue()
+        out_rows.append({"params": row["params"], "status": row["status"],
+                         "error": row["error"], "job_text": job_text})
+    return {"axes": axes, "rows": out_rows}
+
+
 def _configure_run(params):
     """{"spec", "run": {"sweep"?, "transient"?, "ac"?, "equilibrium_only"?,
     "models"?, "backend"?, "engine"?}} -> the DeviceSpec dict to run. A
@@ -454,6 +501,8 @@ METHODS = {
     "cv.job_text": _cv_job_text,
     "family.jobs": _family_jobs,
     "comparison.job": _comparison_job,
+    "study.templates": _study_templates,
+    "study.rows": _study_rows,
     "analysis.band_map": _band_map,
     "analysis.recombination_map": _recombination_map,
 }

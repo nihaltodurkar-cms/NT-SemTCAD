@@ -24,6 +24,7 @@ and pulled byte-for-byte unchanged -- no remote-transport-specific
 field is added to it (G-NO-TRANSPORT-IN-DEVICESPEC): this module only
 decides WHERE that same file runs, never what is in it.
 """
+import shlex
 import subprocess
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -35,18 +36,58 @@ from .batch import BatchOutcome
 DEFAULT_JOB_TIMEOUT = 600  # seconds; a hung remote job must not hang the study forever
 
 
+def _validate_host_field(value: str, field_name: str) -> None:
+    """Rejects a host/user string that `ssh`/`scp` would misparse: one
+    starting with '-' is read as an OPTION (e.g. '-oProxyCommand=...'
+    runs a command on the LOCAL machine, no network involved --
+    NATIVE-DESKTOP-PLAN.md 18.1 finding 1, reproduced by hand). Fails
+    closed: nothing a real hostname or username looks like is
+    rejected."""
+    if not value:
+        raise ValueError(f"{field_name} must not be empty")
+    if value[0] == "-":
+        raise ValueError(
+            f"{field_name} {value!r} must not start with '-' "
+            "(ssh/scp would read it as an option, not a name)")
+    if any(c.isspace() for c in value):
+        raise ValueError(f"{field_name} {value!r} must not contain whitespace")
+
+
+def quote(s: str) -> str:
+    """POSIX-shell-quote one token for a command string a REMOTE login
+    shell parses (ssh(1): the trailing arguments are concatenated and
+    handed to the remote shell) -- a thin `shlex.quote` re-export so
+    the run/mkdir stages below need not import `shlex` themselves.
+    Closes finding 2 (18.1): an unquoted `remote_workdir`/`python`
+    containing a space or a shell metacharacter previously broke the
+    command, or ran a second one, on the remote host."""
+    return shlex.quote(s)
+
+
 @dataclass(frozen=True)
 class RemoteHost:
     """One remote worker. `identity_file`/`user` are passed straight
     to ssh/scp -- auth itself stays whatever the user's own SSH setup
     (keys, agent, ssh config Host aliases) already provides; this repo
-    stores no credentials."""
+    stores no credentials.
+
+    `host`/`user` are validated at construction (`_validate_host_field`)
+    so every call site is covered by construction, not by each caller
+    remembering to call a validator -- `remote_workdir`/`python` are
+    NOT validated here (any character is legal path text); they
+    are shell-quoted instead, at the one place they reach a remote
+    shell (`SSHTransport.run`/the native RemoteJobRunner)."""
     host: str
     user: Optional[str] = None
     port: int = 22
     identity_file: Optional[str] = None
     python: str = "python"
     remote_workdir: str = "/tmp/pytcad-remote"
+
+    def __post_init__(self):
+        _validate_host_field(self.host, "host")
+        if self.user:
+            _validate_host_field(self.user, "user")
 
 
 @dataclass
@@ -74,36 +115,55 @@ class SSHTransport:
     """Real transport: shells out to the system `ssh`/`scp`.
     `BatchMode=yes` makes a missing/unusable credential fail fast
     (as a job error) instead of hanging on an interactive password
-    prompt -- there is no such prompt available to a batch job."""
+    prompt -- there is no such prompt available to a batch job.
+
+    `ssh_cmd`/`scp_cmd` are overridable (default `("ssh",)`/`("scp",)`)
+    purely so a test can point them at a local stand-in instead of the
+    real binaries -- see gui/tests/fixtures/fake_ssh.py, the same
+    fixtures gui.services.remote_job_runner.RemoteJobRunner's own
+    `ssh_cmd`/`scp_cmd` use, so both the library-level Transport and
+    the GUI runner are gated against one fixture."""
+
+    def __init__(self, ssh_cmd: Sequence[str] = ("ssh",), scp_cmd: Sequence[str] = ("scp",)):
+        self._ssh_cmd = list(ssh_cmd)
+        self._scp_cmd = list(scp_cmd)
 
     def _ssh_prefix(self, host: RemoteHost) -> List[str]:
-        argv = ["ssh", "-p", str(host.port),
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+        argv = self._ssh_cmd + ["-p", str(host.port),
+                                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         if host.identity_file:
             argv += ["-i", host.identity_file]
         return argv
 
     def _scp_prefix(self, host: RemoteHost) -> List[str]:
-        argv = ["scp", "-P", str(host.port),
-                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
+        argv = self._scp_cmd + ["-P", str(host.port),
+                                "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         if host.identity_file:
             argv += ["-i", host.identity_file]
         return argv
 
     def push(self, local_path, remote_path, host):
         subprocess.run(self._scp_prefix(host) +
-                       [local_path, f"{_target(host)}:{remote_path}"],
+                       ["--", local_path, f"{_target(host)}:{remote_path}"],
                        check=True, capture_output=True, text=True, timeout=60)
 
     def run(self, argv, host, timeout=None):
+        # `--` ends option parsing before the target (defense in depth:
+        # RemoteHost already validates against a leading '-', so this
+        # protects a future call site that forgets to). The command
+        # itself is one shell-quoted token per argv element -- the
+        # REMOTE shell splits it back apart; `" ".join(argv)` unquoted
+        # let a space or ';' in `argv` (host.remote_workdir, host.python)
+        # break the command or run a second one (18.1 finding 2).
+        command = " ".join(quote(a) for a in argv)
         proc = subprocess.run(
-            self._ssh_prefix(host) + [_target(host), " ".join(argv)],
+            self._ssh_prefix(host) + ["--", _target(host), command],
             capture_output=True, text=True, timeout=timeout)
         return CommandResult(proc.returncode, proc.stdout, proc.stderr)
 
     def pull(self, remote_path, local_path, host):
         subprocess.run(self._scp_prefix(host) +
-                       [f"{_target(host)}:{remote_path}", local_path],
+                       ["--", f"{_target(host)}:{remote_path}", local_path],
                        check=True, capture_output=True, text=True, timeout=60)
 
 

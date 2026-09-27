@@ -3,6 +3,8 @@
 #include "console_panel.hpp"
 #include "display_panel.hpp"
 #include "run/batch_controller.hpp"
+#include "run/study_controller.hpp"
+#include "shell/study_panel.hpp"
 #include "run/run_controller.hpp"
 #include "run_panel.hpp"
 #include "telemetry_panel.hpp"
@@ -264,6 +266,8 @@ MainWindow::~MainWindow() {
     run_ctl_ = nullptr;
     delete batch_;
     batch_ = nullptr;
+    delete study_ctl_;
+    study_ctl_ = nullptr;
     if (!backend_) return;
     for (BackendReply* r : backend_->findChildren<BackendReply*>()) r->disconnect(this);
     delete backend_;
@@ -300,6 +304,8 @@ void MainWindow::resetLayout() {
     playback_dock_->toggleView(view_->snapshots() != nullptr);
     run_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, run_dock_, fields_dock_->dockAreaWidget());
+    study_dock_->toggleView(true);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, study_dock_, fields_dock_->dockAreaWidget());
     fields_dock_->setAsCurrentTab();
     console_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, console_dock_, info_dock_->dockAreaWidget());
@@ -358,6 +364,21 @@ void MainWindow::buildRunning() {
     run_dock_->setWidget(run_panel_);
     docks_->addDockWidget(ads::CenterDockWidgetArea, run_dock_, fields_dock_->dockAreaWidget());
     fields_dock_->setAsCurrentTab();
+
+    // P3-S7: its own pool and directory (decision 2 of 17.16), tabbed
+    // beside Run in the left column -- the view keeps every pixel.
+    study_ctl_ = new StudyController(
+        [this] {
+            ensureBackend();
+            return backend_;
+        },
+        rc, runsDir(), this);
+    study_panel_ = new StudyPanel(study_ctl_, this);
+    study_dock_ = new ads::CDockWidget(docks_, tr("Study"));
+    study_dock_->setObjectName("StudyDock");
+    study_dock_->setWidget(study_panel_);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, study_dock_, fields_dock_->dockAreaWidget());
+    fields_dock_->setAsCurrentTab();
     console_ = new ConsolePanel(this);
     console_dock_ = new ads::CDockWidget(docks_, tr("Console"));
     console_dock_->setObjectName("ConsoleDock");
@@ -396,6 +417,9 @@ void MainWindow::buildRunning() {
     run_tick_->setInterval(1000);
     connect(run_tick_, &QTimer::timeout, this, &MainWindow::updateRunStatus);
     connect(run_panel_, &RunPanel::inputRejected, this, &MainWindow::reportError);
+    connect(study_panel_, &StudyPanel::inputRejected, this, &MainWindow::reportError);
+    connect(study_panel_, &StudyPanel::openRequested, this, [this](const QString& path) { tryOpen(path); });
+    connect(study_ctl_, &StudyController::failed, this, &MainWindow::reportError);
     connect(run_panel_, &RunPanel::familyRequested, this, &MainWindow::startFamily);
     connect(run_panel_, &RunPanel::comparisonRequested, this, &MainWindow::startComparison);
     connect(run_panel_, &RunPanel::batchStopRequested, batch_, &BatchController::stop);

@@ -61,7 +61,7 @@ struct JobRunner::Run {
     QProcess::ExitStatus exit_status = QProcess::NormalExit;
 };
 
-JobRunner::JobRunner(RunnerConfig config, QObject* parent) : QObject(parent), config_(std::move(config)) {
+JobRunner::JobRunner(RunnerConfig config, QObject* parent) : RunnerBase(parent), config_(std::move(config)) {
     qRegisterMetaType<JsonPayload>();
     qRegisterMetaType<ProgressRecord>();
 }

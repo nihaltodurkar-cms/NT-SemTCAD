@@ -35,6 +35,8 @@
 //     signals into a half-destroyed owner) and cleans up the same way.
 #pragma once
 
+#include "run/runner_base.hpp"
+
 #include <nlohmann/json.hpp>
 
 #include <QByteArray>
@@ -71,13 +73,7 @@ struct RunnerConfig {
     QStringList strip_from_path;     // directories removed from the child's PATH
 };
 
-struct JobRequest {
-    QStringList entry;               // e.g. moduleEntry(...); the job and result paths are appended
-    QByteArray job_text;             // written verbatim to the job file
-    QString result_suffix = ".npz";
-};
-
-class JobRunner : public QObject {
+class JobRunner : public RunnerBase {
     Q_OBJECT
 
 public:
@@ -95,16 +91,16 @@ public:
 
     // Start a run: its id, or an empty string with the reason in *error
     // (a run already going, no interpreter, an unwritable work directory).
-    QString start(const JobRequest& request, QString* error = nullptr);
+    QString start(const JobRequest& request, QString* error = nullptr) override;
     // Cancel the current run: its process tree is killed now; canceled()
     // follows when it has exited. A new run may be started straight away.
-    void cancel();
+    void cancel() override;
 
-    bool isRunning() const { return current_ != nullptr; }
+    bool isRunning() const override { return current_ != nullptr; }
     QString currentRunId() const;
     QString currentResultPath() const;
     QString currentJobPath() const;
-    qint64 currentPid() const;
+    qint64 currentPid() const override;
     // Runs whose process has not exited yet: the current one, plus canceled
     // ones still dying.
     int liveRuns() const { return static_cast<int>(runs_.size()); }
@@ -116,9 +112,8 @@ signals:
     void line(const QString& text, tcad::desktop::JobRunner::LineKind kind);
     void stage(const QString& name);
     void progress(const tcad::desktop::ProgressRecord& record);
-    void finished(const QString& run_id, const QString& result_path);
-    void failed(const QString& run_id, const QString& summary, const QString& details);
-    void canceled(const QString& run_id);
+    // finished(run_id, result_path) / failed(run_id, summary, details) /
+    // canceled(run_id) are inherited from RunnerBase.
 
 private:
     struct Run;

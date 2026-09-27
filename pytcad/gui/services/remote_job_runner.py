@@ -119,20 +119,29 @@ class RemoteJobRunner(QObject):
         return argv
 
     def _argv_for_stage(self, stage):
+        # `--` ends option parsing before the target on every stage
+        # (RemoteHost already validates against a leading '-' in
+        # host/user; this is defense in depth, NATIVE-DESKTOP-PLAN.md
+        # 18.1/18.2). The "mkdir"/"run" commands are built from
+        # shell-quoted tokens (remote_executor.quote) -- an
+        # unquoted `remote_workdir`/`python` containing a space or a
+        # shell metacharacter previously broke the command, or ran a
+        # second one, on the remote host (18.1 finding 2).
+        from workbench.remote_executor import quote
         h = self._host
         if stage == "mkdir":
             return (self._ssh_cmd + self._ssh_opts() +
-                   [self._target(), f"mkdir -p {h.remote_workdir}"])
+                   ["--", self._target(), f"mkdir -p {quote(h.remote_workdir)}"])
         if stage == "push":
             return (self._scp_cmd + self._scp_opts() +
-                   [self._job_path, f"{self._target()}:{self._remote_job}"])
+                   ["--", self._job_path, f"{self._target()}:{self._remote_job}"])
         if stage == "run":
-            cmd = f"{h.python} -m gui.services.solver_runner " \
-                  f"{self._remote_job} {self._remote_out}"
-            return self._ssh_cmd + self._ssh_opts() + [self._target(), cmd]
+            cmd = f"{quote(h.python)} -m gui.services.solver_runner " \
+                  f"{quote(self._remote_job)} {quote(self._remote_out)}"
+            return self._ssh_cmd + self._ssh_opts() + ["--", self._target(), cmd]
         if stage == "pull":
             return (self._scp_cmd + self._scp_opts() +
-                   [f"{self._target()}:{self._remote_out}", self.result_path])
+                   ["--", f"{self._target()}:{self._remote_out}", self.result_path])
         raise ValueError(stage)
 
     # -- subprocess plumbing ------------------------------------------

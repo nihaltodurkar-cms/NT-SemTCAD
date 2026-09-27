@@ -24,6 +24,9 @@ def main(argv):
             i += 2
         elif argv[i] == "-o":
             i += 2
+        elif argv[i] == "--":  # NATIVE-DESKTOP-PLAN.md 18.2: ends option parsing
+            i += 1
+            break
         else:
             break
     src, dst = argv[i], argv[i + 1]

@@ -4,10 +4,12 @@
 //   tcad_desktop --bench <result.npz> [--frames N] [--json out.json]
 //   tcad_desktop --selftest <a.npz> [<b.npz> ...]   (exit 0 only if every check passed)
 //   tcad_desktop --soak <a.npz> [<b.npz> ...] [--cycles N]   (memory and GL over N cycles)
+//   tcad_desktop --bench-run <job.json> [--repeats N]   (Run-click-to-first-progress; native vs a bare subprocess)
 //   --size WxH sets the view's logical size for --bench / --selftest.
 // The theme (Fusion + palette from src/theme) is applied by MainWindow.
 #include "bench/bench.hpp"
 #include "bench/bench_backend.hpp"
+#include "bench/bench_run.hpp"
 #include "bench/selftest.hpp"
 #include "shell/main_window.hpp"
 #include "views/colormaps.hpp"
@@ -75,6 +77,23 @@ int main(int argc, char** argv) {
         o.warm = args.contains("--warm");
         try {
             std::cout << tcad::desktop::run_backend_benchmark(o).dump(2) << std::endl;
+        } catch (const std::exception& e) {
+            std::cout << nlohmann::json{{"error", e.what()}}.dump() << std::endl;
+            return 2;
+        }
+        return 0;
+    }
+    // --bench-run <job.json> [--repeats N]: no window, the Run pipeline's own overhead (P3-S9).
+    if (const int br = static_cast<int>(args.indexOf("--bench-run")); br >= 0) {
+        if (br + 1 >= args.size()) {
+            std::cerr << "--bench-run needs a job file" << std::endl;
+            return 1;
+        }
+        tcad::desktop::RunBenchOptions o;
+        o.job_path = args[br + 1];
+        if (const QString n = option("--repeats"); !n.isEmpty()) o.repeats = std::max(1, n.toInt());
+        try {
+            std::cout << tcad::desktop::run_run_benchmark(o).dump(2) << std::endl;
         } catch (const std::exception& e) {
             std::cout << nlohmann::json{{"error", e.what()}}.dump() << std::endl;
             return 2;

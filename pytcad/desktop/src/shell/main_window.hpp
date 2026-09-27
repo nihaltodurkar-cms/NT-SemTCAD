@@ -59,6 +59,8 @@ class RunController;
 class BatchController;
 class RunPanel;
 class TelemetryPanel;
+class StudyController;
+class StudyPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -134,6 +136,10 @@ public:
     ads::CDockWidget* consoleDock() const { return console_dock_; }
     TelemetryPanel* telemetryPanel() const { return telemetry_; }
     ads::CDockWidget* telemetryDock() const { return telemetry_dock_; }
+    // -- the local Study (P3-S7) -----------------------------------------------------
+    StudyController* studyController() const { return study_ctl_; }
+    StudyPanel* studyPanel() const { return study_panel_; }
+    ads::CDockWidget* studyDock() const { return study_dock_; }
     QAction* runAction() const { return run_act_; }
     QAction* stopAction() const { return stop_act_; }
     // The directory runs write to: the settings key run/dir, else
@@ -208,6 +214,9 @@ private:
     ads::CDockWidget* console_dock_ = nullptr;
     TelemetryPanel* telemetry_ = nullptr;
     ads::CDockWidget* telemetry_dock_ = nullptr;
+    StudyController* study_ctl_ = nullptr;
+    StudyPanel* study_panel_ = nullptr;
+    ads::CDockWidget* study_dock_ = nullptr;
     QAction* run_act_ = nullptr;
     QAction* stop_act_ = nullptr;
     QAction* save_as_ = nullptr;

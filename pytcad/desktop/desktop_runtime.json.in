@@ -5,6 +5,7 @@
   "tools": {
     "backend_tests": "tcad_desktop_backend_tests.exe",
     "run_tests": "tcad_desktop_run_tests.exe",
+    "remote_tests": "tcad_desktop_remote_tests.exe",
     "run_shell_tests": "tcad_desktop_run_shell_tests.exe",
     "npz_dump": "tcad_npz_dump.exe",
     "spec_roundtrip": "tcad_spec_roundtrip.exe",

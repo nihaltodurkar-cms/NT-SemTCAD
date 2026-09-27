@@ -13,11 +13,14 @@
 #include "data/result_model.hpp"
 #include "run/batch_controller.hpp"
 #include "run/job_runner.hpp"
+#include "run/remote_host.hpp"
 #include "run/run_controller.hpp"
+#include "run/study_controller.hpp"
 #include "shell/app_settings.hpp"
 #include "shell/console_panel.hpp"
 #include "shell/main_window.hpp"
 #include "shell/run_panel.hpp"
+#include "shell/study_panel.hpp"
 #include "shell/telemetry_panel.hpp"
 #include "run/telemetry.hpp"
 #include "views/plot/plot_view.hpp"
@@ -31,6 +34,7 @@
 #include <QComboBox>
 #include <QDateTime>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QLabel>
@@ -38,9 +42,11 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QLocale>
+#include <QSpinBox>
 #include <QSplitter>
 #include <QStandardItemModel>
 #include <QStatusBar>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QtTest/QtTest>
 
@@ -57,8 +63,13 @@ using tcad::desktop::ConsolePanel;
 using tcad::desktop::DeviceSource;
 using tcad::desktop::MainWindow;
 using tcad::desktop::RunController;
+using tcad::desktop::RemoteHostConfig;
 using tcad::desktop::RunKind;
+using tcad::desktop::resolveBackendConfig;
+using tcad::desktop::RunnerConfig;
 using tcad::desktop::RunPanel;
+using tcad::desktop::StudyController;
+using tcad::desktop::StudyPanel;
 using tcad::desktop::TelemetryPanel;
 using tcad::desktop::plot::ViewMode;
 
@@ -189,6 +200,12 @@ class TestRunShell : public QObject {
         QVERIFY(w->runAction()->isEnabled() && !w->stopAction()->isEnabled());
         QVERIFY(w->runPanel()->runButton()->isEnabled() && !w->runPanel()->stopButton()->isEnabled());
     }
+    // gui/tests/fixtures/fake_ssh.py & co (P3-S8): the same loopback
+    // stand-ins the Python remote tests use, no real network.
+    static QString fixture(const QString& name) {
+        return QDir(resolveBackendConfig().working_dir).absoluteFilePath("gui/tests/fixtures/" + name);
+    }
+
     static bool samePathInDir(const QString& file, const QString& dir) {
         return QDir::cleanPath(QFileInfo(file).absolutePath()).compare(QDir::cleanPath(QFileInfo(dir).absoluteFilePath()),
                                                                       Qt::CaseInsensitive) == 0;
@@ -373,12 +390,14 @@ private slots:
         checkOpened(w.get(), log, runsDir("dims"));
         QCOMPARE(w->result()->dimensionality(), 2);
         QVERIFY(w->viewMode() == ViewMode::FieldMap);
+        snapshot(w.get(), "s9_mosfet_2d");
         loadExample(w.get(), "resistor_3d");
         clickRunAndWait(w.get(), log);
         QCOMPARE(log.failed, 0);
         QCOMPARE(log.finished, 2);
         QCOMPARE(w->result()->dimensionality(), 3);
         QVERIFY(w->viewMode() == ViewMode::FieldMap);
+        snapshot(w.get(), "s9_resistor_3d");
     }
 
     // -- device sources ----------------------------------------------------------------
@@ -391,6 +410,7 @@ private slots:
         QVERIFY(w->runPanel()->deviceLabel()->text().contains("anode"));
         clickRunAndWait(w.get(), log);
         checkOpened(w.get(), log, runsDir("specfile"));
+        snapshot(w.get(), "s9_diode_1d");
     }
 
     void aProjectRunsWithItsSweepAndModels() {
@@ -1045,6 +1065,363 @@ private slots:
         have.sort();
         expect.sort();
         QCOMPARE(have, expect);
+    }
+
+    // -- the local Study (P3-S7) -------------------------------------------------------
+    // Tabbed beside Run in the left column (S4's rule): the view keeps every
+    // pixel, exactly as theRunDocksCostTheViewNothing checked for Run/Console.
+    void studyDockCostsTheViewNothing() {
+        auto w = window("study_layout");
+        QVERIFY(w);
+        QApplication::processEvents();
+        QVERIFY(w->studyDock()->dockAreaWidget() == w->fieldsDock()->dockAreaWidget());
+        QVERIFY(!w->studyDock()->isClosed());
+        QVERIFY(w->fieldsDock()->isCurrentTab());  // a background tab: no Python yet
+        const QSize with = w->centralSplitter()->size();
+        w->studyDock()->toggleView(false);
+        QApplication::processEvents();
+        QCOMPARE(w->centralSplitter()->size(), with);
+        w->studyDock()->toggleView(true);
+    }
+
+    // A 2x2 mos_capacitor study (na_cm3 x tox_cm), one tox_cm value rejected
+    // by the template (2e-4 > its hi bound 1e-4): that row is build_error and
+    // never dispatched; pool 2 never runs more than 2 at once; the rest reach
+    // done; a done row opens in the main view; the matrix grid's values equal
+    // studyMatrixCellValue on the same files, and the rejected row's cell (not
+    // on this axis pair, since it never built a device) stays empty.
+    void studyBuildsWithinPoolAndOpensARow() {
+        auto w = window("study_basic");
+        QVERIFY(w);
+        w->studyDock()->setAsCurrentTab();
+        QApplication::processEvents();
+        auto* panel = w->studyPanel();
+        auto* ctl = w->studyController();
+        QVERIFY(QTest::qWaitFor([&] { return panel->templateCombo()->count() > 0; }, 30000));
+        int idx = -1;
+        for (int i = 0; i < panel->templateCombo()->count(); ++i)
+            if (panel->templateCombo()->itemText(i) == "MOS capacitor") idx = i;
+        QVERIFY(idx >= 0);
+        panel->templateCombo()->setCurrentIndex(idx);
+        panel->addSplitRow("na_cm3", "-1e16, -3e16, -5e16");
+        // 2e-4 > hi (1e-4): rejected on EVERY na_cm3 value (the bound is
+        // tox_cm's alone), so 3 of the 6 rows are build_error -- leaving 3
+        // pending for a pool of 2, so the cap actually has something to do.
+        panel->addSplitRow("tox_cm", "1e-6, 2e-4");
+        panel->poolSpin()->setValue(2);
+        QTest::mouseClick(panel->buildButton(), Qt::LeftButton);
+        QVERIFY(QTest::qWaitFor([&] { return ctl->rows().size() == 6; }, 30000));
+        int rejected = 0;
+        for (const auto& r : ctl->rows())
+            if (r.status == StudyController::RowStatus::BuildError) ++rejected;
+        QCOMPARE(rejected, 3);
+
+        QTest::mouseClick(panel->runButton(), Qt::LeftButton);
+        QVERIFY(ctl->busy());
+        int max_running = 0;
+        QElapsedTimer clock;
+        clock.start();
+        while (ctl->busy() && clock.elapsed() < 120000) {
+            int running = 0;
+            for (const auto& r : ctl->rows())
+                if (r.status == StudyController::RowStatus::Running) ++running;
+            max_running = std::max(max_running, running);
+            QTest::qWait(20);
+        }
+        QVERIFY(!ctl->busy());
+        QVERIFY2(max_running <= 2 && max_running > 0, qPrintable(QString("saw %1 running at once").arg(max_running)));
+
+        int done = 0, failed = 0, build_error = 0;
+        for (const auto& r : ctl->rows()) {
+            if (r.status == StudyController::RowStatus::Done) ++done;
+            else if (r.status == StudyController::RowStatus::Failed) ++failed;
+            else if (r.status == StudyController::RowStatus::BuildError) ++build_error;
+        }
+        QCOMPARE(build_error, 3);
+        QCOMPARE(failed, 0);
+        QCOMPARE(done, 3);
+
+        // The matrix grid, for the one 2-axis study built: every done cell
+        // equals studyMatrixCellValue on that row's own result; a row not
+        // done (the rejected one, and any not on this axis pair) is empty.
+        QVERIFY(QTest::qWaitFor([&] { return panel->fieldCombo()->count() > 0; }, 5000));
+        const std::string field = panel->fieldCombo()->currentText().toStdString();
+        QVERIFY(!field.empty());
+        int nonEmptyCells = 0;
+        for (int r = 0; r < panel->matrixTable()->rowCount(); ++r) {
+            for (int c = 0; c < panel->matrixTable()->columnCount(); ++c) {
+                auto* item = panel->matrixTable()->item(r, c);
+                if (item && !item->text().isEmpty()) ++nonEmptyCells;
+            }
+        }
+        QCOMPARE(nonEmptyCells, done);
+        for (const auto& r : ctl->rows()) {
+            if (r.status != StudyController::RowStatus::Done) continue;
+            const auto want = tcad::desktop::studyMatrixCellValue(r.result_path, field);
+            QVERIFY(want.has_value());
+        }
+
+        // Double-click a done row: it opens in the main view.
+        int done_row = -1;
+        for (int i = 0; i < static_cast<int>(ctl->rows().size()); ++i)
+            if (ctl->rows()[static_cast<std::size_t>(i)].status == StudyController::RowStatus::Done) {
+                done_row = i;
+                break;
+            }
+        QVERIFY(done_row >= 0);
+        const QString expect_path = ctl->rows()[static_cast<std::size_t>(done_row)].result_path;
+        emit panel->rowsTable()->cellDoubleClicked(done_row, 0);
+        QVERIFY(QTest::qWaitFor([&] { return !w->resultPath().isEmpty(); }, 5000));
+        QCOMPARE(QFileInfo(w->resultPath()).absoluteFilePath(), QFileInfo(expect_path).absoluteFilePath());
+
+        // No job/result litter left in the study's own directory.
+        QVERIFY(runFiles(ctl->studyDir(), {"job-*.json", "*.tmp.npz"}).isEmpty());
+    }
+
+    // Cancel all while rows are running: they go back to pending (no
+    // process, no job file); Run then completes the rest.
+    void studyCancelReturnsRunningRowsToPendingThenRunFinishes() {
+        auto w = window("study_cancel");
+        QVERIFY(w);
+        w->studyDock()->setAsCurrentTab();
+        QApplication::processEvents();
+        auto* panel = w->studyPanel();
+        auto* ctl = w->studyController();
+        QVERIFY(QTest::qWaitFor([&] { return panel->templateCombo()->count() > 0; }, 30000));
+        for (int i = 0; i < panel->templateCombo()->count(); ++i)
+            if (panel->templateCombo()->itemText(i) == "Resistor") panel->templateCombo()->setCurrentIndex(i);
+        panel->addSplitRow("doping_cm3", "1e16, 2e16, 3e16, 4e16");
+        panel->poolSpin()->setValue(2);
+        QTest::mouseClick(panel->buildButton(), Qt::LeftButton);
+        QVERIFY(QTest::qWaitFor([&] { return ctl->rows().size() == 4; }, 30000));
+
+        QTest::mouseClick(panel->runButton(), Qt::LeftButton);
+        QVERIFY(QTest::qWaitFor(
+            [&] {
+                int running = 0;
+                for (const auto& r : ctl->rows())
+                    if (r.status == StudyController::RowStatus::Running) ++running;
+                return running > 0;
+            },
+            30000));
+        QTest::mouseClick(panel->cancelButton(), Qt::LeftButton);
+        QVERIFY(QTest::qWaitFor([&] { return !ctl->busy(); }, 30000));
+        for (const auto& r : ctl->rows())
+            QVERIFY(r.status == StudyController::RowStatus::Pending || r.status == StudyController::RowStatus::Done);
+        QVERIFY(runFiles(ctl->studyDir(), {"job-*.json"}).isEmpty());
+
+        QTest::mouseClick(panel->runButton(), Qt::LeftButton);
+        QVERIFY(QTest::qWaitFor([&] { return !ctl->busy(); }, 120000));
+        for (const auto& r : ctl->rows()) QCOMPARE(static_cast<int>(r.status), static_cast<int>(StudyController::RowStatus::Done));
+    }
+
+    // A row that cannot even start (a broken interpreter, here -- deterministic,
+    // unlike a genuine solver non-convergence) is "failed" with its error, and
+    // the study still ends (the others are not blocked behind it).
+    void studyRowThatCannotStartDoesNotStopTheOthers() {
+        const auto cfg = resolveBackendConfig();
+        auto* backend = new tcad::desktop::BackendClient(cfg, this);
+        RunnerConfig rc;
+        rc.python = "Z:/does/not/exist/python.exe";
+        rc.working_dir = cfg.working_dir;
+        rc.strip_from_path = cfg.strip_from_path;
+        StudyController ctl([backend] { return backend; }, rc, tmp_.filePath("study_fail_runs"), this);
+        nlohmann::json splits;
+        splits["doping_cm3"] = std::vector<double>{1e16, 2e16, 3e16};
+        QString err;
+        QVERIFY(ctl.buildRows("resistor", nlohmann::json::object(), splits, &err));
+        QVERIFY(QTest::qWaitFor([&] { return ctl.rows().size() == 3; }, 30000));
+        // Pool 1: strictly sequential, so a Failed row must not stop the
+        // dispatch of the rows still pending behind it.
+        QVERIFY(ctl.run(1));
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.busy(); }, 30000));
+        for (const auto& r : ctl.rows()) {
+            QCOMPARE(static_cast<int>(r.status), static_cast<int>(StudyController::RowStatus::Failed));
+            QVERIFY(!r.error.isEmpty());
+        }
+        backend->shutdown();
+        delete backend;
+    }
+
+    // A row whose PROCESS starts but whose solve then fails (here: a working
+    // directory that makes "python -m gui.services.solver_runner" itself
+    // fail to import -- deterministic, and a real JobRunner::failed signal,
+    // unlike the "cannot even start" case above) is "failed" with its
+    // error, and the rest of a sequential (pool 1) study still finish.
+    void studyRowThatFailsToSolveDoesNotStopTheOthers() {
+        const auto cfg = resolveBackendConfig();
+        auto* backend = new tcad::desktop::BackendClient(cfg, this);
+        RunnerConfig rc;
+        rc.python = cfg.python;
+        rc.working_dir = tmp_.path();  // no gui/ package here: ModuleNotFoundError
+        rc.strip_from_path = cfg.strip_from_path;
+        StudyController ctl([backend] { return backend; }, rc, tmp_.filePath("study_solve_fail_runs"), this);
+        nlohmann::json splits;
+        splits["doping_cm3"] = std::vector<double>{1e16, 2e16, 3e16};
+        QString err;
+        QVERIFY(ctl.buildRows("resistor", nlohmann::json::object(), splits, &err));
+        QVERIFY(QTest::qWaitFor([&] { return ctl.rows().size() == 3; }, 30000));
+        QVERIFY(ctl.run(1));  // pool 1: strictly sequential
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.busy(); }, 60000));
+        for (const auto& r : ctl.rows()) {
+            QCOMPARE(static_cast<int>(r.status), static_cast<int>(StudyController::RowStatus::Failed));
+            QVERIFY(!r.error.isEmpty());
+        }
+        backend->shutdown();
+        delete backend;
+    }
+
+    // -- remote hosts (P3-S8): round-robin, one bad host isolated ----------------------
+    // Against gui/tests/fixtures/fake_ssh.py/fake_scp.py -- the same loopback
+    // stand-ins the Python remote tests use, no real network.
+    void aBadRemoteHostIsIsolatedFromTheGoodOne() {
+        const auto cfg = resolveBackendConfig();
+        auto* backend = new tcad::desktop::BackendClient(cfg, this);
+        RunnerConfig rc;
+        rc.python = cfg.python;
+        rc.working_dir = cfg.working_dir;
+        rc.strip_from_path = cfg.strip_from_path;
+        StudyController ctl(
+            [backend] { return backend; }, rc, tmp_.filePath("study_remote_runs"), this,
+            {cfg.python, fixture("fake_ssh.py")}, {cfg.python, fixture("fake_scp.py")});
+
+        RemoteHostConfig good, bad;
+        good.host = "good-worker";
+        good.python = cfg.python;
+        good.remote_workdir = tmp_.filePath("remote-wd-good");
+        bad.host = "bad-worker";
+        bad.python = "Z:/does/not/exist/python.exe";  // the run stage fails; mkdir/push still succeed
+        bad.remote_workdir = tmp_.filePath("remote-wd-bad");
+        QVERIFY(QDir().mkpath(good.remote_workdir) && QDir().mkpath(bad.remote_workdir));
+        ctl.setRemoteHostConfigs({good, bad});
+        QCOMPARE(ctl.remoteHosts(), (QStringList{"good-worker", "bad-worker"}));
+
+        nlohmann::json splits;
+        splits["doping_cm3"] = std::vector<double>{1e16, 2e16, 3e16, 4e16};
+        QString err;
+        QVERIFY(ctl.buildRows("resistor", nlohmann::json::object(), splits, &err));
+        QVERIFY(QTest::qWaitFor([&] { return ctl.rows().size() == 4; }, 30000));
+        QVERIFY(ctl.run(2));  // pool 2: one slot per host, round-robin
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.busy(); }, 120000));
+
+        // Each pool SLOT is bound to one host (round-robin at pool-creation
+        // time), but the two slots race for pending rows as they free --
+        // the bad host fails near-instantly (no real solve), so it is not
+        // guaranteed exactly half the rows; the gate is that the good
+        // host's rows still finish and the bad host's rows are isolated,
+        // never that the split is even (G-PARTIAL-FAILURE, restated).
+        int done = 0, failed = 0;
+        for (const auto& r : ctl.rows()) {
+            if (r.status == StudyController::RowStatus::Done) ++done;
+            else if (r.status == StudyController::RowStatus::Failed) ++failed;
+        }
+        QVERIFY2(done >= 1, "the good host must complete at least one row");
+        QVERIFY2(failed >= 1, "the bad host's rows must be isolated as failed");
+        QCOMPARE(done + failed, 4);
+        backend->shutdown();
+        delete backend;
+    }
+
+    // Cancel mid-remote-row: the running row's process is killed at once, it
+    // returns to pending (no local job file left), and Run then finishes it.
+    void cancelMidRemoteRowReturnsItToPending() {
+        const auto cfg = resolveBackendConfig();
+        auto* backend = new tcad::desktop::BackendClient(cfg, this);
+        RunnerConfig rc;
+        rc.python = cfg.python;
+        rc.working_dir = cfg.working_dir;
+        rc.strip_from_path = cfg.strip_from_path;
+        const QString study_dir = tmp_.filePath("study_remote_cancel_runs");
+        StudyController ctl([backend] { return backend; }, rc, study_dir, this, {cfg.python, fixture("fake_ssh.py")},
+                            {cfg.python, fixture("fake_scp.py")});
+        RemoteHostConfig host;
+        host.host = "worker";
+        host.python = cfg.python;
+        host.remote_workdir = tmp_.filePath("remote-wd-cancel");
+        QVERIFY(QDir().mkpath(host.remote_workdir));
+        ctl.setRemoteHostConfigs({host});
+
+        nlohmann::json splits;
+        splits["doping_cm3"] = std::vector<double>{1e16, 2e16};
+        QString err;
+        QVERIFY(ctl.buildRows("resistor", nlohmann::json::object(), splits, &err));
+        QVERIFY(QTest::qWaitFor([&] { return ctl.rows().size() == 2; }, 30000));
+        QVERIFY(ctl.run(1));
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.livePids().empty(); }, 30000));
+        ctl.cancelAll();
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.busy(); }, 30000));
+        for (const auto& r : ctl.rows())
+            QVERIFY(r.status == StudyController::RowStatus::Pending || r.status == StudyController::RowStatus::Done);
+        QVERIFY(QDir(study_dir).entryList({"job-*.json"}, QDir::Files).isEmpty());
+
+        QVERIFY(ctl.run(1));
+        QVERIFY(QTest::qWaitFor([&] { return !ctl.busy(); }, 60000));
+        for (const auto& r : ctl.rows())
+            QCOMPARE(static_cast<int>(r.status), static_cast<int>(StudyController::RowStatus::Done));
+        backend->shutdown();
+        delete backend;
+    }
+
+    // Destroying the study controller mid-remote-row leaves no live local
+    // ssh/scp process (the same guarantee closingTheWindowMidStudy checks
+    // for a local row, extended to the remote pool).
+    void destroyingTheControllerMidRemoteRowLeavesNoProcess() {
+        const auto cfg = resolveBackendConfig();
+        auto* backend = new tcad::desktop::BackendClient(cfg, this);
+        RunnerConfig rc;
+        rc.python = cfg.python;
+        rc.working_dir = cfg.working_dir;
+        rc.strip_from_path = cfg.strip_from_path;
+        qint64 pid = 0;
+        {
+            StudyController ctl([backend] { return backend; }, rc, tmp_.filePath("study_remote_destroy_runs"), this,
+                                {cfg.python, fixture("fake_ssh.py")}, {cfg.python, fixture("fake_scp.py")});
+            RemoteHostConfig host;
+            host.host = "worker";
+            host.python = cfg.python;
+            host.remote_workdir = tmp_.filePath("remote-wd-destroy");
+            QVERIFY(QDir().mkpath(host.remote_workdir));
+            ctl.setRemoteHostConfigs({host});
+            nlohmann::json splits;
+            splits["doping_cm3"] = std::vector<double>{1e16, 2e16};
+            QString err;
+            QVERIFY(ctl.buildRows("resistor", nlohmann::json::object(), splits, &err));
+            QVERIFY(QTest::qWaitFor([&] { return ctl.rows().size() == 2; }, 30000));
+            QVERIFY(ctl.run(1));
+            QVERIFY(QTest::qWaitFor([&] { return !ctl.livePids().empty(); }, 30000));
+            pid = ctl.livePids().front();
+        }  // ~StudyController: its pool killed silently
+        QVERIFY(pid != 0);
+        QTest::qWait(500);
+        QVERIFY(!processAlive(pid));
+        backend->shutdown();
+        delete backend;
+    }
+
+    // Closing the window mid-study leaves no live process.
+    void closingTheWindowMidStudy() {
+        qint64 pid = 0;
+        {
+            auto w = window("study_close");
+            QVERIFY(w);
+            w->studyDock()->setAsCurrentTab();
+            QApplication::processEvents();
+            auto* panel = w->studyPanel();
+            auto* ctl = w->studyController();
+            QVERIFY(QTest::qWaitFor([&] { return panel->templateCombo()->count() > 0; }, 30000));
+            for (int i = 0; i < panel->templateCombo()->count(); ++i)
+                if (panel->templateCombo()->itemText(i) == "Resistor") panel->templateCombo()->setCurrentIndex(i);
+            panel->addSplitRow("doping_cm3", "1e16, 2e16, 3e16");
+            panel->poolSpin()->setValue(1);
+            QTest::mouseClick(panel->buildButton(), Qt::LeftButton);
+            QVERIFY(QTest::qWaitFor([&] { return ctl->rows().size() == 3; }, 30000));
+            QTest::mouseClick(panel->runButton(), Qt::LeftButton);
+            QVERIFY(QTest::qWaitFor([&] { return !ctl->livePids().empty(); }, 30000));
+            pid = ctl->livePids().front();
+        }  // ~MainWindow: the study controller torn down, its pool killed silently
+        QVERIFY(pid != 0);
+        QTest::qWait(500);
+        QVERIFY(!processAlive(pid));
     }
 };
 

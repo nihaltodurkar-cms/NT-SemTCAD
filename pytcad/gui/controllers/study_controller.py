@@ -36,6 +36,7 @@ import tempfile
 import numpy as np
 from PySide6.QtCore import QObject, Property, Signal, Slot
 
+from ..services import study_jobs
 from ..services.job_runner import JobRunner
 from ..services.remote_job_runner import RemoteJobRunner
 
@@ -64,29 +65,22 @@ class StudyController(QObject):
         the template rejects is recorded as 'build_error' rather than
         aborting the whole study -- Phase 1's own G-ISOLATION gate,
         restated through this controller's status vocabulary."""
-        from workbench.splits import run_split_matrix
-        from workbench.workflow import DeckRun
-
-        run = DeckRun(template_id=str(template_id))
-        run._values = dict(base_values or {})
-        run.splits = {k: [float(v) for v in vals]
-                     for k, vals in dict(split_spec or {}).items()}
         try:
-            split_rows = run_split_matrix(run)
+            axes, rows = study_jobs.study_rows(template_id, base_values, split_spec)
         except Exception as exc:
             self._app.errorRaised.emit("Could not configure study", str(exc))
             return False
 
-        self._template_id = run.template_id
-        self._split_axes = dict(run.splits)
+        self._template_id = str(template_id)
+        self._split_axes = axes
         self._rows = []
-        for row in split_rows:
+        for row in rows:
             self._rows.append({
-                "params": dict(row.params),
-                "status": "build_error" if row.error else "pending",
+                "params": row["params"],
+                "status": row["status"],
                 "resultPath": "",
-                "error": row.error or "",
-                "_device": row.device,
+                "error": row["error"],
+                "_device": row["device"],
             })
         self.studyChanged.emit()
         return True
@@ -106,10 +100,22 @@ class StudyController(QObject):
         `workbench.remote_executor.RemoteHost` defaults (current SSH
         user, port 22, `python` on PATH, /tmp/pytcad-remote scratch
         dir) -- per-host overrides are not exposed in the GUI; use the
-        library-level `RemoteExecutor` directly for that."""
+        library-level `RemoteExecutor` directly for that.
+
+        A host `RemoteHost` itself rejects (e.g. one starting with '-',
+        which ssh would parse as an option -- NATIVE-DESKTOP-PLAN.md
+        18.1/18.2) is reported through `errorRaised`, one message per
+        bad host; every other, valid host in the same call is still
+        kept, rather than the whole list being silently discarded."""
         from workbench.remote_executor import RemoteHost
         names = [str(h).strip() for h in (hosts or []) if str(h).strip()]
-        self._remote_hosts = [RemoteHost(host=name) for name in names]
+        good = []
+        for name in names:
+            try:
+                good.append(RemoteHost(host=name))
+            except ValueError as exc:
+                self._app.errorRaised.emit("Invalid remote host", str(exc))
+        self._remote_hosts = good
         self.studyChanged.emit()
 
     @Property(list, notify=studyChanged)
@@ -185,10 +191,8 @@ class StudyController(QObject):
             self._dispatch_next(runner)
 
     def _spec_for_row(self, row):
-        from workbench.adapters.spec import spec_from_domain
-        spec = spec_from_domain(row["_device"])
+        spec = study_jobs.row_spec(row["_device"])
         spec.bias = dict(self._bias) if self._bias else None
-        spec.sweep = None
         return spec
 
     def _on_row_finished(self, runner, result_path):

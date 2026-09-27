@@ -81,10 +81,14 @@ add_library(tcad_desktop_backend STATIC
 target_include_directories(tcad_desktop_backend PUBLIC src)
 target_link_libraries(tcad_desktop_backend PUBLIC Qt6::Core nlohmann_json::nlohmann_json)
 # The local solver runner (P3-S3): Qt Core only.
-add_library(tcad_desktop_run STATIC src/run/job_runner.cpp src/run/job_runner.hpp
+add_library(tcad_desktop_run STATIC src/run/runner_base.hpp
+  src/run/job_runner.cpp src/run/job_runner.hpp
   src/run/run_controller.cpp src/run/run_controller.hpp
   src/run/telemetry.cpp src/run/telemetry.hpp
-  src/run/batch_controller.cpp src/run/batch_controller.hpp)
+  src/run/batch_controller.cpp src/run/batch_controller.hpp
+  src/run/study_controller.cpp src/run/study_controller.hpp
+  src/run/remote_host.cpp src/run/remote_host.hpp
+  src/run/remote_job_runner.cpp src/run/remote_job_runner.hpp)
 target_include_directories(tcad_desktop_run PUBLIC src)
 target_link_libraries(tcad_desktop_run PUBLIC tcad_desktop_backend tcad_desktop_data Qt6::Core nlohmann_json::nlohmann_json)
 
@@ -101,6 +105,7 @@ add_library(tcad_desktop_ui STATIC
   src/shell/run_panel.cpp src/shell/run_panel.hpp
   src/shell/console_panel.cpp src/shell/console_panel.hpp
   src/shell/telemetry_panel.cpp src/shell/telemetry_panel.hpp
+  src/shell/study_panel.cpp src/shell/study_panel.hpp
   src/views/field/field_view.cpp src/views/field/field_view.hpp
   src/views/field/field_view_3d.cpp
   src/views/colormaps.cpp src/views/colormaps.hpp
@@ -109,7 +114,8 @@ add_library(tcad_desktop_ui STATIC
   src/theme/theme.cpp src/theme/theme.hpp src/theme/tokens.hpp
   src/bench/bench.cpp
   src/bench/selftest.cpp
-  src/bench/bench_backend.cpp)
+  src/bench/bench_backend.cpp
+  src/bench/bench_run.cpp)
 target_include_directories(tcad_desktop_ui PUBLIC src)
 target_link_libraries(tcad_desktop_ui PUBLIC
   tcad_desktop_data tcad_desktop_plotmath tcad_desktop_backend tcad_desktop_run Qt6::Widgets Qt6::OpenGLWidgets ads::qtadvanceddocking-qt6
@@ -138,6 +144,12 @@ target_link_libraries(tcad_desktop_backend_tests PRIVATE tcad_desktop_backend tc
 # by gui/tests/test_desktop_run.py.
 add_executable(tcad_desktop_run_tests tests/test_run.cpp)
 target_link_libraries(tcad_desktop_run_tests PRIVATE tcad_desktop_run tcad_desktop_data Qt6::Test)
+
+# RemoteJobRunner tests (P3-S8): against gui/tests/fixtures/fake_ssh.py/
+# fake_scp.py, the same loopback stand-ins the Python remote tests use;
+# run by gui/tests/test_desktop_remote_job_runner.py.
+add_executable(tcad_desktop_remote_tests tests/test_remote_job_runner.cpp)
+target_link_libraries(tcad_desktop_remote_tests PRIVATE tcad_desktop_run tcad_desktop_data Qt6::Test)
 
 # PlotView gates (P2-S2): the real widget rendered offscreen with grab(),
 # probed; run by gui/tests/test_desktop_plot.py at display scales 1/1.5/2.
