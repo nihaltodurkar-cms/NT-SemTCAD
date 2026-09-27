@@ -18,6 +18,8 @@ QPalette palette();
 // Plot data colours (tokens.hpp): data, not theme.
 QColor seriesColour(std::size_t index);  // wraps around the palette
 QColor dataColour(DataColour c);
+// Structure Editor doping/contact/gate colours (tokens.hpp): data, not theme.
+QColor structureColour(StructureColour c);
 
 // A stylesheet (ADS's default one) with every palette(<role>) reference
 // replaced by that role's token colour: explicit colours, so what ADS

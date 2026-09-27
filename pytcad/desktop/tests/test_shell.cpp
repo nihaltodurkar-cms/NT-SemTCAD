@@ -1415,11 +1415,12 @@ private slots:
         QVERIFY(v->normRange() == auto_range);
     }
 
-    // -- theme (S3c; one black-and-white scheme since 2026-09-26) ---------------
+    // -- theme (S3c; one light engineering scheme since 2026-09-27, section
+    // 26 -- superseded the 2026-09-26 black-and-white scheme) -------------------
     // What the window PAINTS, not only its palette: the palette checks passed
     // while ADS drew a stock-grey Fields panel once (S3c screenshot). A
     // "theme/choice" left in an old settings file must change nothing.
-    void theBlackAndWhiteThemeReachesQtVtkAndAds() {
+    void theLightThemeReachesQtVtkAndAds() {
         using namespace tcad::desktop::theme;
         // a fresh launch's palette, not whatever an earlier test left behind
         QApplication::setPalette(QApplication::style()->standardPalette());
@@ -1437,8 +1438,9 @@ private slots:
         QCOMPARE(pal.color(QPalette::Base), qcolor(T::Base));
         QCOMPARE(pal.color(QPalette::Text), qcolor(T::Text));
         QCOMPARE(pal.color(QPalette::Highlight), qcolor(T::Accent));
-        QCOMPARE(qcolor(T::Base), QColor(255, 255, 255));  // white surfaces, black text
-        QCOMPARE(qcolor(T::Text), QColor(0, 0, 0));
+        QCOMPARE(qcolor(T::Base), QColor(0xff, 0xff, 0xff));   // white panel surfaces
+        QCOMPARE(qcolor(T::Text), QColor(0x1a, 0x20, 0x27));   // the dark-ink text token
+        QCOMPARE(qcolor(T::Accent), QColor(0x2b, 0x6c, 0xb0));  // the blue accent token
         // VTK: background and scalar-bar text
         double bg[3];
         w->fieldView()->renderer()->GetBackground(bg);

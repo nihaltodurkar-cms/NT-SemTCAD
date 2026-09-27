@@ -9,8 +9,7 @@
 // redrawn at most every kPlotMs.
 //
 // Stage-level progress only (17.7 point 2): the MPI engine and a C-V run
-// print no Newton lines (devsim, which prints none either, is not a native
-// backend: 17.13). The dock says so up front
+// print no Newton lines. The dock says so up front
 // when the run's settings tell, and at the end when a run reported stages
 // but no Newton iteration (the auto engine may pick MPI) -- instead of an
 // empty plot that looks broken.

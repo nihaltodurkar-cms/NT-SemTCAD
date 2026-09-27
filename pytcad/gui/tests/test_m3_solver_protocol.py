@@ -25,7 +25,7 @@ from gui.tests.test_solver_backend import _diode_1d_spec
 
 
 def test_registry_addresses_known_backends_and_rejects_unknown():
-    assert set(backend_ids()) == {"pytcad", "devsim"}
+    assert set(backend_ids()) == {"pytcad"}
     assert isinstance(get_backend("pytcad"), PytcadBackend)
     with pytest.raises(KeyError, match="sentaurus"):
         get_backend("sentaurus")

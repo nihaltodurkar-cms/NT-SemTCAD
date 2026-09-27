@@ -1,5 +1,6 @@
 #include "build_panel.hpp"
 
+#include "catalog_panel.hpp"
 #include "document/undo_stack.hpp"
 #include "editors/anneal_step_editor.hpp"
 #include "editors/contact_editor.hpp"
@@ -121,6 +122,18 @@ BuildPanel::BuildPanel(QWidget* parent) : QWidget(parent) {
     rightLayout->addWidget(process_validation_);
     processSplit->addWidget(right);
     tabs->addTab(processSplit, tr("Process"));
+
+    // -- Templates & Physics models tab -----------------------------------------
+    catalog_panel_ = new CatalogPanel;
+    const int catalogTabIndex = tabs->addTab(catalog_panel_, tr("Templates && Models"));
+    connect(catalog_panel_, &CatalogPanel::buildTemplateRequested, this,
+            &BuildPanel::buildTemplateRequested);
+    connect(catalog_panel_, &CatalogPanel::modelConfigChanged, this, &BuildPanel::modelConfigChanged);
+    connect(tabs, &QTabWidget::currentChanged, this, [this, catalogTabIndex](int index) {
+        if (index != catalogTabIndex || catalog_requested_) return;
+        catalog_requested_ = true;
+        emit templateCatalogRequested();
+    });
 
     wireStructureEditors();
     wireProcessEditors();
@@ -281,6 +294,38 @@ void BuildPanel::noteProcessChanged() {
         [&doc, before] { doc = ProcessFlowDocument::parse(before); }, "Edit process"));
     process_snapshot_ = after;
     emit validateProcessRequested();
+}
+
+void BuildPanel::adoptStructureAndMesh(const nlohmann::json& structure, const nlohmann::json& mesh) {
+    if (!project_) return;
+    StructureDocument& sdoc = project_->structure();
+    MeshDocument& mdoc = project_->mesh();
+    const std::string s_before = sdoc.dump();
+    const std::string m_before = mdoc.dump();
+    sdoc = StructureDocument::parse(structure.dump());
+    mdoc = MeshDocument::parse(mesh.dump());
+    const std::string s_after = sdoc.dump();
+    const std::string m_after = mdoc.dump();
+    // One undo step for both documents together: a template build is a
+    // single user action ("adopt this device"), and undoing it half way
+    // (structure back, mesh still the new one) would leave an
+    // inconsistent domain the canvas/mesh editor were never designed to
+    // show -- the same reason `structure_from_domain()` always produces
+    // both together.
+    project_->undoStack().push(Command(
+        [&sdoc, &mdoc, s_after, m_after] {
+            sdoc = StructureDocument::parse(s_after);
+            mdoc = MeshDocument::parse(m_after);
+        },
+        [&sdoc, &mdoc, s_before, m_before] {
+            sdoc = StructureDocument::parse(s_before);
+            mdoc = MeshDocument::parse(m_before);
+        },
+        "Build from template"));
+    structure_snapshot_ = s_after;
+    mesh_snapshot_ = m_after;
+    refreshAll();
+    emit validateStructureRequested();
 }
 
 void BuildPanel::setStructureErrors(const std::vector<std::string>& messages) {

@@ -90,9 +90,7 @@ def diode_1d_example_spec():
 def resistor_2d_example_spec():
     """A uniform 2D n-type resistor bar: two ohmic contacts on opposite
     edges, no junction and no gate -- the simplest possible 2D device,
-    useful as a fast/cheap counterpart to the MOSFET example and as a
-    minimal case for exercising the devsim backend (which refuses gates
-    and non-default region_materials but accepts exactly this shape).
+    useful as a fast/cheap counterpart to the MOSFET example.
 
     Built via the same DomainDevice + spec_from_domain() path the
     Device Builder templates use (workbench/core/templates.py's

@@ -20,6 +20,7 @@
     "undo_tests": "tcad_desktop_undo_tests.exe",
     "project_tests": "tcad_desktop_project_tests.exe",
     "build_shell_tests": "tcad_desktop_build_shell_tests.exe",
+    "compact_model_shell_tests": "tcad_desktop_compact_model_shell_tests.exe",
     "validation_tests": "tcad_desktop_validation_tests.exe"
   }
 }

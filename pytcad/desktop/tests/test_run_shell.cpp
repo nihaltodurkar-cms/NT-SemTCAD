@@ -720,24 +720,25 @@ private slots:
                  qPrintable(t->plotView()->model().empty_text));
     }
 
-    // -- the native app's backends: pytcad only (user decision, 2026-09-27, 17.13) ------
+    // -- the native app's backends: pytcad only (the devsim backend was
+    // removed entirely, 2026-09-27) ------------------------------------
     void theNativeAppOffersPytcadOnly() {
         auto w = window("backends");
         QVERIFY(w);
-        loadExample(w.get(), "diode_1d");  // a 1D device: the backend service lists devsim for it
+        loadExample(w.get(), "diode_1d");
         RunPanel* p = w->runPanel();
         // run.options has answered once the engine list is filled
         QVERIFY(QTest::qWaitFor([&] { return p->engineCombo()->findData("direct") >= 0; }, 60000));
         QCOMPARE(p->backendCombo()->count(), 1);
         QCOMPARE(p->backendCombo()->itemData(0).toString(), QString("pytcad"));
-        // ... although the backend service itself still lists devsim (its
-        // run.options is QML's list; the native app filters it).
+        // The backend service itself now lists only pytcad too (no second
+        // registered backend survives to filter out), so this asserts the
+        // filter is a no-op rather than doing any real work here.
         auto* reply = w->backendClient()->call("run.options", {{"spec", w->runController()->device()->spec}});
         QVERIFY(QTest::qWaitFor([&] { return reply->isFinished(); }, 60000));
         QVERIFY(reply->ok());
-        bool listed = false;
-        for (const auto& b : reply->result()["backends"]) listed |= b["id"] == "devsim";
-        QVERIFY2(listed, "the service no longer lists devsim: this gate would pass vacuously");
+        QCOMPARE(reply->result()["backends"].size(), size_t(1));
+        QCOMPARE(reply->result()["backends"][0]["id"].get<std::string>(), std::string("pytcad"));
     }
 
     void aRunOnAnotherBackendIsRefusedNamed() {

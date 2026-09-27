@@ -54,6 +54,15 @@ public:
     const ProcessFlowDocument& process() const { return process_; }
     const nlohmann::json& sweep() const { return sweep_; }
     const nlohmann::json& models() const { return models_; }
+    // The Physics Lab model config (catalog.py's own config dict) is
+    // carried opaque here (S9's own decision), same as `sweep()` -- not
+    // one of S8's three undo-tracked documents, so it gets its own
+    // small dirty flag instead of an UndoStack command.
+    void setModels(nlohmann::json models) {
+        models_ = std::move(models);
+        models_dirty_ = true;
+    }
+    bool modelsDirty() const { return models_dirty_; }
 
     bool hasStructure() const { return has_structure_; }
     bool hasMesh() const { return has_mesh_; }
@@ -61,7 +70,7 @@ public:
     void setSpecVersion(int v) { spec_version_ = v; }
 
     UndoStack& undoStack() { return undo_; }
-    bool isDirty() const { return undo_.is_dirty(); }
+    bool isDirty() const { return undo_.is_dirty() || models_dirty_; }
 
 signals:
     void projectLoaded(const QString& path);
@@ -80,6 +89,7 @@ private:
     nlohmann::json models_ = nullptr;
     bool has_structure_ = true;
     bool has_mesh_ = true;
+    bool models_dirty_ = false;
     int spec_version_ = 1;
     UndoStack undo_;
     int load_generation_ = 0;

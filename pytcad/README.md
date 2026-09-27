@@ -390,7 +390,7 @@ pytest tests/ gui/tests/               # full suite, serial
 pytest tests/ gui/tests/ -n 6 -m "not slow" -q   # fast dev loop (parallel)
 ```
 
-Everything -- library, GUI, tests, and optional deps (gmsh, devsim,
+Everything -- library, GUI, tests, and optional deps (gmsh,
 mpmath) -- is in one file: `pip install -r requirements.txt` (verified
 on Linux and Windows, see the file's own header). Cap parallel workers
 at `-n 6` and set `OPENBLAS_NUM_THREADS=1` -- see CLAUDE.md's Commands
@@ -590,6 +590,37 @@ module's own honesty-clause docstring and `ARCHITECTURE.md` section
   implant-array extrusion; the extruded tet FinFET's fully coupled
   bias solve needs voltage ramping/continuation not yet implemented on
   that path (measured, not silently skipped).
+- **Curved/rounded/polygon FinFET geometry (new, 2026-09-27).**
+  `examples/16_finfet3d_curved.py` builds a genuinely non-box fin
+  cross-section directly with gmsh's OCC kernel: a tapered (trapezoid,
+  not rectangular) sidewall polygon, with both top corners rounded by
+  a real 3D `occ.fillet()` operation (confirmed in gmsh's own mesh log
+  as literal cylindrical surfaces, not a flattened approximation) --
+  neither `finfet3d.py`'s closed-form structured box nor
+  `gmsh_finfet3d.py`'s flattened `process2d` staircase extrusion has
+  sloped sidewalls or corner rounding, by their own documented scope.
+  Solved on the same M26 unstructured tet + gate-BC engine
+  (`unstructured_dd3d.py`), with region/contact/gate membership
+  classified from each node/triangle's own coordinates after meshing
+  (no CAD-level volume split needed, since source/gate/drain differ
+  only by doping, not by a distinct solid) and a ramped Vds-then-Vg
+  bias sweep (warm-started at each step, per this module's own
+  documented convergence caveat). One real, measured tool limitation
+  found and worked around while building this: gmsh 4.15.2's OCC
+  `fillet()` crashes ("access violation") on this machine at this
+  device's natural cm-scale absolute coordinates (~1e-6 and below,
+  confirmed by a minimal box-fillet reproduction bisecting the failure
+  between 1e-5 and 1e-6) but succeeds at 1e-5 and above -- the example
+  builds its gmsh geometry at a 1e4x-scaled-up internal unit and
+  divides the extracted node coordinates back down before handing them
+  to the (unit-agnostic) solver, rather than avoiding the fillet or
+  changing device dimensions. A run on this machine: 1296 nodes, 5069
+  tets, charge conservation (source + drain current) at the 1e-19 A
+  level against a ~1e-5 A drain current, and a monotonic gate turn-on
+  (Id rises from 1.75e-5 A to 7.86e-5 A over Vg = 0 to 0.8 V at
+  Vds = 0.05 V) -- a demonstration of the geometry capability, not a
+  new physics benchmark (doping is uniform per region, the same
+  disclosed simplification the M26 examples above already carry).
 
 ### Level-set 2D process geometry (M35 S1-S4, new)
 

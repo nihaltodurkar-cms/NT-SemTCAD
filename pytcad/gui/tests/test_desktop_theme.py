@@ -1,9 +1,14 @@
-"""NATIVE-DESKTOP-PLAN.md P1 S3c theme gates for the native app, for ONE
-black-and-white scheme (the user's decision, 2026-09-26).
+"""NATIVE-DESKTOP-PLAN.md P1 S3c / section 26 theme gates for the native
+app, for ONE light engineering scheme (2026-09-27, superseding the
+2026-09-26 "no modes, just black and white" decision).
 
-1. Black and white: every native token is a grey (r == g == b) except the
-   status colours, which carry meaning. Data colours (plot series, region
-   palette, colour maps) are not theme tokens and keep their colours.
+1. The palette matches tokens.hpp exactly: a regression pin on the
+   handful of tokens most likely to drift silently (background, base,
+   text, the accent, and the status-colour set), not an inventory of
+   every token. Data colours (plot series, region palette, colour maps,
+   and the Structure Editor's doping/contact/gate colours) are not theme
+   tokens and keep their own colours -- see tokens.hpp's own
+   StructureColour for that scheme's home.
 2. No hard-coded colours in the native sources outside src/theme/ and the
    colour-map module (colour maps encode values, not UI). This was the
    QML GUI's Phase 3/4 review finding; here it is a gate. The patterns
@@ -40,22 +45,19 @@ def _tokens():
     return json.loads(out.stdout)
 
 
-def _hex_rgb(h):
-    return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
-
-
 needs_build = pytest.mark.skipif(not os.path.isfile(MANIFEST),
                                  reason="native desktop app not built (powershell -File desktop\build.ps1)")
 
 
 @needs_build
-def test_native_tokens_are_black_and_white():
+def test_native_tokens_match_the_light_palette():
     tokens = {t["name"]: t for t in _tokens()}
     assert {t for t in tokens if tokens[t]["status"]} == {"warning", "error", "ok"}
-    coloured = [f"{n}={t['hex']}" for n, t in tokens.items()
-                if not t["status"] and len(set(_hex_rgb(t["hex"]))) != 1]
-    assert not coloured, f"tokens with a hue (only status colours may have one): {coloured}"
-    assert tokens["base"]["hex"] == "#ffffff" and tokens["text"]["hex"] == "#000000"
+    assert tokens["background"]["hex"] == "#f0f2f4"
+    assert tokens["base"]["hex"] == "#ffffff"
+    assert tokens["text"]["hex"] == "#1a2027"
+    assert tokens["accent"]["hex"] == "#2b6cb0"
+    assert tokens["focus"]["hex"] == tokens["accent"]["hex"]
 
 
 # -- no hard-coded colours --------------------------------------------------------

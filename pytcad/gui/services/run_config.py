@@ -90,47 +90,17 @@ def configure_run(spec, *, sweep=None, transient=None, ac=None, equilibrium_only
         run.bias = None
     if models is not None:
         run.models = dict(models)
-    # Defense in depth: the selector should already prevent an incompatible
-    # backend (backend_options uses this SAME check), but the spec may have
-    # changed after the backend was picked.
-    if backend != "pytcad":
-        try:
-            from workbench.solvers.devsim_backend import check_devsim_compatible
-            check_devsim_compatible(run)
-        except Exception as exc:
-            raise RunConfigError(f"Cannot run with backend '{backend}'", str(exc)) from None
     run.backend = backend
-    # Engine selection applies to the pytcad backend's own linear-solve path
-    # only; a stray engine must not leak into a devsim job.
-    run.engine = engine if backend == "pytcad" else "auto"
+    run.engine = engine
     return run
 
 
 def backend_options(spec, models):
-    """[{"id","label","enabled","reason"}, ...]: "pytcad" always; "devsim"
-    only when installed AND check_devsim_compatible passes for `spec` with
-    `models` stamped -- the SAME check DevsimBackend.run() enforces, so the
-    list never promises a run that would then be refused."""
+    """[{"id","label","enabled","reason"}, ...]: "pytcad" is the only
+    registered backend (the devsim adapter was removed 2026-09-27)."""
     from workbench.solvers.base import backend_ids
-    opts = [{"id": "pytcad", "label": "pytcad", "enabled": True, "reason": ""}]
-    if "devsim" not in backend_ids():
-        opts.append({"id": "devsim", "label": "devsim", "enabled": False,
-                     "reason": "optional devsim dependency not installed"})
-        return opts
-    reason = ""
-    try:
-        from workbench.solvers.devsim_backend import check_devsim_compatible
-        if spec is not None:
-            trial = copy.copy(spec)
-            trial.models = dict(models)
-            check_devsim_compatible(trial)
-    except ValueError as exc:
-        reason = str(exc)
-    except Exception as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-    opts.append({"id": "devsim", "label": "devsim", "enabled": spec is not None and not reason,
-                 "reason": reason})
-    return opts
+    return [{"id": bid, "label": bid, "enabled": True, "reason": ""}
+            for bid in backend_ids()]
 
 
 def engine_options(spec, transient_armed):

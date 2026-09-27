@@ -1,6 +1,6 @@
 # PyTCAD -- single requirements file covering the library, the GUI,
 # the test suite, and every optional dependency the code soft-imports
-# (gmsh, devsim, mpmath). Verified on Linux and confirmed all packages
+# (gmsh, mpmath). Verified on Linux and confirmed all packages
 # below publish win_amd64 wheels (checked 2026-08-31), so this same
 # file works unmodified on Windows:
 #
@@ -35,13 +35,12 @@ pyvista>=0.48
 #     module load time -- absent, the corresponding tests/features are
 #     skipped rather than the whole install failing ---
 gmsh>=4.15          # M21 phase 3 unstructured meshing
-devsim>=2.11         # optional DEVSIM solver backend
 mpmath>=1.4          # M13 Fermi-Dirac reference-value tests
 scikit-image>=0.26   # M35-S5/S6 levelset3d.marching_cubes_surface --
                      # a real triangulated isosurface of the 3D level
-                     # set, absent devsim-style falls back to an
-                     # ImportError naming this package (no pure-Python
-                     # marching-cubes reimplementation is attempted)
+                     # set, absent falls back to an ImportError naming
+                     # this package (no pure-Python marching-cubes
+                     # reimplementation is attempted)
 tetgen>=0.8           # M35-S5/S6 levelset3d_mesh.py -- constrained
                      # Delaunay tetrahedralization of that isosurface,
                      # chosen over gmsh's own STL-remeshing path (see

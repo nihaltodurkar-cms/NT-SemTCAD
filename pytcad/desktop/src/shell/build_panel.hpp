@@ -17,6 +17,8 @@
 // back.
 #pragma once
 
+#include <nlohmann/json.hpp>
+
 #include <QWidget>
 
 #include <string>
@@ -39,6 +41,7 @@ class ImplantStepEditor;
 class AnnealStepEditor;
 class OxidizeStepEditor;
 class ValidationPanel;
+class CatalogPanel;
 
 class BuildPanel : public QWidget {
     Q_OBJECT
@@ -53,14 +56,37 @@ public:
     void setProject(ProjectController* project);
     void refreshAll();
 
+    CatalogPanel* catalogPanel() const { return catalog_panel_; }
+
 signals:
     // MainWindow owns the BackendClient; this panel only asks.
     void validateStructureRequested();
     void validateProcessRequested();
+    // Re-emitted from CatalogPanel (MainWindow owns the BackendClient
+    // and the actual template/model RPC calls, same division as
+    // validation above).
+    void buildTemplateRequested(const QString& id, const nlohmann::json& values);
+    void modelConfigChanged(const nlohmann::json& config);
+    // Fired once, the first time the "Templates & Models" tab is shown --
+    // every OTHER backend touch in this app follows a user/project action
+    // (Run, Validate, Save, ...); fetching the (static) template/catalog
+    // registry at construction time instead of on first need was a real
+    // bug (see NATIVE-DESKTOP-PLAN.md section 24): it raced the very
+    // first backend handshake against whatever a test (or a fast user)
+    // did immediately after opening the window, corrupting the reply
+    // that arrived while a nested event loop (e.g. openBuildProject's
+    // own wait-for-load) was pumping.
+    void templateCatalogRequested();
 
 public slots:
     void setStructureErrors(const std::vector<std::string>& messages);
     void setProcessErrors(const std::vector<std::string>& messages);
+    // Replaces the structure/mesh documents wholesale (a built template
+    // adopted into the shared document) as ONE undoable command -- the
+    // same "no second device-editing path" rule BuilderController.py
+    // followed: this reuses the SAME live StructureDocument/MeshDocument
+    // every other editor here mutates, never a parallel one.
+    void adoptStructureAndMesh(const nlohmann::json& structure, const nlohmann::json& mesh);
 
 private:
     void wireStructureEditors();
@@ -95,6 +121,9 @@ private:
     OxidizeStepEditor* oxidize_editor_ = nullptr;
     QWidget* step_editor_stack_ = nullptr;
     ValidationPanel* process_validation_ = nullptr;
+
+    CatalogPanel* catalog_panel_ = nullptr;
+    bool catalog_requested_ = false;
 };
 
 }  // namespace tcad::desktop

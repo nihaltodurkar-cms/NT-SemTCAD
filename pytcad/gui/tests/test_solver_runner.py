@@ -128,27 +128,6 @@ def test_backend_field_defaults_to_pytcad_for_old_jobs(tmp_path):
     assert json.loads(str(np.load(out)["record__meta"]))["backend"] == "pytcad"
 
 
-def test_backend_field_dispatches_to_devsim(tmp_path):
-    # devsim's own __init__ raises RuntimeError (not ImportError) when its
-    # native BLAS/LAPACK libraries are missing, so plain importorskip lets
-    # that escape as a hard failure on a devsim-installed-but-unusable
-    # sandbox -- catch both so a genuinely broken devsim install skips
-    # instead of failing this unrelated GUI-dispatch test.
-    try:
-        import devsim  # noqa: F401
-    except ImportError:
-        pytest.skip("optional devsim dependency not installed")
-    except RuntimeError as exc:
-        pytest.skip(f"devsim installed but failed to initialize: {exc}")
-    spec = _diode_1d_spec()
-    spec.bias = {"left": 0.0, "right": 0.0}    # devsim needs both contacts named
-    spec.backend = "devsim"
-    proc, out = _run_cli(spec, tmp_path, "devsim_dispatch")
-    assert proc.returncode == 0, proc.stderr
-    import json
-    assert json.loads(str(np.load(out)["record__meta"]))["backend"] == "devsim"
-
-
 def test_bad_spec_exits_nonzero_with_message(tmp_path):
     spec = _resistor_2d_spec()
     spec.models["field_mobility"] = True      # NotImplementedError in Device2D

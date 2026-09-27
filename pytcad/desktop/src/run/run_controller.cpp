@@ -14,10 +14,11 @@ namespace tcad::desktop {
 namespace {
 constexpr int kBackendTimeoutMs = 120000;  // loading a device may import the solver stack
 
-// The solver backends the native app runs: pytcad only. devsim is not
-// supported here (user decision, 2026-09-27; NATIVE-DESKTOP-PLAN.md 17.13):
-// the backend service's run.options still lists it -- that list is QML's,
-// and gated equal to it -- and this app drops what it does not run.
+// The solver backends the native app runs: pytcad only. The devsim
+// backend that once lived behind the SolverBackend protocol was removed
+// entirely (2026-09-27); backend_ids() (and so run.options) now only
+// ever lists "pytcad", but this filter stays as the app's own
+// single-source-of-truth for which backends it runs.
 bool nativeBackend(const std::string& id) { return id == "pytcad"; }
 }  // namespace
 

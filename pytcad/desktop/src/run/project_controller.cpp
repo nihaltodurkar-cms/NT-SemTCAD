@@ -32,6 +32,7 @@ void ProjectController::newProject() {
     models_ = nullptr;
     has_structure_ = true;
     has_mesh_ = true;
+    models_dirty_ = false;
     spec_version_ = 1;
     undo_ = UndoStack();
 }
@@ -62,6 +63,7 @@ void ProjectController::load(const QString& path) {
         models_ = r.value("models", nlohmann::json(nullptr));
         spec_version_ = 1;  // project.load's own result carries no spec_version echo yet
         undo_ = UndoStack();
+        models_dirty_ = false;
         emit projectLoaded(path_);
     });
 }
@@ -88,6 +90,7 @@ void ProjectController::save(const QString& path, int target_version) {
         }
         path_ = path;
         undo_.mark_clean();
+        models_dirty_ = false;
         emit projectSaved(path_);
     });
 }

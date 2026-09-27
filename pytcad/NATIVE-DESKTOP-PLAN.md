@@ -5574,3 +5574,352 @@ build/edit a device, not just run one loaded from a file/example.
   files menu) does not exist. The cross-open byte-identical matrix and
   the full exit ritual (§10.1 checklist, `timing`/`slow` suites, live
   screenshots, adversarial probe) remain exactly as disclosed at S9.
+
+---
+
+## 23. Closing two of section 22's own disclosed gaps (2026-09-27,
+LANDED, verified, real output below)
+
+Two of the smaller gaps section 22 named explicitly, closed the same
+day: the dirty-flag close prompt, and dedicated shell-level coverage for
+contact/gate/process-step edits (previously proven only indirectly, via
+the same code path region/mesh edits already exercised).
+
+- **`MainWindow::closeEvent()`**: when `project_ctl_->isDirty()`, a
+  MODAL `QMessageBox` (`objectName` `"CloseConfirmBox"`, unlike
+  `reportError()`'s deliberately non-modal boxes -- this decision must
+  block the close itself) offers Save/Discard/Cancel. Cancel or a failed
+  Save (no path chosen, or the backend refuses) calls `event->ignore()`;
+  Discard or a successful Save proceeds to the existing layout-save/
+  close path unchanged. Checked before writing this, not assumed: no
+  existing shell test ever touches the Build panel before calling
+  `close()`, so none of them were ever dirty at that point -- confirmed
+  by running the whole existing shell suite after adding the prompt, not
+  by inspection.
+- **Three new shell-level gates** (`desktop/tests/test_build_shell.cpp`):
+  editing a contact's voltage, a gate's voltage, and a process step's
+  parameter (substrate `length_cm`) through the REAL `ContactEditor`/
+  `GateEditor`/`SubstrateStepEditor` widgets each push an undoable
+  command and undo restores the prior value -- the exact
+  `note*Changed()` snapshot-diff path region/mesh edits already proved,
+  now independently exercised for the other three editors too.
+  Contacts/gates have no add button in this build (S4's own, carried-
+  forward decision: neither the old QML app nor this one has one), so
+  each test seeds one directly on the live document
+  (`StructureDocument::add_contact`/`add_gate`) and calls
+  `BuildPanel::refreshAll()` before interacting with the widget --
+  exactly what a real project LOAD already does, not a test-only
+  shortcut.
+- **Three new shell-level gates for the close prompt**: Cancel (via
+  `Qt::Key_Escape`, QMessageBox's own default escape button among
+  Save/Discard/Cancel) keeps the window open with the edit intact;
+  Discard closes without saving; a project with nothing dirty closes
+  with no prompt at all -- driven with the standard Qt pattern for a
+  blocking `exec()` call (`QTimer::singleShot` schedules the dialog
+  interaction before `close()` is called; `exec()`'s own nested event
+  loop lets that timer fire while the test's own call to `close()` is
+  still blocked on the dialog).
+- Gate, real output, this machine:
+  - `tcad_desktop_build_shell_tests` grew from 7 to 13 cases; ALL 6 new
+    ones passed on the first real run (no fix needed this time). `pytest
+    gui/tests/test_desktop_build_shell.py -q`: **1 passed**.
+  - `pytest gui/tests/test_desktop_shell.py gui/tests/
+    test_desktop_build_shell.py gui/tests/test_desktop_run_shell.py -q`:
+    **3 passed** -- the new modal close prompt does not hang or break
+    any existing shell scenario.
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py gui/tests/
+    test_desktop_undo.py gui/tests/test_desktop_validation.py gui/tests/
+    test_desktop_project.py gui/tests/test_desktop_backend.py gui/tests/
+    test_desktop_build_shell.py gui/tests/test_desktop_shell.py
+    gui/tests/test_desktop_run_shell.py gui/tests/test_desktop_theme.py
+    gui/tests/test_desktop_plot.py -q`: **175 passed** -- unchanged
+    count (Python wraps each C++ binary as one test regardless of its
+    internal case count), no regression.
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **2386 passed, 36 skipped (pre-existing),
+    2 xfailed (pre-existing, M14 G-A)** in 350s -- clean, unchanged count
+    from section 22's own run (expected: this round only added C++
+    QTest cases inside an existing binary, no new Python-level tests).
+  - Clean MSVC `/W4` build, first attempt.
+- **Still not done, disclosed as remaining scope**: the model-catalog
+  toggle list (S6c) and the native template picker (S7's own disclosed
+  gap) -- `BuildPanel` still has no third tab for either, and both need
+  a new backend RPC method the desktop process doesn't have yet.
+  Project recent-files, the cross-open byte-identical matrix, and the
+  full exit ritual remain exactly as disclosed at S9/section 22.
+
+## 24. Model-catalog toggle list, native template picker, and project
+recent-files (2026-09-27, LANDED, verified, real output below)
+
+Closes the two gaps section 23 disclosed as still open (S6c's model
+toggle list, S7's template picker) plus the project recent-files menu
+that had also been carried forward unstarted since S9/section 22. Two
+real, hard-to-diagnose native crashes were found and root-caused while
+landing this, not just symptom-patched -- both are recorded in full in
+`CLAUDE.md`-style detail below since they generalize past this one
+slice.
+
+- **Backend RPC, `backend_service/server.py`**: `templates.build
+  {"id","values"?} -> {"title","structure","mesh"}` reuses
+  `structure_from_domain()`, the SAME adapter every authored-device path
+  already calls, so its `structure`/`mesh` shape matches `project.load`'s
+  own exactly -- no new native-side parsing needed. `catalog.list`,
+  `catalog.describe {"key"}`, `catalog.default_config`,
+  `catalog.validate {"config"}` are thin wrappers over
+  `workbench.core.catalog.ModelCatalog` (already C++-backed). The
+  picker's id/title/description/params list needs nothing new:
+  `study.templates` (pre-existing, P3 S7) already returns it.
+- **`desktop/src/shell/catalog_panel.{hpp,cpp}`** (new): a third
+  `BuildPanel` tab, "Templates & Models" -- a template combo box driving
+  a dynamically rebuilt `QFormLayout` of parameter spin boxes (from
+  `study.templates`' own param list, `lo`/`hi`/`default`/`step`), a Build
+  button emitting `buildTemplateRequested(id, values)`, and a checkable
+  `QListWidget` of catalog models emitting `modelConfigChanged(config)`
+  on toggle, with an equations/references/limitations detail pane on
+  selection.
+- **`BuildPanel::adoptStructureAndMesh()`**: a template build result
+  becomes ONE undoable command, following S8's own snapshot-diff
+  pattern exactly (`StructureDocument::parse`/`MeshDocument::parse` of
+  before/after `dump()`s) -- not a new undo mechanism.
+- **`ProjectController::setModels()`**: the Physics Lab model config
+  (an opaque `nlohmann::json` since S9) is not one of S8's three
+  undo-tracked documents, so it gets its own `models_dirty_` bool,
+  cleared by `newProject()`/`load()`/`save()`; `isDirty()` is
+  `undo_.is_dirty() || models_dirty_`. Deliberately NOT undo-tracked --
+  toggling a model is a project-level dirty flag, not an undoable edit,
+  matching how the Physics Lab worked pre-removal.
+  `AppSettings::recentProjects()`/`addRecentProject()`/
+  `removeRecentProject()`/`clearRecentProjects()`, a second
+  `"recent/projects"` QSettings list parallel to the existing
+  `"recent/files"` one -- `recentFiles`/`recentProjects` now share
+  `recentList`/`setRecentList`/`addToRecentList`/`removeFromRecentList`
+  private helpers instead of each having its own copy of the same logic.
+  `MainWindow::rebuildProjectRecentMenu()` rebuilds the "Open recent
+  project" submenu lazily on `QMenu::aboutToShow`, matching this
+  session's lazy-backend-touch discipline (see below).
+- **Crash 1 -- eager backend call at construction.** The first attempt
+  called `requestTemplateCatalog()` unconditionally inside
+  `buildDeviceBuilder()`, i.e. at `MainWindow` construction. This
+  crashed ("Qt has caught an exception thrown from an event handler")
+  specifically inside `projectSaveLoadRoundTripsThroughTheRealBackend`,
+  a test that constructs a SECOND `MainWindow` while a nested
+  `QEventLoop` from the first is still pumping. Confirmed causative by
+  commenting the call out entirely (13/13 passed, crash gone), then
+  re-added as a LAZY fetch: `BuildPanel` gained a
+  `templateCatalogRequested()` signal fired once, on the first
+  `QTabWidget::currentChanged` to the "Templates & Models" tab index.
+  Every backend-touching feature in this app is triggered by an
+  explicit user/project action, never eagerly at widget/window
+  construction -- this is the first time landing a feature broke that
+  rule, and it cost a real crash to relearn it. Caught before shipping:
+  the first lazy-fetch attempt used a `static bool requested = false;`
+  inside the lambda, which is shared across every `BuildPanel` instance
+  (would have broken the SECOND window's own lazy fetch) -- replaced
+  with a proper per-instance `bool catalog_requested_ = false;` member.
+- **Crash 2 -- `nlohmann::json::value()` on a present-but-null key.**
+  `CatalogPanel::rebuildParamForm()`'s `p.value("lo", -1e30)` threw
+  `type_error` whenever a template parameter's `lo`/`hi` was JSON
+  `null` -- `.value()` only substitutes its default for an ABSENT key,
+  not one present holding `null` (Python's `TemplateParam.lo=None`
+  serializes to `"lo": null`, which is present). Root-caused with
+  temporary `fprintf`+`try/catch` diagnostics around the async
+  `templates.build`/`catalog.list`/`catalog.describe` reply handlers in
+  `main_window.cpp` and QTest's file-based `-o report.txt,txt` logger
+  (flushes per line; stdout/stderr redirection of a crashing process
+  loses buffered output) -- the diagnostics printing NOTHING correctly
+  localized the throw to a DIFFERENT, unguarded, SYNCHRONOUS call site
+  (`rebuildParamForm()`, called from template selection, not from any
+  instrumented async lambda). Fixed with a `numberOr(json, key,
+  fallback)` helper checking `!j.contains(key) || j.at(key).is_null()`
+  before `.get<double>()`. All diagnostic instrumentation removed once
+  the fix landed.
+- **Test design correction.** A planned test,
+  "building from a template with a bad parameter reports the error not
+  a crash", assumed an out-of-range `QDoubleSpinBox` value could reach
+  the backend as an invalid `templates.build` call. It cannot:
+  `setRange()` (set from the template's own `lo`/`hi`) makes
+  `setValue()` silently CLAMP, so the invalid value never leaves the
+  widget and the test hung waiting for an error that could never occur.
+  Replaced with `buildingFromATemplateSendsTheEditedParameterValues()`,
+  which checks something the widget CAN prove (an in-range edited value
+  reaching the backend) -- documented as a discovery, not patched around.
+- Gate, real output, this machine:
+  - `gui/tests/test_backend_service.py`: **55 passed** (10 new cases for
+    `templates.build`/`catalog.*`, conformance-checked against a direct
+    Python call, the same pattern the file already used).
+  - `tcad_desktop_build_shell_tests.exe` grew from 13 to 17 cases (4
+    new: template build as one undoable command, edited parameter
+    values reaching the backend, toggling a model marking the project
+    dirty without touching the undo stack, save/open adding to the
+    recent-projects menu with no duplicate on reopen). Re-run directly
+    2026-09-27 to confirm nothing regressed since landing: **17 passed,
+    0 failed**, clean MSVC build (`ninja tcad_desktop_build_shell_tests`
+    reported no work to do -- binary already current).
+  - **Not re-run this round, disclosed rather than assumed**: the
+    Python-level wrapper for the above (`pytest gui/tests/
+    test_desktop_build_shell.py gui/tests/test_backend_service.py
+    gui/tests/test_desktop_shell.py gui/tests/test_desktop_project.py`)
+    and the full `pytest tests/ gui/tests/ -n 6 -m "not slow and not
+    timing"` battery were both explicitly deferred at the user's
+    request ("dont run full suite" / "stop") -- the former was started,
+    then stopped mid-run before producing output, so it is NOT part of
+    this section's verified record. The direct-binary and
+    `test_backend_service.py` results above stand on their own; the
+    broader wrapper/full-suite confirmation remains outstanding and
+    should be run before this slice is treated as fully closed.
+- **Still not done, disclosed as remaining scope**: the cross-open
+  byte-identical matrix and the full exit ritual, exactly as disclosed
+  at S9/section 22/section 23.
+
+### 24.1 Cross-open byte-identical matrix (2026-09-27, LANDED)
+
+Closes the gap the paragraph above disclosed. New file `gui/tests/
+test_cross_open_matrix.py` drives `project.save`/`project.load` --
+the exact `backend_service/server.py` functions the native app's
+`BackendClient` calls, not a lower-level `project_store.py` shortcut --
+across every shipped structure example: `gui/services/examples.py`'s
+`STRUCTURE_EXAMPLES` (the Structure/Mesh workbench's own "load example"
+list; one entry, `mosfet_2d_structure`) plus all seven
+`workbench.core.templates` entries (`hbt`, `hemt`, `mos_capacitor`,
+`nmos`, `pin_diode`, `pn_diode`, `resistor` -- section 24's own template
+picker's catalog), each converted through `structure_from_domain()`,
+the same adapter `templates.build` already uses. Each of the 8
+structure/mesh pairs is paired with two process flows (empty; a small
+non-trivial substrate/implant/anneal one), for 16 cases, run three ways
+per case:
+  1. save-then-load fidelity: an in-memory model, saved and reloaded,
+     compares equal by dict (`to_dict()` is the wire contract; none of
+     `StructureModel`/`MeshModel`/`ProcessFlow` define `__eq__`).
+  2. load-then-resave stability at schema 6: re-saving exactly what was
+     just loaded reproduces BYTE-IDENTICAL file contents, not just an
+     equal dict -- the literal gate this section names.
+  3. the same load-then-resave byte-identity check again at schema 5
+     (decision 4's downgrade path, section 20.3), since an ordinary
+     project (`spec_version=1`) must downgrade cleanly and stay
+     byte-stable there too.
+- No fix was needed to make this pass -- both `project_store.py`'s
+  `save_project`/`load_project` (deterministic `json.dump(..., indent=2)`
+  of dicts rebuilt by each model's own `from_dict`/`to_dict`) and
+  `structure_from_domain()` were already exercised individually by
+  existing tests; this only newly proves the FULL matrix of shipped
+  examples through the RPC layer at once, rather than one hand-built
+  fixture per persistence-version test file as before.
+- Gate, real output, this machine: `pytest gui/tests/
+  test_cross_open_matrix.py -q`: **16 passed** in 1.6s (no skips --
+  `pytcad._core` was importable in `tcad-dev`, so every template case
+  ran, not just `STRUCTURE_EXAMPLES`'s one entry). Not run through the
+  full suite this round (see 24's own note on the deferred full-suite
+  confirmation, same constraint).
+- **Still not done, disclosed as remaining scope**: the full exit
+  ritual (§10.1 parity checklist, `timing`/`slow` suites, live
+  screenshots of every panel, an adversarial probe pass), exactly as
+  disclosed at S9/section 22/section 23 -- appropriate once the deferred
+  full-suite confirmation above lands, not before.
+
+## 25. Compact Model dock (2026-09-27, LANDED, verified, real output below)
+
+Closes one of section 10.1's parity gaps: the (removed) QML app's
+CompactModelPanel -- diode / n-MOSFET SPICE-parameter extraction (M38
+Phase 4, `workbench.compact`) against a REAL solved device. First
+investigated the other three named gaps (ACPanel, BandDiagramPanel,
+ProbeStationPanel/ProjectTreePanel) and found ACPanel was a false
+lead: `RunController`'s `RunKind::AC` and `RunPanel`'s AC form
+(`AcContact`/`AcFStart`/`AcFStop`/`AcPoints`) already exist end to end,
+through the SAME general run pipeline sweep/transient use (no separate
+RPC method needed -- `ACSpec` is just another field on `DeviceSpec`),
+and the plot side already has `acModel()`. AC was never actually a gap;
+this session's own prior assessment of it as one was wrong, corrected
+before any code was written for it. Band Diagram similarly already has
+a working `bandsModel()`. Compact Model, Probe Station, and Project
+Tree are the three still-missing pieces; Compact Model was picked
+first because `gui/services/compact_runner.py` (M38 Phase 4's Qt-free
+subprocess entry point) already existed, needing only a native shell
+around it -- not a new backend feature.
+
+- **`gui/services/compact_runner.py`** (unchanged): a local subprocess,
+  `python -m gui.services.compact_runner <job.json> <out.json>`, that
+  builds a real `Device1D` diode or `Device2D` n-MOSFET from scalar
+  geometry, sweeps it, and fits `workbench.compact.extract_diode`/
+  `extract_mosfet1`. Same stdout/atomic-write contract as
+  `process_runner.py`/`solver_runner.py` (`RESULT_PATH=`, `.tmp.json` +
+  `os.replace`) -- a JSON manifest, not an npz, since a fitted parameter
+  set is not sweep/mesh data.
+- **`desktop/src/run/compact_model_controller.{hpp,cpp}`** (new): a thin
+  `QObject` wrapping ONE `JobRunner` pointed at that module
+  (`JobRunner::moduleEntry("gui.services.compact_runner")`,
+  `result_suffix = ".json"`) -- `JobRunner`'s own contract (section
+  17.2) already generalizes over the result file's shape (`RESULT_PATH`
+  is only ever recorded, never parsed as an npz there), so no runner
+  changes were needed. Reads the finished JSON file itself and re-emits
+  it as parsed `nlohmann::json` (`finished`) or a named failure
+  (`failed`, from `JobRunner`'s own `PYTCAD_ERROR` parsing) -- the same
+  division of labour `RunController` already has for its own richer
+  npz-backed result.
+- **`desktop/src/shell/compact_model_panel.{hpp,cpp}`** (new): a new
+  "Compact Model" dock, tabbed with Run/Study/Build in the left column
+  (`fields_dock_`'s tab group) -- a Diode/MOSFET(n) kind combo over a
+  `QStackedWidget` of two forms (RunPanel's own text-field-in-C-locale
+  convention: an empty or non-finite value is refused, named, before
+  anything is sent), an Extract/Stop button pair, a `PlotView` for the
+  fitted curve (diode I-V; MOSFET's Id-Vg, since the form's own Id-Vd
+  fit quality is already in the reported params -- a disclosed scope
+  cut, not a silent one), and a read-only netlist text view.
+- **`MainWindow::buildCompactModel()`**: builds the controller/panel/dock
+  with the same `RunnerConfig` pattern `buildRunning()` already uses
+  (backend python + working dir + `runsDir()`), added to `resetLayout()`
+  and the View menu's toggle actions exactly like every prior dock;
+  `AppSettings::kLayoutVersion` bumped 8 -> 9 (a saved pre-25 layout is
+  ignored, not half-applied, the same rule every prior bump followed).
+- **MOSFET default field values are a real, known-good fixture, not
+  arbitrary round numbers**: the first test run failed for real (not a
+  test bug) -- the panel's initial defaults (`Vg` 0..3 V) crossed the
+  device's own threshold voltage, and `extract_mosfet1` REFUSES a
+  window that does (`MOSFET1` returns exactly zero below threshold, so
+  a zero/reversed point cannot be fitted -- `workbench/compact.py`'s
+  own documented invariant). Fixed by copying
+  `tests/test_m38_compact_model.py`'s own G2-TCAD fixture verbatim
+  (`_tcad_mosfet()`'s geometry, and `test_g2_tcad_2d_mosfet_matches_
+  long_channel_theory`'s exact Vg/Vd ranges) into the panel's defaults
+  -- a real device already proven to converge and stay above threshold
+  across that range, not a guess.
+- **New shell-level gate**, following section 20.4/21's own real-window,
+  real-subprocess pattern: `desktop/tests/test_compact_model_shell.cpp`
+  (5 cases) -- the lazy-backend rule (no Python before Extract is
+  clicked), a real diode extraction (checks the netlist contains a
+  `.MODEL ... D (...)` card and the status reports convergence), a real
+  MOSFET extraction (checks the netlist's `.MODEL` card), and an
+  invalid-number input refused before anything starts. Wrapped by
+  `gui/tests/test_desktop_compact_model_shell.py`, the same
+  skip-if-not-built / write-a-report-file pattern every other shell
+  test file uses.
+- Gate, real output, this machine:
+  - `tcad_desktop_compact_model_shell_tests.exe` (direct, `-platform
+    offscreen`): first run, 4 of 5 passed -- the MOSFET case's real
+    failure above, root-caused and fixed (not worked around) as
+    described. Re-run after the fix: **5 passed, 0 failed**.
+  - `pytest gui/tests/test_desktop_compact_model_shell.py -q`:
+    **1 passed** (wraps the same binary).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py gui/tests/
+    test_desktop_undo.py gui/tests/test_desktop_validation.py gui/tests/
+    test_desktop_project.py gui/tests/test_desktop_backend.py gui/tests/
+    test_desktop_build_shell.py gui/tests/test_desktop_shell.py
+    gui/tests/test_desktop_run_shell.py gui/tests/test_desktop_theme.py
+    gui/tests/test_desktop_plot.py gui/tests/
+    test_desktop_compact_model_shell.py gui/tests/
+    test_cross_open_matrix.py -q`: **202 passed** -- no regression from
+    the new dock, the `kLayoutVersion` bump, or `resetLayout()`'s new
+    entry (`test_desktop_shell.py`'s layout-restart gates, which
+    section 23 already made independently aware of every dock in this
+    tab group, cover the new one too).
+  - Clean MSVC build via `desktop/build.ps1`, no warnings, both times.
+- **Not run this round, disclosed rather than assumed**: the full
+  `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing"` battery.
+- **Still not done, disclosed as remaining scope**: Probe Station and
+  Project Tree (section 10.1's two other named panel gaps -- niche/QoL,
+  not blocking on a landed-but-inaccessible physics model the way
+  Compact Model was); the full exit ritual's remaining pieces (the
+  `timing`/`slow` suites, live screenshots, an adversarial probe pass),
+  exactly as disclosed above (the cross-open byte-identical matrix
+  itself already landed at section 24.1).

@@ -38,32 +38,46 @@ bool AppSettings::writable() const {
 
 QString AppSettings::fileName() const { return settings_ ? settings_->fileName() : QString(); }
 
-QStringList AppSettings::recentFiles() const {
-    return settings_ ? settings_->value("recent/files").toStringList() : memory_recent_;
+QStringList AppSettings::recentList(const char* key, const QStringList& memory) const {
+    return settings_ ? settings_->value(key).toStringList() : memory;
 }
 
-void AppSettings::setRecent(const QStringList& list) {
+void AppSettings::setRecentList(const char* key, QStringList* memory, const QStringList& list) {
     if (settings_)
-        settings_->setValue("recent/files", list);
+        settings_->setValue(key, list);
     else
-        memory_recent_ = list;
+        *memory = list;
 }
 
-void AppSettings::addRecent(const QString& path) {
-    QStringList list = recentFiles();
+void AppSettings::addToRecentList(const char* key, QStringList* memory, const QString& path) {
+    QStringList list = recentList(key, *memory);
     list.removeIf([&](const QString& p) { return samePath(p, path); });
     list.prepend(normalized(path));
     while (list.size() > kMaxRecent) list.removeLast();
-    setRecent(list);
+    setRecentList(key, memory, list);
 }
 
-void AppSettings::removeRecent(const QString& path) {
-    QStringList list = recentFiles();
+void AppSettings::removeFromRecentList(const char* key, QStringList* memory, const QString& path) {
+    QStringList list = recentList(key, *memory);
     list.removeIf([&](const QString& p) { return samePath(p, path); });
-    setRecent(list);
+    setRecentList(key, memory, list);
 }
 
-void AppSettings::clearRecent() { setRecent({}); }
+QStringList AppSettings::recentFiles() const { return recentList("recent/files", memory_recent_); }
+void AppSettings::addRecent(const QString& path) { addToRecentList("recent/files", &memory_recent_, path); }
+void AppSettings::removeRecent(const QString& path) { removeFromRecentList("recent/files", &memory_recent_, path); }
+void AppSettings::clearRecent() { setRecentList("recent/files", &memory_recent_, {}); }
+
+QStringList AppSettings::recentProjects() const {
+    return recentList("recent/projects", memory_recent_projects_);
+}
+void AppSettings::addRecentProject(const QString& path) {
+    addToRecentList("recent/projects", &memory_recent_projects_, path);
+}
+void AppSettings::removeRecentProject(const QString& path) {
+    removeFromRecentList("recent/projects", &memory_recent_projects_, path);
+}
+void AppSettings::clearRecentProjects() { setRecentList("recent/projects", &memory_recent_projects_, {}); }
 
 bool AppSettings::loadLayout(Layout* out) const {
     if (!settings_ || settings_->value("layout/version").toInt() != kLayoutVersion) return false;

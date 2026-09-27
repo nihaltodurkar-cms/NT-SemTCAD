@@ -2,11 +2,14 @@
 // and 15.13, S3c) -- the ONE place a UI colour is written. Qt-free, so the
 // drift gate's tool (tcad_theme_dump) needs no window.
 //
-// ONE scheme, black and white (user decision, 2026-09-26: "no modes, just
-// black and white"; data keeps its colours): white surfaces, black text,
-// grey borders, a black accent. The only chromatic tokens are the status
-// colours (warning, error, ok), which carry meaning; every other token is
-// a grey (r == g == b), which gui/tests/test_desktop_theme.py enforces.
+// ONE scheme: a light engineering palette (user decision, 2026-09-27,
+// superseding the 2026-09-26 "no modes, just black and white" decision --
+// see NATIVE-DESKTOP-PLAN.md section 26 for the mockup this was built
+// from). A cool light-grey background and white panels, a blue accent for
+// interactive elements and focus, and muted status colours. Structure/
+// mesh doping and contact/gate colours are DATA, not chrome -- see
+// StructureColour below, the same convention kRegionPalette/kSeriesPalette
+// already use for the 3D exploded view and the plot.
 //
 // Each token names the gui/qml/Theme.qml property it mirrors (`qml`), so
 // the two apps look alike, and must equal it exactly. Overlay and context
@@ -54,22 +57,22 @@ struct Entry {
 };
 
 inline constexpr std::array<Entry, static_cast<std::size_t>(T::Count)> kTable{{
-    {T::Background, "background", "#ffffff", "background", false},
-    {T::Window, "window", "#f2f2f2", "chromeBg", false},
+    {T::Background, "background", "#f0f2f4", "background", false},
+    {T::Window, "window", "#fafbfc", "chromeBg", false},
     {T::Base, "base", "#ffffff", "panel", false},
-    {T::AlternateBase, "alternateBase", "#f5f5f5", "panelAlt", false},
-    {T::Border, "border", "#d4d4d4", "border", false},
-    {T::BorderStrong, "borderStrong", "#9e9e9e", "borderStrong", false},
-    {T::Text, "text", "#000000", "text", false},
-    {T::TextDim, "textDim", "#555555", "textDim", false},
-    {T::TextFaint, "textFaint", "#8c8c8c", "textFaint", false},
-    {T::Focus, "focus", "#000000", "focus", false},
-    {T::Accent, "accent", "#000000", "accent", false},
-    {T::AccentSoft, "accentSoft", "#e8e8e8", "accentSoft", false},
-    {T::Selection, "selection", "#d9d9d9", "selection", false},
-    {T::Warning, "warning", "#b57f14", "warning", true},
+    {T::AlternateBase, "alternateBase", "#f5f6f8", "panelAlt", false},
+    {T::Border, "border", "#d6dbe0", "border", false},
+    {T::BorderStrong, "borderStrong", "#b7bfc7", "borderStrong", false},
+    {T::Text, "text", "#1a2027", "text", false},
+    {T::TextDim, "textDim", "#5b6572", "textDim", false},
+    {T::TextFaint, "textFaint", "#96a0aa", "textFaint", false},
+    {T::Focus, "focus", "#2b6cb0", "focus", false},
+    {T::Accent, "accent", "#2b6cb0", "accent", false},
+    {T::AccentSoft, "accentSoft", "#e5eef8", "accentSoft", false},
+    {T::Selection, "selection", "#dceaf8", "selection", false},
+    {T::Warning, "warning", "#b8802a", "warning", true},
     {T::Error, "error", "#c0392b", "error", true},
-    {T::Ok, "ok", "#2e8b44", "ok", true},
+    {T::Ok, "ok", "#2f7d4f", "ok", true},
     {T::OnAccent, "onAccent", "#ffffff", "textOnAccent", false},
     {T::Overlay, "overlay", "#ffffff", "", false},
     {T::Context, "context", "#c8c8c8", "", false},
@@ -174,5 +177,31 @@ constexpr bool series_palette_well_formed() {
     return true;
 }
 static_assert(series_palette_well_formed(), "every plot data colour must be #rrggbb");
+
+// Structure Editor doping/contact/gate colours (NATIVE-DESKTOP-PLAN.md
+// section 26): data, not chrome, exactly like DataColour above -- a
+// region's fill encodes its doping sign, not the app's colour scheme.
+enum class StructureColour {
+    NType,    // donor / n-type region fill
+    PType,    // acceptor / p-type region fill
+    Gate,     // gate boundary overlay
+    Contact,  // ohmic contact boundary overlay
+};
+constexpr std::string_view structureHex(StructureColour c) {
+    switch (c) {
+        case StructureColour::NType: return "#3d74b0";
+        case StructureColour::PType: return "#b5763f";
+        case StructureColour::Gate: return "#6e5296";
+        case StructureColour::Contact: return "#c0392b";
+    }
+    return "#3d74b0";
+}
+constexpr bool structure_palette_well_formed() {
+    for (auto c : {StructureColour::NType, StructureColour::PType, StructureColour::Gate,
+                   StructureColour::Contact})
+        if (!is_rrggbb(structureHex(c))) return false;
+    return true;
+}
+static_assert(structure_palette_well_formed(), "every structure data colour must be #rrggbb");
 
 }  // namespace tcad::desktop::theme

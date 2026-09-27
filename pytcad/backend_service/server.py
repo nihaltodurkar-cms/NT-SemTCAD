@@ -78,6 +78,19 @@ Methods:
                     saved at target_version=5 fails loudly
                     (IncompatibleDowngradeError, section 20.3 decision 4)
 
+  P4 section 24 -- the native Build dock's template picker and Physics
+  Lab / model catalog (study.templates, P3 S7, already gives the picker
+  its template list + parameter forms; only the "build it" and the
+  catalog itself needed a new method):
+
+    templates.build {"id", "values"?} -> {"title", "structure", "mesh"}
+    catalog.list            -> sorted model keys
+    catalog.describe        {"key"} -> {"key", "title", "equations",
+                             "parameters", "references", "applicability",
+                             "enabled_by_default", "limitations"}
+    catalog.default_config  -> {model_key: bool}
+    catalog.validate        {"config": {model_key: bool}} -> null
+
   Only with TCAD_BACKEND_DEBUG=1 in the environment (the client tests'
   hang/crash probes; "method not found" otherwise):
 
@@ -372,6 +385,65 @@ def _comparison_job(params):
     return {"label": family_jobs.COMPARISON_LABEL, "job_text": buf.getvalue()}
 
 
+def _templates_build(params):
+    """{"id", "values"?} -> {"title", "structure", "mesh"}: the built
+    AUTHORED device, converted through the SAME structure_from_domain()
+    adapter every other authored-device path uses (workbench/adapters/
+    spec.py) -- "structure"/"mesh" are exactly the shape project.load's
+    own keys already are, so the native app adopts a built template
+    into its live documents with no new parsing. `templates.describe`
+    is deliberately not a separate method: study.templates (P3 S7)
+    already returns every template's id/title/description/params in one
+    call, and the Build dock's template picker reuses that."""
+    from workbench.adapters.spec import structure_from_domain
+    from workbench.core.templates import get_template
+    method = "templates.build"
+    tid = _param(params, "id", str, method)
+    values = params.get("values") if isinstance(params, dict) else None
+    if values is not None and not isinstance(values, dict):
+        raise TypeError(f"{method}: 'values' must be an object or null")
+    template = get_template(tid)  # KeyError: unknown template id
+    device = template.build(values)  # ValueError: bad/out-of-range parameter
+    structure, mesh = structure_from_domain(device)
+    return {"title": template.title, "structure": structure.to_dict(), "mesh": mesh.to_dict()}
+
+
+# -- P4 section 24: the native Physics Lab / model catalog ------------------
+
+def _catalog_list(params):
+    from workbench.core.catalog import ModelCatalog
+    return ModelCatalog.list()
+
+
+def _catalog_describe(params):
+    """{"key"} -> {"key", "title", "equations", "parameters", "references",
+    "applicability", "enabled_by_default", "limitations"}."""
+    from workbench.core.catalog import ModelCatalog
+    method = "catalog.describe"
+    key = _param(params, "key", str, method)
+    info = ModelCatalog.describe(key)  # KeyError: unknown model key
+    return {"key": info.key, "title": info.title, "equations": info.equations,
+            "parameters": info.parameters, "references": info.references,
+            "applicability": info.applicability, "enabled_by_default": info.enabled_by_default,
+            "limitations": info.limitations}
+
+
+def _catalog_default_config(params):
+    from workbench.core.catalog import ModelCatalog
+    return ModelCatalog.default_config()
+
+
+def _catalog_validate(params):
+    """{"config": {model_key: bool}} -> null; raises (named) on an
+    unknown key, a non-bool value, or a dependency violation
+    (impact_nonlocal needing impact)."""
+    from workbench.core.catalog import ModelCatalog
+    method = "catalog.validate"
+    config = _param(params, "config", dict, method)
+    ModelCatalog.validate(config)
+    return None
+
+
 def _study_templates(params):
     """-> [{"id", "title", "description", "params": [{"name", "label",
     "unit", "default", "lo", "hi", "integer"}]}], every template the
@@ -439,7 +511,7 @@ def _configure_run(params):
     backend = run.get("backend", "pytcad")
     engine = run.get("engine", "auto")
     from workbench.solvers.base import backend_ids
-    known_backends = sorted({"pytcad", "devsim", *backend_ids()})
+    known_backends = sorted({"pytcad", *backend_ids()})
     if backend not in known_backends:
         raise ValueError(f"{method}: unknown backend {backend!r} "
                          f"(known: {', '.join(known_backends)})")
@@ -600,6 +672,11 @@ METHODS = {
     "project.spec": _project_spec,
     "project.load": _project_load,
     "project.save": _project_save,
+    "templates.build": _templates_build,
+    "catalog.list": _catalog_list,
+    "catalog.describe": _catalog_describe,
+    "catalog.default_config": _catalog_default_config,
+    "catalog.validate": _catalog_validate,
     "run.options": _run_options,
     "spec.configure_run": _configure_run,
     "spec.job_text": _job_text,

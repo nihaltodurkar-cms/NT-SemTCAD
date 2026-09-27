@@ -40,9 +40,6 @@ from gui.services.run_config import RunConfigError  # noqa: E402
 from gui.services.structure_model import (  # noqa: E402
     BoundarySpec, ContactModel, MeshModel, RegionSpec, StructureModel)
 from workbench.core.catalog import ModelCatalog  # noqa: E402
-from workbench.solvers.base import backend_ids  # noqa: E402
-
-HAVE_DEVSIM = "devsim" in backend_ids()
 
 
 def _call(method, params=None):
@@ -86,7 +83,6 @@ REFUSALS = {
     "equilibrium_only_with_sweep": (lambda: examples.EXAMPLES["diode_1d"](),
                                     dict(sweep=SweepSpec(contact="anode", start=0.0, stop=0.5, step=0.1),
                                          equilibrium_only=True)),
-    "devsim_on_2d": (lambda: examples.EXAMPLES["mosfet_2d"](), dict(backend="devsim")),
 }
 
 
@@ -118,7 +114,7 @@ def test_the_refusals_cover_every_title_run_config_raises():
         with pytest.raises(RunConfigError) as exc:
             run_config.configure_run(make_spec(), **kwargs)
         seen.add(exc.value.title)
-    assert {t.replace("{backend}", "devsim") for t in raised} == seen
+    assert raised == seen
 
 
 # -- accepted runs --------------------------------------------------------------
@@ -144,7 +140,6 @@ ACCEPTED = {
     "engine_direct": (lambda: examples.EXAMPLES["resistor_3d"](), dict(engine="direct")),
     "models_toggled": (lambda: examples.EXAMPLES["diode_1d"](),
                        dict(models=_models_without("auger"))),
-    "devsim_1d": (lambda: examples.EXAMPLES["diode_1d"](), dict(backend="devsim", engine="direct")),
 }
 
 
@@ -155,8 +150,6 @@ def _rpc_kwargs(kwargs):
 @pytest.mark.parametrize("case", sorted(ACCEPTED))
 def test_an_accepted_run_matches_a_direct_call(case):
     make_spec, kwargs = ACCEPTED[case]
-    if case == "devsim_1d" and not HAVE_DEVSIM:
-        pytest.skip("devsim not installed")
     spec = make_spec()
     started = run_config.configure_run(spec, **kwargs)
     resp = _run_via_rpc(spec, **_rpc_kwargs(kwargs))
@@ -170,8 +163,6 @@ def test_the_native_job_file_matches_the_direct_specs_json(case):
     string verbatim (UTF-8), byte-identical to DeviceSpec.to_json() of the
     same configured spec."""
     make_spec, kwargs = ACCEPTED[case]
-    if case == "devsim_1d" and not HAVE_DEVSIM:
-        pytest.skip("devsim not installed")
     spec = make_spec()
     started = run_config.configure_run(spec, **kwargs)
     configured = _run_via_rpc(spec, **_rpc_kwargs(kwargs))["result"]
@@ -221,15 +212,6 @@ def test_the_armed_run_is_actually_applied():
     assert out["models"]["auger"] is False and out["engine"] == "direct"
     eq = _call("spec.configure_run", {"spec": base, "run": {"equilibrium_only": True}})["result"]
     assert base["bias"] is not None and eq["bias"] is None
-
-
-def test_devsim_resets_the_engine_as_qml_does():
-    if not HAVE_DEVSIM:
-        pytest.skip("devsim not installed")
-    base = examples.EXAMPLES["diode_1d"]().to_dict()
-    out = _call("spec.configure_run", {"spec": base,
-                                       "run": {"backend": "devsim", "engine": "direct"}})
-    assert out["result"]["backend"] == "devsim" and out["result"]["engine"] == "auto"
 
 
 def test_models_null_keeps_the_specs_own():

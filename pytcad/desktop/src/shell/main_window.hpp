@@ -63,6 +63,8 @@ class StudyController;
 class StudyPanel;
 class ProjectController;
 class BuildPanel;
+class CompactModelController;
+class CompactModelPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -150,6 +152,10 @@ public:
     ads::CDockWidget* buildDock() const { return build_dock_; }
     QAction* undoAction() const { return undo_act_; }
     QAction* redoAction() const { return redo_act_; }
+    // -- Compact Model extraction (section 25) ----------------------------------------
+    CompactModelController* compactModelController() const { return compact_ctl_; }
+    CompactModelPanel* compactModelPanel() const { return compact_panel_; }
+    ads::CDockWidget* compactModelDock() const { return compact_dock_; }
     // File > New/Open/Save/Save As project, exposed for tests (no dialog):
     // newBuildProject() always succeeds; the others report through the
     // same error path save/open results already use.
@@ -210,10 +216,15 @@ private:
 
     void buildRunning();   // the Run and Console docks, their actions and wiring
     void buildDeviceBuilder();  // the Build dock, ProjectController, and its menu/actions
+    void buildCompactModel();   // the Compact Model dock (section 25)
     void chooseOpenProject();
     void chooseSaveProjectAs();
+    void rebuildProjectRecentMenu();
     void requestStructureValidation();
     void requestProcessValidation();
+    void requestTemplateCatalog();  // study.templates + catalog.* -- once, at startup
+    void requestBuildTemplate(const QString& id, const nlohmann::json& values);
+    void refreshUndoActions();  // undo_act_/redo_act_'s enabled state follows the UndoStack
     void onRunFinished(const QString& path);
     void updateRunStatus();
     void beginTelemetry();
@@ -243,11 +254,16 @@ private:
     ads::CDockWidget* build_dock_ = nullptr;
     QAction* undo_act_ = nullptr;
     QAction* redo_act_ = nullptr;
+    CompactModelController* compact_ctl_ = nullptr;
+    CompactModelPanel* compact_panel_ = nullptr;
+    ads::CDockWidget* compact_dock_ = nullptr;
     QAction* new_project_act_ = nullptr;
     QAction* open_project_act_ = nullptr;
     QAction* save_project_act_ = nullptr;
     QAction* save_project_as_act_ = nullptr;
+    QMenu* project_recent_ = nullptr;
     QString project_path_;
+    nlohmann::json default_model_config_;  // catalog.default_config(), fetched once
     QAction* save_as_ = nullptr;
     QTimer* run_tick_ = nullptr;   // the status bar's elapsed time, once a second
     qint64 run_started_ms_ = 0;

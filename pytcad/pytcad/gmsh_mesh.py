@@ -1,8 +1,7 @@
 """M21 phase 3a -- unstructured 2D mesh geometry foundation.
 
-gmsh is an OPTIONAL dependency (same "soft import, friendly error at
-call time" pattern workbench/solvers/devsim_backend.py already uses for
-devsim): nothing in this module is imported at pytcad's top level, and
+gmsh is an OPTIONAL dependency ("soft import, friendly error at call
+time"): nothing in this module is imported at pytcad's top level, and
 importing THIS module never fails just because gmsh is absent -- only
 actually calling one of its functions does, with an actionable message.
 

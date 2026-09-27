@@ -462,3 +462,86 @@ def test_project_save_downgrade_refusal_is_a_named_error(rpc, tmp_path):
                                 "spec_version": 2, "target_version": 5})
     assert got["error"]["data"]["type"] == "IncompatibleDowngradeError"
     assert not os.path.exists(path)
+
+
+# -- P4 section 24: templates.build / catalog.* --------------------------------
+
+def test_templates_build_matches_a_direct_call(rpc):
+    from workbench.adapters.spec import structure_from_domain
+    from workbench.core.templates import get_template
+    call, _ = rpc
+    got = call("templates.build", {"id": "pn_diode", "values": {"na_cm3": -2e18}})
+    assert "error" not in got, got
+    device = get_template("pn_diode").build({"na_cm3": -2e18})
+    structure, mesh = structure_from_domain(device)
+    assert got["result"] == _json_roundtrip(
+        {"title": "P-N diode", "structure": structure.to_dict(), "mesh": mesh.to_dict()})
+
+
+def test_templates_build_with_no_values_uses_defaults(rpc):
+    call, _ = rpc
+    got = call("templates.build", {"id": "resistor"})
+    assert "error" not in got, got
+    assert got["result"]["structure"]["regions"][0]["net_doping_cm3"] == 1e17  # documented default
+
+
+def test_templates_build_unknown_id_is_a_named_error(rpc):
+    call, _ = rpc
+    got = call("templates.build", {"id": "not_a_template"})
+    assert got["error"]["data"]["type"] == "KeyError"
+
+
+def test_templates_build_bad_parameter_is_a_named_error(rpc):
+    call, _ = rpc
+    got = call("templates.build", {"id": "pn_diode", "values": {"length_cm": -1.0}})
+    assert got["error"]["data"]["type"] == "ValueError"
+
+
+def test_catalog_list_matches_a_direct_call(rpc):
+    from workbench.core.catalog import ModelCatalog
+    call, _ = rpc
+    got = call("catalog.list", {})
+    assert "error" not in got, got
+    assert got["result"] == ModelCatalog.list()
+
+
+def test_catalog_describe_matches_a_direct_call(rpc):
+    from workbench.core.catalog import ModelCatalog
+    call, _ = rpc
+    got = call("catalog.describe", {"key": "srh"})
+    assert "error" not in got, got
+    info = ModelCatalog.describe("srh")
+    assert got["result"] == {"key": info.key, "title": info.title, "equations": info.equations,
+                             "parameters": info.parameters, "references": info.references,
+                             "applicability": info.applicability,
+                             "enabled_by_default": info.enabled_by_default,
+                             "limitations": info.limitations}
+
+
+def test_catalog_describe_unknown_key_is_a_named_error(rpc):
+    call, _ = rpc
+    got = call("catalog.describe", {"key": "not_a_model"})
+    assert got["error"]["data"]["type"] == "KeyError"
+
+
+def test_catalog_default_config_matches_a_direct_call(rpc):
+    from workbench.core.catalog import ModelCatalog
+    call, _ = rpc
+    got = call("catalog.default_config", {})
+    assert "error" not in got, got
+    assert got["result"] == ModelCatalog.default_config()
+
+
+def test_catalog_validate_accepts_a_good_config(rpc):
+    from workbench.core.catalog import ModelCatalog
+    call, _ = rpc
+    config = ModelCatalog.default_config()
+    got = call("catalog.validate", {"config": config})
+    assert "error" not in got, got
+    assert got["result"] is None
+
+
+def test_catalog_validate_rejects_a_bad_config_named(rpc):
+    call, _ = rpc
+    got = call("catalog.validate", {"config": {"impact_nonlocal": True}})
+    assert got["error"]["data"]["type"] == "ValueError"

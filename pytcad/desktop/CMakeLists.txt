@@ -96,7 +96,8 @@ add_library(tcad_desktop_run STATIC src/run/runner_base.hpp
   src/run/study_controller.cpp src/run/study_controller.hpp
   src/run/remote_host.cpp src/run/remote_host.hpp
   src/run/remote_job_runner.cpp src/run/remote_job_runner.hpp
-  src/run/project_controller.cpp src/run/project_controller.hpp)
+  src/run/project_controller.cpp src/run/project_controller.hpp
+  src/run/compact_model_controller.cpp src/run/compact_model_controller.hpp)
 target_include_directories(tcad_desktop_run PUBLIC src)
 target_link_libraries(tcad_desktop_run PUBLIC tcad_desktop_backend tcad_desktop_data Qt6::Core nlohmann_json::nlohmann_json)
 
@@ -129,6 +130,8 @@ add_library(tcad_desktop_ui STATIC
   src/editors/oxidize_step_editor.cpp src/editors/oxidize_step_editor.hpp
   src/shell/validation_panel.cpp src/shell/validation_panel.hpp
   src/shell/build_panel.cpp src/shell/build_panel.hpp
+  src/shell/catalog_panel.cpp src/shell/catalog_panel.hpp
+  src/shell/compact_model_panel.cpp src/shell/compact_model_panel.hpp
   src/views/field/field_view.cpp src/views/field/field_view.hpp
   src/views/field/field_view_3d.cpp
   src/views/colormaps.cpp src/views/colormaps.hpp
@@ -201,6 +204,13 @@ vtk_module_autoinit(TARGETS tcad_desktop_shell_tests MODULES ${VTK_LIBRARIES})
 add_executable(tcad_desktop_build_shell_tests tests/test_build_shell.cpp)
 target_link_libraries(tcad_desktop_build_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
 vtk_module_autoinit(TARGETS tcad_desktop_build_shell_tests MODULES ${VTK_LIBRARIES})
+
+# Compact Model dock gates (section 25): the real window's Compact Model
+# dock against a real `gui.services.compact_runner` subprocess; run by
+# gui/tests/test_desktop_compact_model_shell.py.
+add_executable(tcad_desktop_compact_model_shell_tests tests/test_compact_model_shell.cpp)
+target_link_libraries(tcad_desktop_compact_model_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
+vtk_module_autoinit(TARGETS tcad_desktop_compact_model_shell_tests MODULES ${VTK_LIBRARIES})
 
 # MeshEditor / StructureEditorView gates (P4 S2, plan section 20.4): the
 # real widgets, driven through their testable methods; run by

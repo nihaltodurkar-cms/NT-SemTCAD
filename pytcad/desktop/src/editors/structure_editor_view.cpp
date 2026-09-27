@@ -208,20 +208,42 @@ void StructureEditorView::paintEvent(QPaintEvent*) {
 
     // Regions: fill by net doping sign (donor/n-type vs acceptor/p-type),
     // a data colour, not a theme token (tokens.hpp's own convention for
-    // data that "keeps its colours").
-    static const QColor kDonorFill(0x4a, 0x90, 0xd9, 110);     // n-type: blue-ish
-    static const QColor kAcceptorFill(0xd9, 0x6a, 0x4a, 110);  // p-type: warm/red-ish
+    // data that "keeps its colours" -- theme::StructureColour here).
+    QColor donorFill = theme::structureColour(theme::StructureColour::NType);
+    donorFill.setAlpha(70);
+    QColor acceptorFill = theme::structureColour(theme::StructureColour::PType);
+    acceptorFill.setAlpha(70);
     for (std::size_t i = 0; i < structure_->region_count(); ++i) {
         const RegionData r = structure_->region(i);
         const QRectF pr = QRectF(toPixel(r.x_min, r.y_min), toPixel(r.x_max, r.y_max)).normalized();
         const double sign_value = (r.doping_profile == "uniform") ? r.net_doping_cm3
                                                                    : r.profile_peak_cm3.value_or(0.0);
-        p.fillRect(pr, sign_value >= 0.0 ? kDonorFill : kAcceptorFill);
+        const bool donor = sign_value >= 0.0;
+        p.fillRect(pr, donor ? donorFill : acceptorFill);
         const bool is_selected = (QString::fromStdString(r.id) == selected_);
-        QPen pen(theme::qcolor(is_selected ? theme::T::Selection : theme::T::BorderStrong));
-        pen.setWidth(is_selected ? 2 : 1);
+        QPen pen(theme::qcolor(theme::T::Accent));
+        if (!is_selected)
+            pen = QPen(theme::structureColour(donor ? theme::StructureColour::NType
+                                                     : theme::StructureColour::PType));
+        pen.setWidthF(is_selected ? 2.0 : 1.5);
         p.setPen(pen);
         p.drawRect(pr);
+
+        // Resize handles (section 26): a visible affordance for the drag-
+        // resize this view already supports, at the 4 corners and the top/
+        // bottom mid-edges (this view's own DragMode::ResizeRight/
+        // ResizeBottom) -- drawn only for the selected region, matching
+        // the mockup's white-fill/accent-border squares.
+        if (is_selected) {
+            constexpr double kHalf = 3.5;
+            const QPointF pts[] = {pr.topLeft(), pr.topRight(), pr.bottomLeft(), pr.bottomRight(),
+                                   {pr.center().x(), pr.top()}, {pr.center().x(), pr.bottom()}};
+            p.setPen(QPen(theme::qcolor(theme::T::Accent), 1.5));
+            p.setBrush(theme::qcolor(theme::T::Base));
+            for (const QPointF& pt : pts)
+                p.drawRect(QRectF(pt.x() - kHalf, pt.y() - kHalf, 2 * kHalf, 2 * kHalf));
+            p.setBrush(Qt::NoBrush);
+        }
     }
 
     // Contacts and gates: read-only overlay along their boundary edge
@@ -237,12 +259,12 @@ void StructureEditorView::paintEvent(QPaintEvent*) {
         const double lo = b.range_lo.value_or(0.0), hi = b.range_hi.value_or(w);
         return QLineF(toPixel(lo, y), toPixel(hi, y));
     };
-    QPen contactPen(theme::qcolor(theme::T::Accent));
+    QPen contactPen(theme::structureColour(theme::StructureColour::Contact));
     contactPen.setWidth(4);
     p.setPen(contactPen);
     for (std::size_t i = 0; i < structure_->contact_count(); ++i)
         p.drawLine(edge_segment(structure_->contact(i).boundary));
-    QPen gatePen(theme::qcolor(theme::T::Warning));
+    QPen gatePen(theme::structureColour(theme::StructureColour::Gate));
     gatePen.setWidth(4);
     p.setPen(gatePen);
     for (std::size_t i = 0; i < structure_->gate_count(); ++i)

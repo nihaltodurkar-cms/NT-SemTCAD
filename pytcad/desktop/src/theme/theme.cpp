@@ -24,6 +24,11 @@ QColor dataColour(DataColour c) {
     return QColor(QString::fromLatin1(h.data(), static_cast<qsizetype>(h.size())));
 }
 
+QColor structureColour(StructureColour c) {
+    const std::string_view h = structureHex(c);
+    return QColor(QString::fromLatin1(h.data(), static_cast<qsizetype>(h.size())));
+}
+
 QPalette palette() {
     QPalette p;
     auto set = [&](QPalette::ColorRole role, T t) { p.setColor(role, qcolor(t)); };

@@ -3,6 +3,9 @@
 #include "console_panel.hpp"
 #include "display_panel.hpp"
 #include "document/validation.hpp"
+#include "shell/catalog_panel.hpp"
+#include "shell/compact_model_panel.hpp"
+#include "run/compact_model_controller.hpp"
 #include "run/batch_controller.hpp"
 #include "run/project_controller.hpp"
 #include "run/study_controller.hpp"
@@ -237,6 +240,7 @@ MainWindow::MainWindow(std::unique_ptr<AppSettings> settings, QWidget* parent)
     });
     buildRunning();  // P3-S4: the Run and Console docks
     buildDeviceBuilder();  // P4 shell assembly (section 21): the Build dock
+    buildCompactModel();  // section 25: the Compact Model dock
     file->insertAction(recent_->menuAction(), save_as_);
     tools->addSeparator();
     tools->addAction(run_act_);
@@ -244,6 +248,7 @@ MainWindow::MainWindow(std::unique_ptr<AppSettings> settings, QWidget* parent)
     view->insertAction(reset, run_dock_->toggleViewAction());
     view->insertAction(reset, console_dock_->toggleViewAction());
     view->insertAction(reset, telemetry_dock_->toggleViewAction());
+    view->insertAction(reset, compact_dock_->toggleViewAction());
     // ADS paints from its own stylesheet's palette(...) references, which
     // it fixes when its widgets are polished -- that left dock panels a
     // stock grey once. Instead, its default stylesheet is rewritten with
@@ -315,6 +320,8 @@ void MainWindow::resetLayout() {
     docks_->addDockWidget(ads::CenterDockWidgetArea, study_dock_, fields_dock_->dockAreaWidget());
     build_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, build_dock_, fields_dock_->dockAreaWidget());
+    compact_dock_->toggleView(true);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, compact_dock_, fields_dock_->dockAreaWidget());
     fields_dock_->setAsCurrentTab();
     console_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, console_dock_, info_dock_->dockAreaWidget());
@@ -515,6 +522,10 @@ void MainWindow::buildDeviceBuilder() {
 
     connect(build_panel_, &BuildPanel::validateStructureRequested, this, &MainWindow::requestStructureValidation);
     connect(build_panel_, &BuildPanel::validateProcessRequested, this, &MainWindow::requestProcessValidation);
+    connect(build_panel_, &BuildPanel::buildTemplateRequested, this, &MainWindow::requestBuildTemplate);
+    connect(build_panel_, &BuildPanel::modelConfigChanged, this,
+            [this](const nlohmann::json& config) { project_ctl_->setModels(config); });
+    connect(build_panel_, &BuildPanel::templateCatalogRequested, this, &MainWindow::requestTemplateCatalog);
 
     new_project_act_ = new QAction(tr("&New project"), this);
     new_project_act_->setObjectName("NewProjectAction");
@@ -555,26 +566,27 @@ void MainWindow::buildDeviceBuilder() {
     // never these two actions' own enabled state, so redo stayed disabled
     // forever after one undo -- caught by editingTheMeshPushesAnUndoable
     // Command(), not assumed fixed just because the wiring existed.
-    auto refreshUndoActions = [this] {
-        undo_act_->setEnabled(project_ctl_->undoStack().can_undo());
-        redo_act_->setEnabled(project_ctl_->undoStack().can_redo());
-    };
-    connect(undo_act_, &QAction::triggered, this, [this, refreshUndoActions] {
+    connect(undo_act_, &QAction::triggered, this, [this] {
         project_ctl_->undoStack().undo();
         build_panel_->refreshAll();
         refreshUndoActions();
     });
-    connect(redo_act_, &QAction::triggered, this, [this, refreshUndoActions] {
+    connect(redo_act_, &QAction::triggered, this, [this] {
         project_ctl_->undoStack().redo();
         build_panel_->refreshAll();
         refreshUndoActions();
     });
-    connect(build_panel_, &BuildPanel::validateStructureRequested, this, refreshUndoActions);
-    connect(build_panel_, &BuildPanel::validateProcessRequested, this, refreshUndoActions);
+    connect(build_panel_, &BuildPanel::validateStructureRequested, this, &MainWindow::refreshUndoActions);
+    connect(build_panel_, &BuildPanel::validateProcessRequested, this, &MainWindow::refreshUndoActions);
 
     auto* project_menu = menuBar()->addMenu(tr("&Project"));
+    project_recent_ = new QMenu(tr("Open recent &project"), this);
+    project_recent_->setObjectName("ProjectRecentMenu");
+    connect(project_recent_, &QMenu::aboutToShow, this, &MainWindow::rebuildProjectRecentMenu);
+
     project_menu->addAction(new_project_act_);
     project_menu->addAction(open_project_act_);
+    project_menu->addMenu(project_recent_);
     project_menu->addAction(save_project_act_);
     project_menu->addAction(save_project_as_act_);
     project_menu->addSeparator();
@@ -598,6 +610,7 @@ void MainWindow::newBuildProject() {
     redo_act_->setEnabled(false);
     build_panel_->setStructureErrors({});
     build_panel_->setProcessErrors({});
+    if (!default_model_config_.is_null()) build_panel_->catalogPanel()->setModelConfig(default_model_config_);
 }
 
 bool MainWindow::openBuildProject(const QString& path) {
@@ -624,11 +637,14 @@ bool MainWindow::openBuildProject(const QString& path) {
         return false;
     }
     project_path_ = path;
+    settings_->addRecentProject(path);
     build_panel_->refreshAll();
     undo_act_->setEnabled(false);
     redo_act_->setEnabled(false);
     build_panel_->setStructureErrors({});
     build_panel_->setProcessErrors({});
+    build_panel_->catalogPanel()->setModelConfig(
+        project_ctl_->models().is_null() ? default_model_config_ : project_ctl_->models());
     requestStructureValidation();
     requestProcessValidation();
     return true;
@@ -658,6 +674,7 @@ bool MainWindow::saveBuildProject(const QString& path, int target_version) {
         return false;
     }
     project_path_ = path;
+    settings_->addRecentProject(path);
     return true;
 }
 
@@ -668,11 +685,127 @@ void MainWindow::chooseOpenProject() {
     openBuildProject(path);
 }
 
+void MainWindow::rebuildProjectRecentMenu() {
+    // Mirrors rebuildRecentMenu()'s own shape exactly (the result recent-
+    // files menu) -- a separate list, a separate menu, same "(none)"/
+    // "Clear recent" convention.
+    project_recent_->clear();
+    const QStringList files = settings_->recentProjects();
+    for (int i = 0; i < files.size(); ++i) {
+        const QString& path = files[i];
+        auto* act = project_recent_->addAction(QString("&%1  %2").arg(i + 1).arg(QFileInfo(path).fileName()));
+        act->setToolTip(path);
+        act->setStatusTip(path);
+        connect(act, &QAction::triggered, this, [this, path] { openBuildProject(path); });
+    }
+    if (files.isEmpty()) project_recent_->addAction(tr("(none)"))->setEnabled(false);
+    project_recent_->addSeparator();
+    auto* clear = project_recent_->addAction(tr("Clear recent"));
+    clear->setEnabled(!files.isEmpty());
+    connect(clear, &QAction::triggered, this, [this] { settings_->clearRecentProjects(); });
+}
+
 void MainWindow::chooseSaveProjectAs() {
     const QString path = QFileDialog::getSaveFileName(this, tr("Save project as"), project_path_,
                                                        tr("PyTCAD projects (*.json)"));
     if (path.isEmpty()) return;
     saveBuildProject(path);
+}
+
+void MainWindow::requestTemplateCatalog() {
+    // Static data (the template registry, the model registry) -- fetched
+    // once, on first need (BuildPanel::templateCatalogRequested, the
+    // first time its "Templates & Models" tab is shown), NOT at window
+    // construction. A real bug found here: an earlier version called
+    // this eagerly from buildDeviceBuilder(), which raced the window's
+    // very first backend handshake against whatever ran immediately
+    // after construction (openBuildProject's own nested QEventLoop, in
+    // a real shell test creating a second window) -- Qt caught an
+    // exception thrown from an event handler and the test crashed.
+    // Every other backend touch in this app follows a user/project
+    // action for exactly this reason; this one now does too.
+    ensureBackend();
+    BackendReply* templates_reply = backend_->call("study.templates", nullptr, 30000);
+    connect(templates_reply, &BackendReply::finished, this, [this, templates_reply] {
+        templates_reply->deleteLater();
+        if (!templates_reply->ok()) return;
+        build_panel_->catalogPanel()->setTemplates(templates_reply->result());
+    });
+
+    BackendReply* list_reply = backend_->call("catalog.list", nullptr, 30000);
+    connect(list_reply, &BackendReply::finished, this, [this, list_reply] {
+        list_reply->deleteLater();
+        if (!list_reply->ok()) return;
+        // Each model's full description is fetched right after its key
+        // is known -- one small call per model (the catalog registry is
+        // small, ~15 entries) rather than inventing a new "describe all"
+        // RPC method just for this panel.
+        auto infos = std::make_shared<nlohmann::json>(nlohmann::json::array());
+        auto remaining = std::make_shared<int>(static_cast<int>(list_reply->result().size()));
+        if (*remaining == 0) {
+            build_panel_->catalogPanel()->setModelInfos(*infos);
+            return;
+        }
+        for (const auto& key : list_reply->result()) {
+            nlohmann::json params;
+            params["key"] = key;
+            BackendReply* describe_reply = backend_->call("catalog.describe", params, 30000);
+            connect(describe_reply, &BackendReply::finished, this,
+                    [this, describe_reply, infos, remaining] {
+                        describe_reply->deleteLater();
+                        if (describe_reply->ok()) infos->push_back(describe_reply->result());
+                        if (--*remaining == 0) build_panel_->catalogPanel()->setModelInfos(*infos);
+                    });
+        }
+    });
+
+    BackendReply* defaults_reply = backend_->call("catalog.default_config", nullptr, 30000);
+    connect(defaults_reply, &BackendReply::finished, this, [this, defaults_reply] {
+        defaults_reply->deleteLater();
+        if (!defaults_reply->ok()) return;
+        default_model_config_ = defaults_reply->result();
+        if (project_ctl_->models().is_null()) build_panel_->catalogPanel()->setModelConfig(default_model_config_);
+    });
+}
+
+void MainWindow::requestBuildTemplate(const QString& id, const nlohmann::json& values) {
+    ensureBackend();
+    nlohmann::json params;
+    params["id"] = id.toStdString();
+    params["values"] = values;
+    BackendReply* reply = backend_->call("templates.build", params, 30000);
+    connect(reply, &BackendReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (!reply->ok()) {
+            build_panel_->catalogPanel()->setBuildError(reply->errorMessage());
+            return;
+        }
+        build_panel_->catalogPanel()->setBuildError(QString());
+        const auto& r = reply->result();
+        build_panel_->adoptStructureAndMesh(r.at("structure"), r.at("mesh"));
+        refreshUndoActions();
+    });
+}
+
+void MainWindow::refreshUndoActions() {
+    undo_act_->setEnabled(project_ctl_->undoStack().can_undo());
+    redo_act_->setEnabled(project_ctl_->undoStack().can_redo());
+}
+
+void MainWindow::buildCompactModel() {
+    const BackendConfig backend = resolveBackendConfig(settings_->value("backend/python"));
+    RunnerConfig rc;
+    rc.python = backend.python;
+    rc.working_dir = backend.working_dir;
+    rc.strip_from_path = backend.strip_from_path;
+    rc.work_dir = runsDir();
+    compact_ctl_ = new CompactModelController(rc, this);
+    compact_panel_ = new CompactModelPanel(compact_ctl_, this);
+    compact_dock_ = new ads::CDockWidget(docks_, tr("Compact Model"));
+    compact_dock_->setObjectName("CompactModelDock");
+    compact_dock_->setWidget(compact_panel_);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, compact_dock_, fields_dock_->dockAreaWidget());
+    fields_dock_->setAsCurrentTab();
 }
 
 void MainWindow::requestStructureValidation() {
@@ -806,6 +939,34 @@ bool MainWindow::saveResultAs(const QString& target, QString* error) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* event) {
+    // S8's own disclosed gap (section 22): a dirty project must not be
+    // silently discarded on quit. Modal (unlike reportError's non-modal
+    // boxes) because the close decision itself must block until answered
+    // -- existing shell tests call close() freely, but none of them touch
+    // the Build panel first, so none of them are ever dirty here (checked
+    // by running the whole shell suite after adding this, not assumed).
+    if (project_ctl_ && project_ctl_->isDirty()) {
+        QMessageBox box(QMessageBox::Question, tr("Unsaved changes"),
+                       tr("The project has unsaved changes. Save before closing?"),
+                       QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+        box.setObjectName("CloseConfirmBox");
+        box.setDefaultButton(QMessageBox::Save);
+        const int ret = box.exec();
+        if (ret == QMessageBox::Cancel) {
+            event->ignore();
+            return;
+        }
+        if (ret == QMessageBox::Save) {
+            QString path = project_path_;
+            if (path.isEmpty())
+                path = QFileDialog::getSaveFileName(this, tr("Save project as"), QString(),
+                                                    tr("PyTCAD projects (*.json)"));
+            if (path.isEmpty() || !saveBuildProject(path)) {
+                event->ignore();
+                return;
+            }
+        }
+    }
     settings_->saveLayout({saveGeometry(), docks_->saveState()});
     settings_->sync();  // a read-only file was already reported at startup
     QMainWindow::closeEvent(event);

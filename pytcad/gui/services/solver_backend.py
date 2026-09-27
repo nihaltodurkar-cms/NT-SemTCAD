@@ -1,8 +1,8 @@
 """The solver-backend boundary, formalized (v0.5.0 task 1).
 
-Every solver backend -- today gui.services.solver_runner (the homegrown
-FD/Newton core), tomorrow potentially a DEVSIM adapter -- must honor the
-same contract:
+Every solver backend -- currently only gui.services.solver_runner (the
+homegrown FD/Newton core); a devsim adapter once lived alongside it but
+was removed (2026-09-27) -- must honor the same contract:
 
     INPUT   a DeviceSpec JSON file (gui/services/device_spec.py; pure
             data, no Qt, no pytcad imports)
