@@ -153,6 +153,10 @@ public:
     // ResultSchemaError when present but not JSON (the store raises too).
     std::optional<nlohmann::ordered_json> region_materials() const;
     std::optional<nlohmann::ordered_json> structure_regions() const;
+    // continuation__records (P4 S6b): per-stage continuation-ladder
+    // history, a separate npz key from record__meta -- same
+    // present-or-absent contract as region_materials()/structure_regions().
+    std::optional<nlohmann::ordered_json> continuation_records() const;
 
     // Curve blocks (P2-S1). Opening validated their structure; like the
     // store, the accessors read the values and fail (ResultSchemaError)

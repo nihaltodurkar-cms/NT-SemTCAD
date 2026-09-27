@@ -4,16 +4,20 @@
 Contract under test:
   - The ResultStore ABC itself carries the sweep protocol
     (has_sweep()/sweep_result()) and a solved-result marker, with honest
-    defaults -- so the CONTROLLER can ask the store instead of
-    type-checking it against NpzResultStore.
+    defaults -- so a CALLER can ask the store instead of type-checking
+    it against NpzResultStore.
   - A third-party/future-backend store that satisfies the protocol works
     everywhere NpzResultStore did, WITHOUT importing it.
   - ProcessResultStore exposes its selected step through a public
     accessor (no more _selected reach-ins from the visualization layer).
-  - The controller no longer imports pytcad directly: derived-quantity
-    math lives in the service layer.
+
+PySide6/QML removed from this repo: the "controller accepts a foreign
+store"/"no core imports in controller/visualization" tests (which
+exercised AppController and gui.visualization.mpl_canvas_item, both
+gone) were removed with it -- the ResultStore ABC protocol itself is
+unaffected and gated directly below.
 """
-import inspect, json, os, sys
+import json, os, sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -21,7 +25,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import numpy as np
 import pytest
 
-from gui.controllers.app_controller import AppController
 from gui.services.process_result_store import ProcessResultStore
 from gui.services.result_store import ResultStore
 
@@ -43,60 +46,6 @@ def test_abc_defaults_are_honest():
     assert bare.is_solved_result() is False
     with pytest.raises(KeyError):
         bare.sweep_result()
-
-
-# ----------------------------------------------------------------------
-#  a foreign backend store satisfies the controller with NO import of
-#  NpzResultStore
-# ----------------------------------------------------------------------
-class _ForeignSwept(ResultStore):
-    """Stands in for a future backend's store."""
-
-    def __init__(self, sweep=None):
-        self._sweep = sweep
-
-    def mesh_axes(self): ...
-    def scalar_field(self, name): ...
-    def vector_field(self, name): ...
-    def terminal_current(self, name): ...
-    def available_scalars(self): return ["potential"]
-    def available_terminals(self): return []
-    def is_solved_result(self): return True
-    def has_sweep(self): return self._sweep is not None
-    def sweep_result(self): return self._sweep
-
-
-_SENTINEL_SWEEP = object()
-
-
-def _controller_with(store):
-    app = AppController()
-    app._store = store
-    return app
-
-
-def test_controller_accepts_foreign_solved_store():
-    app = _controller_with(_ForeignSwept(sweep=_SENTINEL_SWEEP))
-    assert app.hasResult is True
-    assert app.hasSweep is True
-    assert app.sweepResultForQml is _SENTINEL_SWEEP
-
-
-def test_controller_handles_foreign_store_without_sweep():
-    app = _controller_with(_ForeignSwept())
-    assert app.hasResult is True
-    assert app.hasSweep is False
-    assert app.sweepResultForQml is None
-
-
-def test_preview_store_is_not_a_result():
-    """SpecResultStore (pre-solve doping preview) must NOT flip the
-    'results loaded' state -- the original reason for the type check."""
-    from gui.services.examples import EXAMPLES
-    from gui.services.result_store import SpecResultStore
-    app = _controller_with(SpecResultStore(EXAMPLES["mosfet_2d"]()))
-    assert app.hasResult is False
-    assert app.hasSweep is False
 
 
 # ----------------------------------------------------------------------
@@ -126,22 +75,6 @@ def test_process_store_exposes_selected_step_publicly(tmp_path):
     assert store.selected_step_id == "i1"          # default = last step
     store.select_step("sub")
     assert store.selected_step_id == "sub"         # accessor reads LIVE state
-
-
-# ----------------------------------------------------------------------
-#  no core imports left in the controller / visualization layers
-# ----------------------------------------------------------------------
-def test_app_controller_never_imports_pytcad_core():
-    import gui.controllers.app_controller as mod
-    src = inspect.getsource(mod)
-    assert "from pytcad" not in src and "import pytcad" not in src, \
-        "controller must reach core math only through services"
-
-
-def test_mpl_canvas_never_imports_pytcad_core():
-    import gui.visualization.mpl_canvas_item as mod
-    src = inspect.getsource(mod)
-    assert "from pytcad" not in src and "import pytcad" not in src
 
 
 def test_process_derived_offers_junction_depth_in_service_layer():

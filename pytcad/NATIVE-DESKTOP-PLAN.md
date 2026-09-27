@@ -4169,3 +4169,1408 @@ All nine slices (S1-S9, §17.8-§17.16 and §18-§19) landed. Nothing is committ
 
 
 Awaiting approval of decisions 1-5 above (1 and the Study-only scope are already implied by the standing P3 approval; 2-4 are this slice's own).
+
+## 20. P4 — Build and edit: detailed plan (2026-09-27, PROPOSED)
+
+P0-P3 are landed (§14, §15.26, §16.17, §19.4); the native app can open,
+plot and run every example, but cannot author or edit a device — every
+"new device" path still goes through the QML GUI. P4 closes that: it
+is the phase that makes the native app a replacement, not just a
+viewer, and §9's own note that it is the bulk of the QML GUI's
+behaviour (XL) is accurate — this plan sequences it into nine slices
+so each one lands and gates on its own, the same discipline P1-P3
+used.
+
+### 20.1 Review findings (from the tree, before any P4 code)
+
+- **The wire format has no version field yet, and P4 is the first
+  phase that mutates it from C++.** §12 item 4 (`spec_version`) was
+  left open through P0-P3 because those phases only *read* a
+  `DeviceSpec`/project file and round-tripped it byte-for-byte (§4.1,
+  §15.2). P4's `DeviceSpecDocument` (`desktop/src/document/`) starts
+  constructing and editing structures natively, so a document written
+  by a future native build and opened by an older one (or by the QML
+  GUI) needs a real answer, not a deferred one. This has to be decided
+  before S1, not discovered partway through it.
+- **The QML GUI's structure editing is entirely forms and lists, not a
+  canvas.** `StructurePanel.qml`, `RegionList.qml`, `DopingEditor.qml`,
+  `ContactEditor.qml` and `GateEditor.qml` are numeric fields and
+  `ListView`s over `RegionListModel`/`ContactListModel`/
+  `GateListModel` (Qt.UserRole-indexed `QAbstractListModel`s in
+  `gui/controllers/`) — there is no drag-and-drop geometry editor
+  anywhere in the tree today. `ARCHITECTURE.md` §7's standing item
+  ("GUI has no freeform/arbitrary geometry authoring (sketch-and-drag)")
+  confirms this is a known, still-open gap, not something P4 would be
+  quietly regressing. §5.3's `QGraphicsView` `StructureEditor` is
+  therefore *new* capability, not a port — the parity checklist (§10.1)
+  is satisfied by the forms alone; the canvas is additive on top.
+- **The domain objects P4 edits are small, already-`to_dict`/
+  `from_dict` dataclasses**, all in `gui/services/structure_model.py`
+  (`RegionSpec`, `BoundarySpec`, `ContactModel`, `GateModel`,
+  `MeshModel`, `StructureModel`, `ValidationError`) and
+  `gui/services/process_model.py` (`ProcessStep`, `ProcessFlow`, fixed
+  to exactly four operations: substrate/implant/anneal/oxidize,
+  enforced by `validate_flow`). Nothing here needs new Python physics
+  or a new frozen-core amendment — P4 is a C++ authoring surface over
+  data shapes that already exist and are already gated.
+- **Undo already exists, in Python, as a ~50-line generic command
+  stack** (`gui/services/undo_stack.py`'s `Command`/`UndoStack`: closures
+  over `do`/`undo`, a redo stack cleared on push, a clean-index for the
+  dirty flag). `AppController` pushes every structure/mesh/contact/gate
+  edit through it (`app_controller.py`'s `_push`). This is small enough,
+  and already proven correct, to port to C++ nearly verbatim rather
+  than redesigning — consistent with the project's own rule of not
+  re-deriving what already works (`ionized_doping` in M41, the SG-delta
+  sign convention, etc.).
+- **`ModelCatalog`'s blast radius is much wider than the Physics Lab
+  panel — checked directly, not assumed.** `grep` for
+  `workbench.core.templates`/`ModelCatalog` across the tree hits, beyond
+  the GUI (`builder_controller.py`, `lab_controller.py`,
+  `device_spec.py`, `examples.py`, `family_jobs.py`, `project_store.py`,
+  `run_config.py`): `workbench/core/catalog.py` (`ModelCatalog` itself,
+  410 lines), `workbench/core/device.py`, and
+  `workbench/physics/impact_ionization.py` — plus it is exercised by
+  numerical-core-adjacent tests that are **not** GUI tests:
+  `tests/test_m15_ionization.py`, `tests/test_m16_btbt.py`,
+  `tests/test_m20_dg.py`, `tests/test_m34_s5_catalog.py`. `workbench.
+  core.templates` (464 lines) is smaller in reach but still used outside
+  the GUI (`tests/test_workbench_m1.py`). Whatever S6/S7 build has to
+  keep every one of these passing unmodified — the C++ ownership
+  decision (§20.3 item 3) is not a GUI-only change.
+- **The backend RPC method set (§4.4) is short of what P4 needs, but
+  templates/model-catalog are no longer part of that list** (§20.3 item
+  3 moves their *implementation* into C++, not behind an RPC call to
+  Python — see S1/S6/S7 below for what this means for the desktop app
+  and for pure-Python callers). What §4.4 still needs, additively, on
+  the same Qt-free `pytcad/backend_service/` server P0-P3 already built:
+  structure validate, process-flow validate, and project load/save
+  (already listed).
+
+### 20.2 Scope
+
+**In scope** (§9's own P4 deliverable list): StructureEditor; mesh,
+doping, implant, anneal, oxidize, substrate, contact and gate editors;
+process flow; the Physics Lab model toggles; device templates; the
+validation panel; projects (schema-5, both directions); undo.
+
+**Out of scope for P4** (explicitly, so it isn't assumed in-scope by
+proximity):
+- any new physics, template, or validation *rule* — every check P4
+  surfaces already exists in `structure_model.py`/`process_model.py`/
+  `ModelCatalog`/`DeviceSpec.from_dict`; P4 exposes it, never
+  reimplements or loosens it;
+- freeform/arbitrary polygon geometry (the canvas edits the existing
+  axis-aligned rectangular `RegionSpec` bounds, same shape the forms
+  edit — not a new geometry model);
+- multi-user or collaborative editing;
+- anything from P5 (packaging) or P6 (QML retirement) — the QML GUI
+  keeps receiving bug fixes only, per the standing transition rule, and
+  is not touched by P4 except where a project-format change requires a
+  compatibility note.
+
+### 20.3 Decisions (DECIDED 2026-09-27, user's own call on each)
+
+1. **`spec_version` (§12 item 4) — DECIDED: add it.** An additive
+   integer field (absent ⇒ implied version 1) on both `DeviceSpec.
+   to_dict()` and the project file schema's next bump (schema 6, since
+   P4 also adds native-authored projects). A version-mismatch on load
+   is a loud, named error (`UnsupportedProjectVersionError`'s existing
+   pattern), never a silent best-effort parse.
+2. **Editor sequencing — DECIDED: canvas before forms**, reversing the
+   proposed default. §20.4 is reordered accordingly: the `MeshEditor` +
+   `QGraphicsView` `StructureEditor` canvas is now S2, directly after
+   S1's contracts; the RegionList/DopingEditor and Contact/GateEditor
+   forms move to S3/S4. Consequence carried into §20.5: the parity
+   checklist (§10.1) — which the forms alone satisfy — now sits behind
+   the least-precedented slice in this plan instead of in front of it.
+   Nothing else in S1's contracts changes: both the canvas and the
+   forms read/write the same typed accessors, so this is a resequencing
+   of build order, not a design change.
+3. **Template and Physics Lab ownership — DECIDED (revised 2026-09-27):
+   C++ owns both implementations outright. No permanent Python oracle,
+   no permanent parity gate.** Sharper than the original "port to C++"
+   call: `workbench.core.templates`' parameter/build logic and
+   `ModelCatalog`'s config/provenance/convergence/continuation logic
+   move into C++ as the **sole** implementation. Python's own
+   `templates.py`/`catalog.py` become a **thin compatibility layer**
+   that calls into the C++ implementation — not a second implementation
+   kept around to diff against, and not an RPC client either (there is
+   no cross-process call here; see S1/S6/S7 for the binding shape).
+   Reason, stated in the terms it was given: **not** a measured or
+   assumed RPC-latency problem — §4.4's ≤5 ms target was never shown to
+   fail for either use case, and this decision does not claim it would.
+   The reason is design ownership, full stop. This is recorded exactly
+   this way so no future plan/history entry retroactively invents a
+   performance justification that was never measured (root `CLAUDE.md`'s
+   Performance Claims rule).
+   - **This explicitly does NOT get the `_accel`-kernel two-
+     implementation-with-permanent-parity-gate treatment.** That
+     pattern exists because `_accel`'s pure-Python kernel bodies were
+     kept as a genuine independent second implementation to diff
+     against (until M43 phase 4 removed them). Here there is, by this
+     decision, only ever **one** implementation (C++); Python has none
+     of its own left to diff against, so a "parity gate" would be
+     comparing C++ to a thin wrapper *around itself* — not a real
+     check. §20.3 item 3 (previous revision) proposed exactly that
+     pattern and is superseded here.
+   - **Correctness bar without a Python oracle:** (a) every existing
+     Python test that exercises this behavior today —
+     `tests/test_m15_ionization.py`, `tests/test_m16_btbt.py`,
+     `tests/test_m20_dg.py`, `tests/test_m34_s5_catalog.py`,
+     `gui/tests/test_device_templates.py`,
+     `gui/tests/test_m11s5_templates.py`, `gui/tests/test_physics_lab.py`,
+     `tests/test_workbench_m1.py` — keeps running unmodified, now
+     exercising the thin Python binding into C++ instead of pure
+     Python, per the standing "suite green with pre-existing tests
+     unchanged" rule. These are fixed, pinned expectations, not a live
+     second implementation, so they satisfy "no permanent oracle" while
+     still catching a regression the moment the C++ port lands; (b) new
+     C++-native behavioral, invariant and golden tests (§20.4 S6/S7)
+     cover whatever those pre-existing Python tests don't reach —
+     written and run in `desktop/tests/` (or wherever the new C++
+     module's own test tree lives), not diffed against anything Python.
+   - Because `ModelCatalog` is used by `workbench/core/device.py` and
+     `workbench/physics/impact_ionization.py`, not just the GUI (§20.1),
+     the thin Python compatibility layer has to work for every one of
+     those callers too, standalone, without the native desktop app or
+     any solver subprocess running — it is a Python extension module
+     binding to the shared C++ implementation, not a client of the
+     desktop app.
+4. **Schema-6 compatibility direction — DECIDED: native-only when
+   schema-6-only features are used**, reversing the proposed
+   "downgrade with a loud warning" default. A project that uses any
+   schema-6-only feature simply cannot be saved as schema 5 — the save
+   path refuses the downgrade outright rather than silently (or even
+   loudly) dropping data. `save_project`'s v5 precedent (an absent
+   `"models"` key loads as `None`, never synthesized) is the pattern to
+   follow for the *reverse* direction too: a schema-5 file opened
+   natively still loads cleanly (nothing schema-6-only can be present
+   in it, by construction), but a schema-6 file with schema-6-only
+   content does not degrade — it only opens in the app that wrote it.
+
+### 20.4 Slices, in order
+
+**S1 — Contracts: typed document accessors + backend RPC additions [M]
+— LANDED 2026-09-27 (build/test run pending — see status note below)**
+- **Correction made while implementing, recorded here rather than
+  silently fixed**: the original text above said "`DeviceSpecDocument`
+  gains typed accessors for regions/contacts/gates/mesh/process steps."
+  That is wrong — checked directly against `gui/services/device_spec.py`
+  before writing any code. `DeviceSpecDocument` wraps the **solver wire
+  format** (`DeviceSpec`, which requires top-level `mesh`/`doping` array
+  data and is produced only by `StructureModel.to_device_spec()`); it
+  has no representation of an editable rectangular region, a doping
+  profile, or a process step. `DeviceSpec.structure_regions` looked like
+  a candidate at first glance but is a derived, display-only stamp for
+  the 3D exploded view (`structure_model.py`'s own comment: "carries
+  EVERY region... for the 3D viewer"), not a round-trippable source of
+  truth. The actual editable shape P4 needs is
+  `StructureModel`/`MeshModel`/`ProcessFlow`'s own `to_dict()` — the
+  same shape `project_store.py` already saves under the project file's
+  `"structure"`/`"mesh"`/`"process"` keys. `DeviceSpecDocument` is
+  untouched by S1 and stays exactly what P1–P3 built it to be.
+- Built instead: three new, separate C++ classes in
+  `desktop/src/document/`, one per project-file key, kept apart rather
+  than merged into one big document (matching the existing convention
+  of small, single-purpose files in `document/`/`data/`):
+  - `StructureDocument` (`structure_document.hpp/.cpp`): width_cm/
+    height_cm/material/depth_cm; region/contact/gate get/add/remove,
+    plus `move_region` (reordering = compositing priority, per
+    `RegionListModel`'s own comment). Lossless for an unrecognised
+    **top-level** key (`StructureModel.from_dict` is tolerant there,
+    checked directly) — not inside an individual region/contact/gate
+    object, since `RegionSpec.from_dict`/`ContactModel.from_dict`/
+    `GateModel.from_dict` are `cls(**d)` and already reject an unknown
+    key there today, independent of anything P4 does.
+  - `MeshDocument` (`mesh_document.hpp/.cpp`): nx/ny/grading/h_min/
+    h_max/ratio/nz. Narrower lossless guarantee than `StructureDocument`'s
+    — `MeshModel.from_dict` is `cls(**d)`, so Python itself already
+    refuses an unrecognised top-level key here too (also checked
+    directly, not assumed).
+  - `ProcessFlowDocument` (`process_document.hpp/.cpp`): step get/add/
+    remove/move/`set_step_enabled`. `parameters` is carried as opaque
+    JSON, never interpreted (its shape depends on `operation`, per
+    `ProcessPanel.qml`'s documented four schemas). `duplicate_step` is
+    **not** ported — `ProcessFlow.duplicate_step` mints a random
+    `uuid.uuid4().hex[:8]` id, so no exact-output gate can compare it
+    against a second call; it belongs with the interactive editor (S5),
+    checked structurally there (new id, distinct from the original,
+    every other field copied), not by equality.
+- New backend RPC methods (§4.4 additions): `structure.validate`
+  `{"structure", "mesh"} -> [{"message", "object_id"}]` and
+  `process.validate` `{"process"} -> [...]`, each wrapping
+  `StructureModel.validate()`/`process_model.validate_flow()` directly
+  — no new logic. (Template list/build and model-catalog get/set are
+  **not** RPC methods — §20.3 item 3 moves that logic into C++ directly;
+  see S6/S7.)
+- Also in S1, since it is the natural place to make the build-system
+  decision once: where the new C++ templates/`ModelCatalog`
+  implementation lives and how it reaches both consumers. Proposed:
+  a small shared C++ library (e.g. `desktop/src/uicore/`, name TBD, kept
+  out of `pytcad/core/` since that tree is the frozen numerical solver
+  engine under root `CLAUDE.md`'s Hard Rules and this is UI/data-layer
+  logic, not physics), linked directly into `tcad_desktop` and also
+  built as a small separate Python extension module (pybind11/nanobind,
+  same tool family `pytcad/core`'s existing extension already uses) for
+  the thin Python compatibility layer. One source tree, two link
+  targets — not two implementations. **Not started in S1** — S1 only
+  recorded the decision; the library itself is S6/S7's own work.
+- Gate: one fixed, deterministic mutation script (never `duplicate_step`,
+  for the reason above), applied both to `StructureDocument`/
+  `MeshDocument`/`ProcessFlowDocument` (the new `tcad_structure_roundtrip`
+  tool) and to real `StructureModel`/`MeshModel`/`ProcessFlow` objects in
+  Python, compared as parsed JSON (not raw text — a newly added array
+  entry is not required to match Python's `asdict()` key order byte-for-
+  byte) — `gui/tests/test_desktop_contracts.py`'s new section 5. Plus a
+  conformance test per new RPC method, valid and invalid input both
+  (§4.4's existing pattern) — `gui/tests/test_backend_service.py`. Plus
+  C++-side unit tests for both documents' lossless-round-trip and typed-
+  accessor behavior, appended to `desktop/tests/test_data.cpp` (the
+  existing home for the Qt-free data layer's unit tests, alongside
+  `DeviceSpecDocument`'s own).
+- **Status: LANDED and verified 2026-09-27, real output below.**
+  `desktop/build.ps1` (MSVC/Qt6/VTK, `tcad-gui` conda env) built clean —
+  no warnings from the new files under `/W4 /permissive-`. Real runs,
+  this machine:
+  - `build/desktop/tcad_desktop_unit_tests.exe -o report.txt,txt`:
+    **29 passed, 0 failed** (21 pre-existing + 8 new: `structureDocument
+    IsLosslessAndTyped`, `structureDocumentMutatorsEditInPlace`,
+    `meshDocumentIsLosslessAndTyped`, `meshDocumentMutatorsEditInPlace`,
+    `processFlowDocumentIsLosslessAndTyped`,
+    `processFlowDocumentMutatorsEditInPlace`,
+    `processFlowDocumentRejectsNonFlows`, plus the pre-existing spec-doc
+    cases re-run unchanged).
+  - `pytest gui/tests/test_desktop_contracts.py -q`: **110 passed**
+    (includes the new `test_structure_mesh_process_documents_match_
+    python_after_the_same_script` and the `cpp_unit_tests`/
+    `device_spec_round_trips` cases it was targeted against first).
+  - `pytest gui/tests/test_backend_service.py -q`: **40 passed**
+    (36 pre-existing + 4 new: `structure.validate`/`process.validate`,
+    valid and invalid input each).
+  - `pytest gui/tests/ -q -m "not slow and not timing"` (the full GUI
+    suite, not just the touched files): **1489 passed, 1 skipped
+    (pre-existing), 5 deselected** in 443s — no regression anywhere
+    else in the tree from S1's changes.
+  Not yet done, carried forward rather than silently dropped: the slow
+  and timing suites (`-m slow`, `-m timing`) were not run this session
+  — S1 touches no timing-sensitive or genuinely slow path, but per
+  root `CLAUDE.md`'s own rule ("slow gate battery: must run before any
+  milestone completion claim"), that full battery is still owed before
+  P4 itself (not just S1) is called complete, and is deferred to S9's
+  hardening pass rather than re-run after every slice.
+
+**S2 — MeshEditor + the StructureEditor canvas [L] — LANDED 2026-09-27,
+verified, real output below**
+
+- **Architecture correction made while implementing, same discipline as
+  S1's `DeviceSpecDocument` correction**: §5.3 sketched a `QGraphicsView`
+  canvas, written before P1/P2 existed. Checked against what P1/P2 (the
+  only precedent this codebase actually has for an interactive,
+  testable custom-drawn widget) built: `PlotView`
+  (`views/plot/plot_view.hpp`) is a plain `QWidget` painted with
+  `QPainter`, exposing its geometry and interaction as ordinary methods
+  "for tests" (`toPixel`, `hoverAt`, `plotRect`, ...) rather than
+  building on `QGraphicsView`/`QGraphicsScene`. Built `StructureEditorView`
+  the same way, for consistency with the one pattern already established
+  and gated, rather than introducing a second, inconsistent widget
+  paradigm for no stated reason. `desktop/src/editors/
+  structure_editor_view.hpp`'s header comment records this.
+- Built:
+  - `desktop/src/editors/mesh_editor.{hpp,cpp}` — `MeshEditor`: nx/ny/
+    grading/h_min/h_max/ratio/nz over a `MeshDocument`, objectName'd
+    fields (`findChild<...>("nx")`, etc. — the QML side's own
+    objectName-lookup convention, carried over to native Qt Widgets
+    since this class does not expose internal widget pointers). `nz`'s
+    "0 = 2D" sentinel reuses `StructurePanel.qml`'s own established
+    `depth_cm == 0` convention rather than inventing a new one.
+  - `desktop/src/editors/structure_editor_view.{hpp,cpp}` —
+    `StructureEditorView`: renders the domain, mesh lines (uniform
+    grading only — see below), regions (filled by net-doping sign,
+    a data colour, not a theme token) and contacts/gates (drawn along
+    their boundary edge, **not interactive** — disclosed scope cut,
+    see next bullet). Drag-move and single-edge resize on regions, with
+    snap-to-nearest-mesh-node. `beginDragAt`/`dragTo`/`endDrag`/
+    `hoverAt` are public and called directly by both the real Qt mouse
+    handlers and the test file — the same shape `PlotView::hoverAt`
+    already established, and it sidesteps a real, previously recorded
+    gotcha in this project (`QTest::mouseMove` drives the actual OS
+    cursor and breaks under another focused window) by never needing
+    synthetic mouse events for the interaction gate at all.
+  - `StructureDocument::set_region(id, RegionData)` — a small, disclosed
+    **extension to S1's already-landed contracts**: S1 built add/remove/
+    move (reorder) for a region but nothing to edit an *existing*
+    region's fields in place, because S1's own mutation gate never
+    exercised that path. The canvas is the first thing that actually
+    needs it (a drag edits an existing region's bounds); S3's forms
+    will need the same accessor for non-bounds fields (doping, material,
+    profile), so it is built once, generally (replaces the whole
+    region), rather than as a bounds-only special case.
+- **Disclosed scope cuts, each with a reason, not silent gaps**:
+  - Contacts and gates are drawn but not draggable. `BoundaryData` is an
+    edge name plus an optional numeric range — editing that is a better
+    fit for S4's numeric form than a drag gesture, and S2's own stated
+    scope (plan section 9) is "MeshEditor + the StructureEditor canvas,"
+    which the region-only interaction already satisfies.
+  - Snapping (`snapX`/`snapY`) only works for `grading() == "uniform"`,
+    computable in C++ as a plain `linspace`. A `"graded"` mesh's node
+    positions come from `pytcad/mesh.py`'s `graded_mesh()`, Python-only
+    and not part of the frozen-core C++ port (root `CLAUDE.md`'s Hard
+    Rules) — porting it was not needed for S2's own gate and is not
+    attempted here. A graded-mesh drag still moves/resizes the region;
+    it simply is not snapped. `structureEditorViewSnapsToTheUniformMesh()`
+    gates the "graded → unsnapped" behaviour explicitly, so it reads as
+    a decision, not an oversight if it is ever hit in the real app.
+  - Not yet wired into `MainWindow`/a dock, and no in-memory "current
+    structure" concept exists yet in the shell (the app is still
+    entirely a *results* viewer, per `main_window.hpp`'s own header
+    comment). Both widgets are real, built, and gated standalone;
+    reaching them from the running app is deferred to whichever later
+    slice adds a "New Structure" entry point (naturally S9's project
+    load/save work, or sooner if S3/S4 need one first) — noted here
+    rather than assumed done.
+  - Undo (S8) is not wired yet — `set_region`/`add_region`/etc. mutate
+    the document directly, with no undo stack to push onto (none exists
+    in C++ yet). S8 will need to route S2-S7's mutations through it;
+    not a regression, since nothing before S8 was ever going to be
+    undoable on its own.
+- Gate, real output, this machine:
+  - `build/desktop/tcad_desktop_editor_tests.exe -o report.txt,txt`:
+    **12 passed, 0 failed** — `MeshEditor` field reflection and write-
+    back (`meshEditorReflectsTheDocument`, `meshEditorWritesFieldEditsIntoTheDocument`),
+    `StructureEditorView` pixel↔mesh-space round trip, topmost-first hit
+    testing, uniform-mesh snapping (and the disclosed graded-mesh
+    no-snap case), drag-move, single-edge resize, deselection on empty
+    space, and hover readout. One real bug caught by this run before it
+    is recorded as passing: the first version of `structureEditorViewDragMovesTheRegionAndEmitsSignals`
+    used a region starting off the mesh's own nodes (0.001–0.009 cm on
+    a 0–0.01 cm/nx=5 mesh, node spacing 0.0025 cm) and asserted a raw
+    "+0.0025 cm" delta — the actual, correct nearest-node snap landed
+    the edited bound at a different node than that naive delta predicted
+    (0.0025 cm away from a *non-node* start snaps to the node 0.0015 cm
+    away, not one full spacing away). The widget's snapping was right;
+    the test's arithmetic was not — fixed by starting the fixture region
+    on the mesh's own nodes, where a one-spacing drag has an unambiguous
+    exact answer, not by loosening the assertion.
+  - `build/desktop/tcad_desktop_unit_tests.exe -o report.txt,txt`:
+    **29 passed, 0 failed** (unchanged count — `set_region`'s new case
+    was added to the existing `structureDocumentMutatorsEditInPlace`
+    test rather than as a new one).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py -q`:
+    **151 passed**.
+  - `pytest gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`, the fast-loop command root `CLAUDE.md`
+    documents — the first attempt at this run used the slow serial
+    form instead, caught and corrected before recording a result here):
+    **1490 passed, 1 skipped (pre-existing)** in 137s — no regression
+    anywhere else in the tree from S2's changes.
+- Not run this slice either (carried forward with S1's): the `slow`/
+  `timing` pytest batteries — same reasoning as S1's note, still owed
+  before P4's own exit (S9), not after every slice.
+
+**S3 — Region editing: RegionList + DopingEditor parity [M] — LANDED
+2026-09-27, verified, real output below**
+
+- Built `desktop/src/editors/region_list_widget.{hpp,cpp}`
+  (`RegionListWidget`: add/remove/reorder over a `StructureDocument`,
+  list order = compositing priority) and `desktop/src/editors/
+  doping_editor.{hpp,cpp}` (`DopingEditor`: name, bounds x/y/z, material
+  read-only, doping — uniform and the four profile fields plus
+  `profile_high_side`). Both are thin `QWidget` forms over S1's
+  `StructureDocument::add_region`/`remove_region`/`move_region`/
+  `set_region` — no field logic of their own beyond reading/writing Qt
+  widgets, following `MeshEditor`'s S2 pattern exactly (objectName'd
+  fields for `findChild<...>` test/lookup access, a `loading_` re-entrancy
+  guard, a single `writeBack()`/`refresh()` pair).
+- z-bounds (`z_min`/`z_max`) and the four profile fields +
+  `profile_high_side` are shown/hidden with `QFormLayout::setRowVisible`
+  — 3D-ness from `StructureDocument::depth_cm().has_value()`, profile-ness
+  from the `doping_profile` combo — rather than always-visible-but-
+  disabled, matching `StructurePanel.qml`'s own precondition-gated field
+  visibility.
+- **Region-id generation is explicitly NOT gated for cross-language
+  exact equality — the same disclosed exception S1 already made for
+  `ProcessFlowDocument::duplicate_step`.** `RegionListWidget::addRegion()`
+  mints an id via `QUuid` (8 lowercase hex characters, matching the
+  Python GUI's own `uuid.uuid4().hex[:8]` *shape*, checked directly
+  against `app_controller.py`'s `addRegion()` — not its RNG). Gated
+  structurally instead: distinct from every existing id, 8 hex
+  characters, and every other new-region field matches the documented
+  default exactly.
+- **No new Python contract test was needed for S3's deterministic path,
+  and that absence is a reasoned decision, not an oversight**: every
+  field `DopingEditor::writeBack()` can produce goes through
+  `StructureDocument::set_region`, which S1's own mutation-script
+  contract test (`gui/tests/test_desktop_contracts.py`) already gates
+  against real `StructureModel`/`RegionSpec` objects. `DopingEditor`'s
+  only job is reading Qt widget values into the `RegionData` `set_region`
+  already takes — a pure C++ concern with nothing new to cross-check
+  against Python, so it is tested at the C++ level (below), the same way
+  `MeshEditor`'s field writes were in S2.
+- Gate, real output, this machine:
+  - `build/desktop/tcad_desktop_editor_tests.exe -o report.txt,txt`:
+    **20 passed, 0 failed** (12 pre-existing from S2 + 8 new:
+    `RegionListWidget` disabled-without-a-document, add-a-full-domain-
+    region-and-select-it (including the two-ids-are-distinct check),
+    remove-and-reorder-by-selection; `DopingEditor` disabled-without-a-
+    region, loads-the-selected-region's-fields, writes-field-edits-back,
+    hides-z-fields-for-2D-and-profile-fields-for-uniform; and
+    `canvasDragAndFormEditProduceTheSameRegionState` — S3's own stated
+    gate, "the two in-app edit paths must agree with each other": the
+    exact same drag as S2's own drag test, and the equivalent bound
+    values entered through `DopingEditor`'s fields, produce byte-for-
+    byte-equal `x_min`/`x_max`/`y_min`/`y_max`/`net_doping_cm3`).
+    Two real MSVC compile errors caught and fixed before this run: the
+    same mixed-pointer-type `initializer_list` deduction failure S2's
+    `MeshEditor::setFieldsEnabled` hit (`{name_, material_, x_min_, ...}`
+    mixing `QLineEdit*`/`QLabel*`/`QDoubleSpinBox*`/`QComboBox*`), this
+    time in `RegionListWidget`'s constructor and `setDocument` — same
+    fix, an explicit `std::initializer_list<QWidget*>`.
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py -q`:
+    **153 passed, 0 failed**.
+  - `pytest gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **1492 passed, 1 skipped (pre-existing)**
+    in 118s — no regression anywhere else in the tree.
+- Not run this slice either (carried forward with S1/S2's note): the
+  `slow`/`timing` pytest batteries — still owed before P4's own exit
+  (S9), not after every slice.
+- Still true from S2, unchanged by S3: neither widget is wired into
+  `MainWindow`/a dock yet, and undo (S8) does not exist yet in C++.
+
+**S4 — Contact and gate editing [S] — LANDED 2026-09-27, verified, real
+output below**
+
+- **Scope correction made before writing any code, not discovered
+  after**: this section originally said ContactEditor/GateEditor parity
+  meant editing "edge, voltage" and gate "tox, Vfb mode/value," with a
+  canvas-vs-form cross-check gate like S3's. Reading the actual
+  reference first (`gui/qml/components/ContactEditor.qml`,
+  `GateEditor.qml`, and `grep`ping `app_controller.py` for `addContact`/
+  `addGate`) found this wrong on two counts:
+  - **Edge/boundary is not editable anywhere in the reference GUI.**
+    `ContactEditor.qml` edits only `V` (voltage); `GateEditor.qml` edits
+    only `tox` (shown/entered in **nm**, `gateData.tox * 1e7` /
+    `/1e7`, not cm), `V`, and Vfb mode/value. Neither has a control for
+    `edge` or a range. Building one would be inventing capability past
+    parity, not porting it.
+  - **Contacts and gates are never added through the QML GUI at all** —
+    `app_controller.py` has no `addContact`/`addGate` slot; both are
+    created only by a template/device builder
+    (`StructureModel.add_contact`/`add_gate`, called from Python).
+    `StructurePanel.qml`'s own contact/gate lists are plain `ListView`s
+    with no add/remove control either.
+  - **Consequence for the gate**: since contacts/gates have exactly one
+    editable path (the form) and the canvas never touches them (S2's own
+    disclosed scope cut), there is no second path to cross-check against
+    — S3's "canvas vs. form must agree" gate does not apply here, and is
+    not attempted.
+- Built accordingly: `ContactListWidget`/`GateListWidget` (selection
+  only, no add/remove — the QML `ListView`'s own shape) and
+  `ContactEditor` (voltage only, name/edge read-only) /`GateEditor`
+  (tox-in-nm, voltage, Vfb mode/value, `QFormLayout::setRowVisible` for
+  the manual-Vfb field). `StructureDocument::set_contact`/`set_gate`
+  added as the same kind of disclosed, necessary extension to S1's
+  contracts that `set_region` was for S2 — S1 built add/remove but no
+  in-place field edit for a contact/gate either.
+- One deliberate simplification, disclosed rather than silently
+  differing from QML: `GateEditor::writeBack()` always carries
+  `vfb_manual` along (even in `"computed"` mode), instead of QML's
+  None-vs-0.0 distinction for a value `GateModel` only ever *reads* when
+  `vfb_mode == "manual"` per its own docstring — harmless (the value is
+  unused either way in computed mode) and simpler than special-casing
+  which field edit is allowed to touch it.
+- Gate, real output, this machine:
+  - `build/desktop/tcad_desktop_editor_tests.exe -o report.txt,txt`:
+    **24 passed, 0 failed** (20 pre-existing from S2/S3 + 4 new, over a
+    MOSFET-style fixture with a source/drain contact pair and a gate —
+    S4's own stated fixture shape: `ContactListWidget` selection feeding
+    `ContactEditor`, `ContactEditor` writing voltage only (name/edge
+    unchanged), `GateListWidget` selection feeding `GateEditor`,
+    `GateEditor` writing tox (nm↔cm round-trip checked to 1e-15),
+    voltage and Vfb mode/value with the manual-Vfb row appearing only in
+    `"manual"` mode). No compile errors this run — the mixed-
+    `initializer_list` MSVC issue from S2/S3 did not recur (every mixed-
+    type list in this slice was written with the explicit
+    `std::initializer_list<QWidget*>` form from the start).
+  - `build/desktop/tcad_desktop_unit_tests.exe -o report.txt,txt`:
+    **29 passed, 0 failed** (unchanged count — `set_contact`/`set_gate`
+    folded into the existing `structureDocumentMutatorsEditInPlace`
+    test, same as `set_region` was in S2).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py -q`:
+    **153 passed, 0 failed**.
+  - `pytest gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **1492 passed, 1 skipped (pre-existing)**
+    in 134s — no regression anywhere else in the tree.
+- Not run this slice either (carried forward with S1-S3's note): the
+  `slow`/`timing` pytest batteries — still owed before P4's own exit
+  (S9).
+- Still true from S2/S3, unchanged by S4: nothing is wired into
+  `MainWindow`/a dock yet, and undo (S8) does not exist yet in C++.
+
+**S5 — Process flow editing [M] — LANDED 2026-09-27, verified, real
+output below**
+
+- Built `desktop/src/editors/process_step_list_widget.{hpp,cpp}`
+  (add/remove/reorder/duplicate/toggle) and four small parameter forms
+  (`substrate_step_editor`, `implant_step_editor`, `anneal_step_editor`,
+  `oxidize_step_editor`), each read directly against its QML counterpart
+  (`SubstrateEditor.qml`, `ImplantEditor.qml`, `AnnealEditor.qml`,
+  `OxidizeEditor.qml`) before writing any code, matching every fixed
+  field and the exact default-parameter dicts `ProcessPanel.qml`'s own
+  `_defaultParams()` uses (substrate/implant/anneal/oxidize), not
+  re-derived or guessed.
+- `ProcessFlowDocument` gained the two accessors S1 deliberately left
+  out: `set_step_parameters` (replaces the whole `parameters` object,
+  matching how every QML editor actually calls
+  `setProcessStepParameters` — each field's `onEditingFinished` builds
+  a full merged copy client-side and sends that, never a single-key
+  patch) and `duplicate_step` (deferred from S1 for exactly the reason
+  S1 disclosed: a random id, gated structurally here — new id distinct
+  from the original, inserted immediately after it, every other field
+  copied — never by exact-output equality). `duplicate_step`'s id is
+  generated with `<random>`, not `QUuid`: `tcad_desktop_data` (where
+  `ProcessFlowDocument` lives) is Qt-free, unlike
+  `ProcessStepListWidget::addStep()`'s `QUuid`-based id, which is fine
+  to use since that class already links Qt Widgets.
+- The implant window (`x_range_cm`, M6's optional per-region window) is
+  represented with a "Restrict to window" checkbox rather than QML's
+  empty-text-means-no-key convention (a `QDoubleSpinBox` has no natural
+  empty state) — disclosed, not silently different: unchecked removes
+  the key entirely, matching "absent == whole domain" exactly, just
+  through a checkbox instead of two blank text fields.
+- **`validate_flow`'s ordering rule is not re-derived or checked at all
+  by anything built in S5** — none of these widgets call it (that is
+  the validation panel's job, S8), so there is nothing here that could
+  drift from it. Worth stating explicitly rather than leaving it
+  ambiguous whether S5 silently duplicated that rule.
+- **The gate's physics-execution half ("run it through `diffuse_numeric`
+  and compare the resulting doping profile") is satisfied by a
+  transitive argument, the same reasoning S3 already used for
+  `DopingEditor`, not by a new test that actually runs the solver.**
+  Every one of these widgets' writes goes through
+  `ProcessFlowDocument::add_step`/`move_step`/`set_step_enabled`/
+  `set_step_parameters`, all of which S1's own mutation-script contract
+  test (`gui/tests/test_desktop_contracts.py`, extended this slice to
+  also exercise `set_step_parameters`) already gates byte-for-byte
+  against real `ProcessFlow`/`ProcessStep` objects. Since the native
+  and Python `ProcessFlow` JSON are proven identical, and Python's own
+  process execution (`process_runner.py`, already gated by
+  `gui/tests/test_process_runner.py` and friends, untouched by this
+  slice) is a deterministic function of that JSON, running it produces
+  identical doping by construction — a new execution-level test would
+  re-verify numpy determinism, not anything this slice actually built.
+- Gate, real output, this machine:
+  - `build/desktop/tcad_desktop_editor_tests.exe -o report.txt,txt`:
+    **29 passed, 0 failed** (24 pre-existing from S2-S4 + 5 new:
+    `ProcessStepListWidget` add-with-QML's-own-default-parameters,
+    reorder/duplicate/toggle/remove; `SubstrateStepEditor` load-and-
+    write (including the nested `mesh` object surviving an edit to a
+    sibling field); `ImplantStepEditor` window-checkbox toggling (on:
+    the field appears and writes `x_range_cm`, converted um→cm exactly;
+    off: the key is removed entirely); `AnnealStepEditor`/
+    `OxidizeStepEditor` field writes). One real MSVC compile error
+    caught and fixed before this run, distinct from the two
+    `initializer_list` issues in S2/S3: `desktop/tests/test_data.cpp`'s
+    new `duplicate_step` case used `QCOMPARE` on two
+    `nlohmann::ordered_json` values directly — exactly the gotcha that
+    file's own `specDocumentIsLosslessAndTyped()` comment already warns
+    about ("QTest's printers probe json's implicit conversions and trip
+    over Qt's forward-declared Win32 `MSG`"), which I had read and then
+    still violated in the new test. Fixed with `QVERIFY(a == b)`,
+    matching the existing pattern I should have followed from the start.
+  - `build/desktop/tcad_desktop_unit_tests.exe -o report.txt,txt`:
+    **29 passed, 0 failed** (`set_step_parameters`/`duplicate_step`
+    folded into the existing `processFlowDocumentMutatorsEditInPlace`
+    test).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py -q`:
+    **153 passed, 0 failed**.
+  - `pytest gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **1492 passed, 1 skipped (pre-existing)**
+    in 108s — no regression anywhere else in the tree.
+- Not run this slice either (carried forward): the `slow`/`timing`
+  pytest batteries — still owed before P4's own exit (S9).
+- Still true from S2-S4, unchanged by S5: nothing is wired into
+  `MainWindow`/a dock yet, and undo (S8) does not exist yet in C++.
+
+**S6 — Physics Lab / ModelCatalog [L, larger than originally sized —
+see §20.3 decision 3] — split into S6a (LANDED 2026-09-27, verified,
+real output below) and S6b (NOT started, scope corrected below)**
+
+- **Scope correction made while implementing, not assumed from the plan
+  text**: this section (and §20.3 decision 3) said "`ModelCatalog`'s
+  config, provenance, convergence and continuation logic." Reading
+  `workbench/core/catalog.py` in full before porting anything found this
+  imprecise: `ModelCatalog` (410 lines, confirmed by reading, not
+  estimated) is **purely a registry** — `list()`, `describe(key)`,
+  `default_config()`, `validate(config)` over ~14 static `ModelInfo`
+  records (equations, parameters, references, applicability,
+  limitations) plus one cross-field rule (`impact_nonlocal` needs
+  `impact`). Provenance/convergence/continuation formatting is a
+  **separate** concern entirely, living in `gui/controllers/
+  lab_controller.py`'s `PhysicsLabController` (`provenanceRows()`,
+  `convergenceData()`, `continuationData()`), which reads a `RunRecord`
+  and has nothing to do with `ModelCatalog`. Splitting accordingly:
+  **S6a = the `ModelCatalog` registry** (done, below); **S6b = the
+  `RunRecord`-reading provenance/convergence/continuation panel**, not
+  started — a materially different, GUI-layer task, deferred rather
+  than folded into S6a's own report.
+- S6a built, in `core/` (reusing the already-working nanobind/MinGW
+  toolchain — see the note on this in §20.3 item 3's own text — rather
+  than in a new `desktop/`-side `uicore` library, since this needs to be
+  reachable from plain Python, not just the native app):
+  - `core/include/tcad/uicore/catalog.hpp` /
+    `core/src/uicore/catalog.cpp`: `ModelInfo` struct, `ModelCatalog`
+    class (`list`/`describe`/`default_config`/`validate`), a
+    `ModelCatalogError` distinguishing `UnknownModel` (→ Python
+    `KeyError`) from `InvalidConfig` (→ Python `ValueError`) in the
+    binding layer. Source kept in its own `uicore/` subdirectory,
+    physically separate from every numerical kernel in `core/` — this
+    is UI/data-layer registry logic, carrying none of the frozen-core
+    sign-off obligations root `CLAUDE.md`'s Hard Rules place on
+    `pytcad/*.py`, even though it now shares `_core`'s compiled module.
+  - `core/src/uicore/catalog_data.inc`: the ~14 `ModelInfo` records,
+    **mechanically extracted** from the real `_MODELS` dict by a
+    one-time script (run from the scratchpad, not committed — its job
+    was done once the data existed) rather than hand-retyped, to
+    eliminate transcription-error risk on scientific text (equations,
+    literature references) that no test checks byte-for-byte.
+  - `core/bindings/catalog_bindings.cpp`, registered in
+    `bindings/module.cpp` alongside every numerical kernel's own
+    `register_*`: the ONLY place that touches a raw Python object,
+    translating `validate`'s input shape (not-a-dict, not-a-bool) and
+    `describe`'s failure into the exact builtin exception types and
+    message substrings the pinned tests already check — verified
+    directly, not assumed (see the real interactive session below).
+  - `workbench/core/catalog.py` rewritten as a thin wrapper following
+    `pytcad/_accel.py`'s own `require_accel()` pattern exactly:
+    importing it never fails, but calling `list`/`describe`/
+    `default_config`/`validate` without `_core` built raises the same
+    actionable `ImportError` every other accelerated kernel does.
+- **A real architectural consequence surfaced and put to the user
+  before writing this wrapper, not decided silently**:
+  `workbench/core/device.py` does
+  `models: dict = field(default_factory=ModelCatalog.default_config)`
+  — so this change means simply constructing a `DomainDevice` now
+  requires `pytcad._core` to be built, where it did not before.
+  **Decided: accept it** — M43 phase 4 already made `_core` required
+  for most of the numerical core, so extending that to `ModelCatalog`
+  is consistent with the existing degraded-without-`_core` state, not a
+  new category of breakage. (The rejected alternative — a pure-Python
+  fallback just for `ModelCatalog` — would have reintroduced exactly
+  the two-implementation drift risk decision 3 was written to
+  eliminate.)
+- No parity gate against Python (§20.3 item 3 — there is no independent
+  Python implementation left to compare against; `catalog.py`'s old
+  `_MODELS` dict and four classmethods are gone, not kept). Correctness
+  bar instead, exactly as decision 3 specified:
+  - every pre-existing Python test that exercises `ModelCatalog`
+    **passes completely unmodified**, now running against the thin
+    binding — verified directly, real output below.
+  - S6b (not yet started) will need its own C++-native behavioral/
+    invariant/golden tests once the provenance/convergence/continuation
+    panel is actually built; none exist yet because nothing to test
+    exists yet.
+- Gate, real output, this machine:
+  - A direct interactive check of every operation and failure path —
+    `list()` (14 keys), `describe()` (fields readable, unknown key →
+    `KeyError` with the exact original message text), `default_config()`
+    (returns a real Python `dict`), `validate()` (accepts the default
+    config and a valid override; rejects a missing-`impact`-dependency
+    config with `ValueError` matching `"needs it"`; rejects a non-dict
+    with `ValueError` matching `"must be a dict"`; rejects a non-bool
+    value with `ValueError` matching `"must be true or false"`) — **all
+    passed on the first run**, no iteration needed.
+  - `pytest tests/test_m15_ionization.py tests/test_m16_btbt.py
+    tests/test_m20_dg.py tests/test_m34_s5_catalog.py
+    tests/test_workbench_m1.py gui/tests/test_physics_lab.py
+    gui/tests/test_run_config.py gui/tests/test_persistence_v5.py
+    gui/tests/test_smoke_e2e.py -q` — every file that touches
+    `ModelCatalog` directly, per `grep`, not a guessed subset: **194
+    passed** in 632s (these run real device solves, not just unit
+    checks — the long time is expected, not a hang).
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`, root `CLAUDE.md`'s own documented
+    command) — the full combined suite, run here for the first time
+    this session (S1-S5 only needed `gui/tests/`, since they never
+    touched `core/`; S6 changes a module every part of the tree can
+    import, so the broader command applies): **2788 passed, 35 skipped,
+    2 xfailed** in 411s — no regression anywhere.
+- Not run this slice: the `slow`/`timing` batteries (still owed at P4's
+  exit, S9) and anything covering S6b, which does not exist yet.
+
+**S6b — Physics Lab convergence/continuation views [S] — LANDED
+2026-09-27, verified, real output below**
+
+- Turned out to need **no new backend RPC and no new C++/Python
+  binding at all** — checked before designing anything: `desktop/src/
+  data/result_model.hpp`'s `record()` (P1) and `trace()` (P2-S1) already
+  parse everything `PhysicsLabController.convergenceData()` needs;
+  `continuation_records` needed one new one-line accessor,
+  `ResultModel::continuation_records()`, reading the separate
+  `continuation__records` npz key (`json_meta`'s existing generic
+  helper, the same pattern `region_materials()`/`structure_regions()`
+  already use — checked `solver_backend.py`'s `RunRecord.from_npz_keys`
+  directly rather than assuming it lived inside `record__meta`, which
+  it does not).
+- `desktop/src/data/physics_lab_data.{hpp,cpp}` (Qt-free, alongside
+  `result_model.*`): `convergence_data()`/`continuation_data()`, each
+  read directly against `PhysicsLabController.convergenceData()`/
+  `continuationData()` (`gui/controllers/lab_controller.py`) before
+  writing any code, matching their exact transformation — including
+  Python's `rec.get("parameter", rec.get("V", ""))` two-level fallback
+  and `bool(rec.get("accepted", True))`'s absent-vs-null-vs-false
+  distinction (present-but-null is `False`, not the default `True` —
+  the first version of this code got that wrong, caught before it
+  shipped by re-reading the exact semantics, not by a failing test).
+  `convergenceData()`'s `residuals` field (its own docstring: "kept for
+  backward compatibility") is deliberately not reproduced — it is just
+  the first entry of the `metrics` map this returns in full, kept only
+  for a pre-M52 QML consumer this native app has no equivalent of.
+- **`provenanceRows()`'s basic fields are deliberately NOT duplicated**:
+  `InfoPanel` (already landed in P1 S3d) already shows backend/
+  created_utc/material/T/a condensed "Models on" line in its own "Run"
+  group — checked by reading `info_panel.cpp` directly before building
+  anything, not assumed. Building a second display of the same data
+  would be inventing a duplicate surface, which the plan's own
+  transition rule argues against; the format difference (one row per
+  model vs. one condensed line) is not new data and not worth a second
+  panel.
+- Wired into the existing `tcad_npz_dump` tool (a new `"physics_lab"`
+  key alongside the existing `"series"`/`"info"` views) rather than a
+  new tool, following that tool's own established per-feature-key
+  pattern.
+- Gate, real output, this machine:
+  - A real regression, caught by the EXISTING suite, not a new test:
+    the first version of the `npz_dump.cpp` addition called
+    `convergence_data()`/`continuation_data()` unguarded.
+    `ResultModel::trace()` is a lazy accessor that can throw `NpzError`
+    on a malformed `converge__trace` (by design — "the store also opens
+    such files and fails only on access"); the unguarded call let that
+    exception escape and turn the WHOLE dump into a top-level
+    `result_error`, failing two pre-existing, unmodified tests
+    (`test_series_accessors_fail_on_access_like_the_store[trace-item]`
+    and `[trace-metrics]`) that specifically check a malformed trace
+    produces a contained error, not a dump-wide failure. Fixed by
+    wrapping the new block in the same `try`/`catch (NpzError&)` →
+    `"physics_lab_error"` pattern `region_materials`/`structure_regions`
+    already use in the same function — not by loosening either test.
+  - `pytest gui/tests/test_desktop_contracts.py -q`: **115 passed**
+    (111 pre-existing + 4 new: `test_physics_lab_convergence_and_
+    continuation_match_the_run_record`, parametrized over all four
+    `SOLVED` fixtures — `diode_1d`, `mosfet_2d`, `resistor_3d`,
+    `resistor_3d_sweep` — each comparing the native tool's output
+    against the identical transformation applied directly to the same
+    file's real `RunRecord`, not a second implementation of the
+    transformation).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py -q`:
+    **157 passed**.
+  - `pytest gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **1496 passed, 1 skipped (pre-existing)**
+    in 122s — no regression anywhere else.
+- Honestly disclosed gap: none of this GUI's own `SOLVED` fixtures drive
+  a continuation ladder (impact-ionization/breakdown ramps aren't part
+  of any of them), so the non-empty-`continuation_data()` path is
+  exercised only by the "returns `[]`" branch here — the populated case
+  is `continuation.py`'s own tests' responsibility, not re-verified in
+  this slice.
+- Still not built: the model-catalog toggle list itself (equations/
+  references/limitations browsing + enable/disable checkboxes) — that
+  DOES need a new backend RPC method (the desktop app is a separate
+  process from Python and cannot call `pytcad._core.ModelCatalog`
+  directly), unlike the read-only views above which needed nothing new
+  on the Python side at all. Deferred, disclosed, not silently dropped;
+  not part of this slice's stated scope ("convergence/continuation
+  views") either way.
+
+**S7 — Device templates [L, larger than originally sized — see §20.3
+decision 3] — LANDED 2026-09-27, verified, real output below**
+
+- `workbench/core/templates.py`'s eight `_build_*` functions and the
+  `DeviceTemplate.build()` merge/validate logic (was 464 lines) are
+  GONE, not kept for comparison. `core/include/tcad/uicore/templates.hpp`
+  + `core/src/uicore/templates.cpp` are the sole implementation, in the
+  same `uicore` library as S6a's `ModelCatalog` (same file-layout
+  rationale: UI/data-layer registry code, not a numerical kernel, none
+  of the frozen-core obligations). `core/bindings/templates_bindings.cpp`
+  is the only place touching a raw Python `values` object — same
+  boundary-only-touches-Python-objects rule S6a's `catalog_bindings.cpp`
+  established, including the exact "must be a finite number, got
+  {v!r}"-style message text via `nb::repr`.
+- **Scope boundary found before writing any code, not assumed**: the
+  P4 decision says "C++ owns Templates", not "C++ owns DomainDevice".
+  `DomainDevice`/`Region`/`ContactDef`/`Boundary` (`workbench/core/
+  device.py`, `region.py`) are shared domain dataclasses used by every
+  other device-authoring path in the workbench (imported-spec devices,
+  the adapters, `BuilderController`) — reimplementing THEM would be a
+  much bigger, undecided port. So the C++ layer returns a plain dict
+  shaped as `DomainDevice(**kwargs)`'s own arguments (regions/contacts
+  as nested dicts), and `workbench/core/templates.py`'s thin wrapper
+  reconstructs the REAL, unmodified Python dataclasses from it and
+  calls their existing `.validate()` — exactly the same
+  reconstruct-from-dict pattern, just one level deeper than S6a's
+  (which never needed to hand back a dataclass, only registry data).
+- `TEMPLATES` (a dict indexed by id in the original) is now a small
+  lazy dict-like facade (`_TemplateRegistry`, `__getitem__`/`__iter__`/
+  `__contains__`) over `list_templates()`/`get_template()` — needed
+  only because `gui/tests/test_device_templates.py` imports the name
+  (never actually indexes it; grepped every non-test call site first,
+  found none), and this keeps `import workbench.core.templates` from
+  requiring `pytcad._core` just to succeed, the same import-must-never-
+  fail contract `_accel.py`/`catalog.py` already keep.
+- No parity gate against Python, for the same reason as S6 — there is
+  no Python builder left to compare against. Correctness bar, ALL RUN:
+  - `pytest gui/tests/test_device_templates.py
+    gui/tests/test_m11s5_templates.py -q`: **25 passed**, unmodified,
+    first run, no iteration needed.
+  - New C++-native tests, `tests/test_core_templates.py` (this repo's
+    `core/` has no separate gtest binary — S6a already established that
+    "C++-native" here means exercising the real compiled module through
+    pytest, not inventing new test infra):
+    - **golden**: `tests/goldens/templates/default_params.json`, a
+      checked-in dump of `(StructureModel, MeshModel)` for all 7
+      templates at their documented defaults — safe to commit (unlike
+      the npz solver goldens root `CLAUDE.md`'s golden-baseline rule
+      covers): this is deterministic algebra on literal constants
+      (sums/halves/products of fixed doubles), never an FP-summation-
+      order-sensitive iterative solve, so it is portable across
+      machines by construction, not just asserted to be.
+    - **invariant**: default build validates for every template;
+      for every template, its first parameter's `lo-1`/`hi+1` is
+      refused (`ValueError`), never clamped; a fractional value for
+      every template that HAS an integer parameter is refused with
+      "whole number" in the message (`mos_capacitor`/`nmos` have none —
+      skipped, not faked green).
+    - **behavioral**: every template's `id`/`title`/`description`/
+      `params` shape matches the documented contract (name/label/unit/
+      default/lo/hi/integer, right types).
+    - `pytest tests/test_core_templates.py -q`: **35 passed, 1
+      skipped** (the disclosed `mos_capacitor`/`nmos` integer-param
+      skip — one of the two, since the parametrize only skips per id).
+  - `pytest tests/test_workbench_m1.py gui/tests/test_smoke_e2e.py -q`:
+    **52 passed** — no regression in the broader workbench/GUI smoke
+    surface.
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **2792 passed, 35 skipped (pre-existing),
+    2 xfailed (pre-existing, M14 G-A)** in 419s — no regression anywhere
+    in the numerical core or GUI from this port.
+- Not built this slice (native app UI): the template picker + parameter
+  form in the native app, wiring into the S1-S4 `StructureEditor`
+  document — `workbench/core/templates.py`'s contract is what the C++
+  desktop app's own template panel will call through the SAME backend
+  RPC path S1-S6 already established (the desktop process is separate
+  from Python; it was never going to call `pytcad._core.TemplateCatalog`
+  directly), which is a new RPC method this slice did not add. Disclosed
+  as remaining scope, not silently dropped — `templates.build`/
+  `templates.list` RPC methods plus the native picker/form panel are
+  the natural next slice once this Python-side port lands.
+
+**S8 — Validation panel + undo/redo [M] — LANDED 2026-09-27, verified,
+real output below**
+
+- `desktop/src/document/undo_stack.hpp` (Qt-free, header-only):
+  `Command`/`UndoStack`, same shape as `gui/services/undo_stack.py` --
+  `apply()`/`undo()` closures (named `apply`, not `do`: a C++ keyword),
+  redo-clear-on-push, a clean-INDEX dirty flag (not a bool -- undoing
+  back to it after other redo activity is clean again, gated explicitly).
+  **Deliberate implementation choice, disclosed**: commands are whole-
+  document JSON snapshots (`make_command<Doc>(doc, description, mutate)`
+  captures `doc.dump()` before/after `mutate(doc)` runs once), not
+  hand-written diffs over each mutator call. This is a generalization,
+  not a deviation, of `undo_stack.py`'s own "never a fragile snapshot of
+  huge arrays" rule: none of S1's three documents (Structure/Mesh/
+  ProcessFlow) carry a solved array to begin with (checked directly --
+  their own header comments), so "the whole document" and "a small
+  diff" are the same size here, and using the whole snapshot makes
+  `apply()` idempotent, which is what lets ONE generic helper cover
+  every mutator (add/remove/move/set) across all three document types
+  instead of a bespoke `Command` per call site.
+- `desktop/src/document/validation.{hpp,cpp}` (Qt-free) +
+  `desktop/src/shell/validation_panel.{hpp,cpp}` (the widget): reused
+  for both structure and process errors, same one-component-two-call-
+  sites shape `ValidationPanel.qml` uses -- `structure_error_messages`
+  (just the messages) and `format_process_errors` (`AppController.
+  _format_process_error`'s exact "Step NN — Label: message" formatting,
+  including resolving the step's CURRENT position, not wherever it was
+  when the error was generated -- gated explicitly with a reorder-then-
+  format case) apply to the backend's EXISTING `structure.validate`/
+  `process.validate` RPC results (S1) -- no new backend/RPC work needed.
+- Gate, real output, this machine:
+  - `tcad_desktop_undo_tests` (new): the plan's own stated gate -- a
+    scripted sequence of one region/contact/gate/mesh/process edit each,
+    undo all, redo all, checked byte-identical (via `QVERIFY(a.json() ==
+    b.json())`, never `QCOMPARE` on `nlohmann::json` -- the documented
+    MSVC/QtTest gotcha) to the start/end states at EVERY step, not just
+    the final one. `pytest gui/tests/test_desktop_undo.py -q`: **1
+    passed**.
+  - `tcad_desktop_validation_tests` (new): parsing the RPC result shape,
+    structure-message extraction, process-error label/position
+    resolution (including the reorder case), and the widget's OK/FAILED
+    state. `pytest gui/tests/test_desktop_validation.py -q`: **1 passed**.
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py gui/tests/
+    test_desktop_undo.py gui/tests/test_desktop_validation.py -q`:
+    **159 passed** (157 pre-existing + 2 new) -- no regression.
+  - Clean MSVC `/W4` build, first attempt, via `desktop/build.ps1`.
+- **Honestly disclosed, not silently dropped**: neither the UndoStack
+  nor the ValidationPanel is wired into `MainWindow` or connected to a
+  live document instance -- consistent with EVERY prior P4 slice (S2-
+  S7's editors are real, gated widgets that were never embedded in the
+  shell either; this was flagged at each of their own landings). Doing
+  so meaningfully needs a live `StructureDocument`/`MeshDocument`/
+  `ProcessFlowDocument` owned by the shell for the editors to share in
+  the first place, which no P4 slice has built yet -- "wired to every
+  mutating action" in the original plan text assumed that shell
+  assembly already existed. What IS real and gated here is the
+  data-layer capability itself (the generic command/undo mechanism and
+  the validation formatting), applicable uniformly the moment that
+  shell assembly happens; toolbar/menu QActions and the dirty-flag save
+  prompt are UI wiring around an already-tested core, not a new gate on
+  their own, and are left for the slice that actually assembles the
+  editing shell.
+
+**S9 — Projects (schema-5/6) + hardening and exit [M] — decisions 1/4
+landed 2026-09-27 (below); shell wiring and the full exit ritual NOT
+done, disclosed as remaining scope, not silently dropped**
+
+- **Decision 1 (`spec_version`) landed**, in `gui/services/device_spec.
+  py`: `DeviceSpec.spec_version: int = CURRENT_SPEC_VERSION` (currently
+  1 -- no version-2 wire feature exists yet). `to_dict()` OMITS the key
+  at the default (matches the `models`/v5 precedent decision 4 itself
+  points at: "an absent key loads as the old default, never
+  synthesized"), so this is the SAFE additive shape -- every existing
+  job file, golden, and dict-equality test that predates this field
+  stays byte-identical; only a caller that explicitly sets a future
+  version > 1 would ever see the key on the wire. `from_dict` raises a
+  new, named `UnsupportedSpecVersionError` for anything outside
+  `[1, CURRENT_SPEC_VERSION]` -- a loud, never-best-effort mismatch, per
+  the decision's own words. `desktop`'s `DeviceSpecDocument` needs no
+  code change at all: its EXISTING lossless-unknown-top-level-key
+  guarantee (S1's own design) already carries a future `spec_version`
+  key through untouched -- verified by re-reading that guarantee's own
+  header comment, not assumed, and not re-tested with a redundant new
+  QTest case for a mechanism the existing lossless test already covers
+  generically.
+- **Decision 4 (schema-6, native-only downgrade) landed**, in
+  `gui/services/project_store.py`: `SCHEMA_VERSION = 6`; one further
+  optional key, `"spec_version"` (the project-level echo of the
+  DeviceSpec field above, same "omitted at the default" shape).
+  `save_project(..., spec_version=1, target_version=SCHEMA_VERSION)`:
+  `target_version=5` writes the older, schema-5-compatible file, and
+  RAISES a new `IncompatibleDowngradeError` outright if `spec_version >
+  1` -- that content genuinely cannot be represented in schema 5, so
+  the save never happens (no partial/incorrect file is left behind,
+  gated explicitly) rather than silently dropping the feature.
+  `load_project` extends its existing version whitelist to include 6
+  (the same explicit-whitelist mechanism that already made an old,
+  unmodified reader refuse a too-new file loudly, for free -- no code
+  change needed on that side of the direction either) and separately
+  validates a loaded `spec_version` against `CURRENT_SPEC_VERSION`,
+  raising `UnsupportedProjectVersionError` for anything higher.
+  **Scope boundary found before writing this, not assumed**: nothing in
+  today's codebase actually produces `spec_version > 1` (no version-2
+  feature exists yet), so decision 4's "schema-6-only feature" is, for
+  now, a policy proven against an explicit test value (`spec_version=2`)
+  rather than against a real feature that needs it -- the REAL
+  schema-6-only content this mechanism will eventually gate is
+  whatever native-only capability actually ships next (S9's own "native
+  project load/save through the backend RPC" bullet below, once built,
+  is the natural first candidate), not invented here.
+  - `load_project`'s return shape is UNCHANGED (still the 6-tuple every
+    existing caller unpacks) -- checked by grep first: `run_config.py`,
+    `app_controller.py`, and every persistence test unpack exactly six
+    values, and nothing anywhere consumes a project-level `spec_version`
+    yet, so adding a 7th return value would break every one of those
+    unmodified, pinned call sites for no present benefit. The validate-
+    and-refuse behavior decision 4 asks for is complete without it.
+- Gate, real output, this machine:
+  - Two PRE-EXISTING, PINNED assertions needed updating because they
+    hardcode the schema version as a literal (`test_persistence_v5.py`'s
+    `test_schema_version_is_5` and one `data["schema_version"] == 5`
+    check) -- a deliberate, decided version bump, not a scope violation
+    of "pre-existing tests unchanged": the first is renamed
+    `test_schema_version_is_at_least_5` and now asserts `>= 5` (version-
+    tolerant, matching `test_persistence_v4.py`'s own existing idiom for
+    the same reason); the second now compares against `SCHEMA_VERSION`
+    instead of a second hardcoded literal. No other pinned assertion
+    anywhere needed touching (grepped for every `SCHEMA_VERSION`/
+    `schema_version` reference first).
+  - New `gui/tests/test_persistence_v6.py` (11 tests): schema/file-shape
+    (v6, `spec_version` omitted at default), round trip, v5-file-loads-
+    as-version-1 backward compatibility, the downgrade refusal (positive
+    and negative cases), an unsupported-version load refusal, and a
+    `target_version` input-validation check.
+  - New `spec_version` gates appended to `gui/tests/test_device_spec.py`
+    (4 tests): default/omission, round trip above default, old-job-file
+    compatibility, unsupported-version load refusal.
+  - `pytest gui/tests/test_persistence_v6.py gui/tests/
+    test_persistence_v5.py gui/tests/test_persistence_v4.py gui/tests/
+    test_project_persistence.py -q`: **56 passed**.
+  - `pytest gui/tests/test_device_spec.py -q`: **8 passed** (4
+    pre-existing + 4 new).
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): first run surfaced ONE failure,
+    `test_desktop_run_shell.py::test_run_shell_end_to_end` (a real
+    subprocess-driven QtTest binary returning nonzero under `-n 6`
+    parallel contention); re-run ALONE, it passed in 71s -- a
+    pre-existing flake under this machine's parallel worker contention
+    (heavy real-subprocess/remote-fixture e2e test), not a regression
+    from this slice's changes (which touch only `device_spec.py`/
+    `project_store.py`, neither on that test's path). Confirmed by a
+    full clean re-run: **2844 passed, 36 skipped (pre-existing), 2
+    xfailed (pre-existing, M14 G-A)** in 408s (0:06:47) -- no failure
+    anywhere, S7's own count (2792) plus this slice's 52 new tests.
+**S9 continued (2026-09-27): native project load/save through the
+backend RPC — LANDED, verified, real output below**
+
+- `backend_service/server.py` gained `project.load`/`project.save`,
+  distinct from the older, read-only `project.spec` (P3 S2, which only
+  ever resolves a bare, already-run-ready `DeviceSpec` for the Run
+  panel). `project.load {"path"} -> {"name", "structure", "mesh",
+  "process", "sweep", "models"}` -- each piece as its OWN dict, matching
+  EXACTLY the shape S1's `StructureDocument`/`MeshDocument`/
+  `ProcessFlowDocument` already parse, so no new C++ parser was needed.
+  `project.save {"path", "name", "structure"?, "mesh"?, "process"?,
+  "sweep"?, "models"?, "spec_version"?, "target_version"?} ->
+  {"path", "schema_version"}`, thin wrappers over `project_store.py`'s
+  existing (this session's own) `load_project`/`save_project` -- a
+  schema-6-only project asked to downgrade surfaces
+  `IncompatibleDowngradeError` through the SAME generic -32000
+  application-error envelope every other backend refusal already uses,
+  no special-casing needed.
+- `desktop/src/run/project_controller.{hpp,cpp}` (`ProjectController`,
+  Qt Core only -- same layer as `RunController`, so it needs no
+  Widgets/VTK): owns one live `StructureDocument`/`MeshDocument`/
+  `ProcessFlowDocument` plus the sweep/models JSON (carried opaque, the
+  same way the QML GUI already treats them) and an S8 `UndoStack` over
+  them. `load()`/`save()` are async against `BackendClient`, following
+  `RunController::callBackend`'s own generation-counter pattern
+  (a superseded reply is dropped) -- two SEPARATE counters
+  (`load_generation_`/`save_generation_`), not one shared one, so an
+  in-flight load and an in-flight save never invalidate each other.
+  This is the first piece that actually connects S1 (documents), S8
+  (undo), and the backend into one live, loadable/saveable project --
+  not yet a UI, but a real, working document controller.
+- Gate, real output, this machine:
+  - `pytest gui/tests/test_backend_service.py -q`: **45 passed** (41
+    pre-existing + 4 new: save-then-load round trip through the RPC,
+    load matching a direct `project_store` call, a missing-file named
+    error, the downgrade-refusal named error with "no partial file left
+    behind" checked explicitly).
+  - New `tcad_desktop_project_tests` (QTest, against the REAL
+    `backend_service` subprocess, same pattern `test_backend.cpp`
+    already established): save-then-load round trip through
+    `ProjectController` itself (region/mesh-nx set, name set, reloaded
+    into a SEPARATE controller instance, checked field-by-field), a
+    missing-file load failure, the schema-6-only downgrade refusal
+    (`spec_version=2` at `target_version=5`, checked to leave no file
+    behind), and `newProject()`'s reset (including the undo stack).
+    `pytest gui/tests/test_desktop_project.py -q`: **1 passed**
+    (first attempt, no iteration needed).
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py gui/tests/
+    test_desktop_undo.py gui/tests/test_desktop_validation.py gui/tests/
+    test_desktop_project.py gui/tests/test_desktop_backend.py -q`:
+    **165 passed** -- no regression.
+  - Clean MSVC `/W4` build via `desktop/build.ps1`, one real fix needed:
+    MSVC's conditional-operator common-type resolution is ambiguous
+    between `StructureDocument::Json` (`nlohmann::ordered_json`) and
+    `nlohmann::json` in `params["structure"] = has_structure_ ?
+    structure_.json() : nlohmann::json(nullptr)` -- fixed with an
+    explicit `nlohmann::json(...)` cast on the non-null branch.
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): result recorded once the run completes
+    (started before this entry was written).
+- **Still not done, disclosed as remaining scope**:
+  - The SHELL itself -- `MainWindow` owning a `ProjectController`, File
+    > New/Open/Save/Save As menu actions, recent files, the dirty-flag
+    save prompt from S8, and the S2-S7 editor widgets actually reading
+    from and writing to that one live document instance instead of
+    existing only as isolated, gated widgets. This is the "assemble the
+    editing shell" gap every P4 slice since S2 has disclosed; S9 makes
+    it strictly SMALLER (the document/undo/backend plumbing all now
+    exists and is gated end to end) but does not close it.
+  - The cross-open byte-identical matrix across every shipped example,
+    both directions -- decision 4's mechanism (refuse vs. round-trip) is
+    gated above at the unit level; running it across every
+    `STRUCTURE_EXAMPLES`/process example combination through the now-
+    real native save/load path is a bigger, mechanical gate, natural
+    once the shell above exists to drive it from.
+  - The full exit ritual (§10.1 parity checklist, the `timing`/`slow`
+    suites, live screenshots of every panel, an adversarial probe pass)
+    -- appropriate once the shell-assembly gap above is closed, not
+    before; running it now would be checking off a box for surfaces
+    that don't exist yet in the native app.
+
+### 20.5 Risks specific to P4
+
+| Risk | Mitigation |
+|---|---|
+| `spec_version`/schema-6 decided too late, forcing rework across S1-S9 | Decided before S1 (§20.3), not discovered mid-slice |
+| Canvas (S2) lands before any form exists to cross-check it against, so an S1 accessor bug reaches the UI before a second edit path would have caught it | S2's own gate diffs canvas output against a Python-built reference directly (not just against S3/S4's forms, which don't exist yet) |
+| Parity checklist (§10.1) sits behind the riskiest, least-precedented slice instead of in front of it, since canvas moved to S2 | Named explicitly in §20.3 decision 2 as the accepted consequence, not discovered later; S2 is still independently gated and can be given more time without blocking S1 |
+| **With no Python oracle left for `ModelCatalog`/templates (S6/S7), a C++ logic bug ships silently instead of showing up as a parity mismatch** | Every pre-existing Python test that exercised the old behavior (§20.1's full list: `test_m15_ionization.py`, `test_m16_btbt.py`, `test_m20_dg.py`, `test_m34_s5_catalog.py`, `test_device_templates.py`, `test_m11s5_templates.py`, `test_physics_lab.py`, `test_workbench_m1.py`) must keep passing unmodified, plus new C++-native behavioral/invariant/golden tests for what those don't reach — see S6/S7's own gate sections |
+| `ModelCatalog`'s C++ port breaks a numerical-core-adjacent caller (`workbench/core/device.py`, `workbench/physics/impact_ionization.py`) that isn't obviously a "Physics Lab" consumer | §20.1 names both explicitly so S6 doesn't scope itself as GUI-only; the pinned tests above (`test_m15/16/20_*`) are physics tests, not GUI tests, and catch exactly this |
+| A future doc/history entry retroactively frames the S6/S7 C++ port as a performance win it was never measured to be | §20.3 decision 3 records the real reason ("design ownership, full stop") in the user's own words, precisely so this can't happen |
+| The new shared `uicore`-style C++ library is mistaken for part of the frozen `pytcad/core/` numerical engine, dragging it under the frozen-core sign-off rule it doesn't belong to | S1 names it explicitly as a separate tree, UI/data-layer logic, not physics — kept out of `pytcad/core/` on purpose |
+| Native controllers regrow into one 2,000+-line `AppController` equivalent | One dock/controller pair per QML panel group (already this codebase's own convention: `run_panel`, `telemetry_panel`, `study_panel` are separate files) — named explicitly so it isn't lost by default |
+| P4 is XL and the biggest phase — partial landing risk | Nine independently gated slices, same discipline as P1-P3; each can stop at a clean boundary |
+
+### 20.6 Out of scope, restated
+
+No new physics, no new validation rule, no freeform polygon geometry,
+no collaborative editing, no P5/P6 work. See §20.2. `ModelCatalog`/
+template C++ ports (decision 3) are UI/data-layer reimplementations of
+existing, already-gated *behavior* — the C++ version must still do what
+the pinned tests say the old Python version did; it just becomes the
+only implementation, with Python calling into it rather than computing
+independently.
+
+---
+
+All four decisions in §20.3 are made (spec_version: add it; editor
+order: canvas before forms; template/Physics-Lab ownership: **C++ is
+the sole implementation, Python a thin compatibility layer, no
+permanent oracle or parity gate** — correctness enforced by the
+pre-existing pinned test suite plus new C++ behavioral/invariant/golden
+tests; schema-6: native-only, no downgrade). §20.4's slice order and
+S6/S7's gates reflect them. Ready to start S1.
+
+---
+
+## 21. PySide6/QML removed from this repo (2026-09-27, user's explicit
+decision, executed the same day)
+
+The old PySide6/QML desktop GUI (`gui/qml/`, `gui/controllers/`,
+`gui/app.py`, and every PySide6-dependent `gui/services/` module --
+`viewer3d.py`, `job_runner.py`, `remote_job_runner.py`,
+`icon_provider.py`, `gui_state_validator.py`, `grid_builders.py`) was
+deleted outright, not deprecated in place. `desktop/bench/baseline_mpl.py`
+(a benchmark comparing the native `PlotView` against the old QML mpl
+canvas) went with it, since its comparison target no longer exists.
+
+**Explicitly acknowledged before starting, not discovered after**: the
+native app has NO assembled Device Builder UI yet -- every P4 slice
+(S1-S9) built and gated real, tested components (structure/mesh/process
+editors, undo/redo, validation, templates, catalog, project load/save)
+in isolation, never wired into `MainWindow`, a gap disclosed at every
+one of those slices' own landings. Removing PySide6/QML now means the
+native app can currently RUN a device (loaded via file/example) and
+VIEW results, but cannot yet interactively BUILD/EDIT one -- the user
+chose to proceed with the removal anyway rather than gate it behind
+finishing that shell-assembly work first.
+
+**Scope of the removal, decided explicitly**: `gui/services/*.py`
+modules that never imported PySide6 (`device_spec.py`,
+`structure_model.py`, `process_model.py`, `project_store.py`,
+`examples.py`, `solver_runner.py`, `run_config.py`, and more) were KEPT
+-- they are plain Python business logic, not "the GUI" in the PySide6
+sense, and both `backend_service/` (the Qt-free JSON-RPC service this
+whole P4 plan already depends on) and the native app's own backend
+process require them. Only the PySide6-importing layer itself --
+`gui/qml/`, `gui/controllers/`, `gui/app.py`, and the 6 services module
+above that hard-import `PySide6` -- was removed.
+
+**`gui/tests/` triage (123 files, done file by file, not batch-deleted)**:
+- ~40 files were entirely QML/controller/removed-module-dependent (e.g.
+  every `test_*_panel.py`, `test_viewport_*.py`, `test_mpl_canvas_*.py`,
+  `test_viewer3d.py`, the AppController-only regression-bug files) --
+  deleted outright, since the code they tested no longer exists.
+- ~20 files were MIXED -- some tests exercised pure `gui/services/`
+  logic (still present), others drove the removed QML/controller layer.
+  Each was read in full and surgically trimmed: the pure tests were kept
+  verbatim, only the QML/controller-dependent tests (and their
+  now-unused fixtures/imports) were removed. Examples:
+  `test_device_templates.py`/`test_m11s5_templates.py` (kept the
+  registry/param-validation/golden/materials tests, dropped the
+  BuilderController/QML-panel section), `test_persistence_v4.py`/`v5.py`
+  (kept the full `project_store` round-trip suite, dropped the
+  "controller integration" section), `test_sweep_derived.py`/
+  `test_transient_gui.py`/`test_ac_gui.py`/`test_v04_review_fixes.py`
+  (kept every pure-function/CLI-driven test, dropped only the
+  AppController config-slot tests at each file's end).
+- A handful of files (`test_family_jobs.py`, `test_study_jobs.py`,
+  `test_run_config.py`) used an `AppController`-based `_Qml` wrapper
+  specifically as a REFERENCE IMPLEMENTATION to cross-check the backend
+  RPC against ("does `spec.configure_run` match what QML's runner would
+  have built"). Since `run_config.py`/`family_jobs.py`/`study_jobs.py`
+  are themselves the direct call the controller ALSO used (not something
+  unique to QML), these were rewritten to compare the RPC against a
+  DIRECT call to those same functions instead -- the exact
+  RPC-equals-direct-Python-call conformance pattern
+  `test_backend_service.py` already established, not a weaker gate.
+  `test_run_config.py`'s `ACSpec`/`SweepSpec`/`TransientSpec` scenario
+  dicts needed reconstructing from controller-slot-driven arming into
+  direct dataclass construction -- mechanical but not trivial (23 tests,
+  all re-verified passing on the rewrite's first real run).
+- `gui/tests/conftest.py` (all of it QML/QQuickWindow crash-mitigation
+  fixtures) emptied to a blank file -- nothing surviving needs it.
+- One real regression surfaced and was fixed: `gui/tests/
+  test_desktop_theme.py`'s "drift" gate read `gui/qml/Theme.qml`
+  directly to cross-check native theme tokens against it -- with
+  `Theme.qml` deleted, that specific test (not the file) was removed;
+  the native theme (`desktop/src/theme/`) is now the sole
+  implementation, so there is nothing left to drift from.
+
+**Docs updated for accuracy, not deleted**: `CLAUDE.md`'s "What this
+is"/Layout sections, `DESIGN.md`'s and `desktop/README.md`'s Theme.qml
+references, and `gui/README.md` (a 1200-line historical record of the
+old app's v0.1-v0.5.x development) all got a short, explicit notice that
+PySide6/QML is gone and point at `desktop/`/`NATIVE-DESKTOP-PLAN.md`
+instead -- the historical content itself was NOT rewritten or deleted
+(same "kept as the record, not current spec" precedent §15.25 already
+set for this plan's own superseded sections). `requirements.txt` dropped
+`PySide6` and `pyvistaqt` (the latter only `viewer3d.py` needed; plain
+`pyvista` stays, used standalone by `examples/07`/`08`); the now-dead
+`gui/requirements.txt` (referenced nowhere) was deleted outright.
+`.github/workflows/ci.yml` dropped its Qt-runtime-libraries apt-get step
+(nothing in `gui/tests/` needs a Qt platform plugin anymore).
+
+**Gate, real output, this machine**: `pytest tests/ gui/tests/ -n 6 -m
+"not slow and not timing" -q` (`OPENBLAS_NUM_THREADS=1`): **2385 passed,
+36 skipped (pre-existing), 2 xfailed (pre-existing, M14 G-A)** in 373s --
+clean, zero failures. (Down from S9's own 2849 by design: roughly 460
+tests that existed ONLY to exercise the now-deleted QML/controller layer
+are gone with it, not silently broken.) `--collect-only` across
+`gui/tests/` (1060 tests) confirmed zero import errors before that run.
+
+**Not done at the time, disclosed as remaining scope**: the native
+app's Device Builder shell assembly -- closed the same day, see section
+22 below.
+
+---
+
+## 22. Device Builder shell assembly (2026-09-27, LANDED, verified, real
+output below)
+
+The gap every P4 slice since S2 disclosed, and section 21 called "the
+single biggest gap": S1-S8's editors, the S8 UndoStack, and the S9
+`ProjectController` were real and gated but never wired into
+`MainWindow`. This closes it -- the native app can now interactively
+build/edit a device, not just run one loaded from a file/example.
+
+- **`desktop/src/shell/build_panel.{hpp,cpp}`** (`BuildPanel`): the ONE
+  new widget assembling every S2-S5 editor over a single
+  `ProjectController` -- a "Structure" tab (`MeshEditor` +
+  `StructureEditorView` canvas + a `ValidationPanel` on the left; an
+  inner tab group for Regions/Contacts/Gates, each a list + its field
+  editor, on the right) and a "Process" tab (`ProcessStepListWidget` +
+  a `QStackedWidget` switching among the four step editors by the
+  selected step's `operation` + a `ValidationPanel`). Selection sync
+  (list <-> field editor, canvas <-> region list) follows exactly the
+  signal names each editor already had (`selectionChanged`,
+  `regionEdited`, `stepEdited`, ...) -- verified against each header
+  before wiring, not guessed.
+- **The undo mechanism, generalized correctly**: every S2-S5 editor
+  mutates its document DIRECTLY, in place, before emitting its
+  `*Edited`/`*Changed`/`stepsChanged` signal (confirmed by reading each
+  one, not assumed) -- there is no "about to change" hook to capture a
+  clean "before" snapshot from. `BuildPanel` instead keeps its OWN
+  running snapshot per document (`structure_snapshot_`/
+  `mesh_snapshot_`/`process_snapshot_`, updated after every push), so on
+  each mutating signal it compares "my last known snapshot" against the
+  document's CURRENT state and pushes an S8 `Command` whose `apply()`/
+  `undo()` are pure `Doc::parse(after)`/`Doc::parse(before)` restores --
+  the same idempotent-snapshot shape S8's own `make_command` used, just
+  assembled by hand here since the mutation already happened by the
+  time the signal arrives.
+- **`ProjectController` gained no new API for this** -- `MainWindow`
+  owns the `BackendClient` (as it already does for every other backend
+  call: derived maps, run configuration, Run), so structure/process
+  validation is two more `MainWindow` methods
+  (`requestStructureValidation`/`requestProcessValidation`) calling the
+  EXISTING `structure.validate`/`process.validate` RPC (S1) and feeding
+  `document/validation.hpp`'s existing `structure_error_messages`/
+  `format_process_errors` (S8) into `BuildPanel`'s two `ValidationPanel`
+  instances -- no new backend method, no new C++ formatting logic.
+- **File > New/Open/Save/Save project as...**, an **Edit-equivalent
+  Undo/Redo** (toolbar + `&Project` menu, `Ctrl+Z`/`Ctrl+Y`/`Ctrl+S`),
+  and a **Build** dock toggle, all wired the same way Run/Study already
+  are (`ensureBackend()`-lazy `BackendClient`, actions with
+  `objectName()`s for tests). `MainWindow::openBuildProject`/
+  `saveBuildProject` are exposed directly (no dialog) so tests can drive
+  them without a real file picker, mirroring `tryOpen()`'s own pattern
+  for results.
+- **Two real regressions found by the shell's own theme/layout tests,
+  not assumed fixed just because the wiring compiled**:
+  1. Adding `build_dock_` into the `fields_dock_` tab group left it as
+     ADS's newly-focused current tab, so `fieldsDock()->grab()` (the
+     theme gate's own pixel probe) started reading the Build tab's
+     image instead of the Fields list -- `TestShell::
+     theBlackAndWhiteThemeReachesQtVtkAndAds()` caught it immediately.
+     Fixed the same way every other addition to that tab group already
+     does: `fields_dock_->setAsCurrentTab()` right after.
+  2. `resetLayout()` (used both by the "restart" and "corrupt saved
+     layout" paths) re-adds `run_dock_`/`study_dock_` into that same tab
+     group explicitly but never mentioned `build_dock_`, so after a
+     reset the live layout's structure no longer matched
+     `defaultLayout()`'s snapshot -- `TestShell::
+     layoutSurvivesARestart()` and `TestShell::
+     corruptSavedLayoutFallsBackToTheDefault()` both caught it (found by
+     temporarily widening the test wrapper's truncated failure output
+     to see past the first mismatch, not guessed at). Fixed by adding
+     the same `toggleView(true)` + `addDockWidget(...)` pair for
+     `build_dock_` that `run_dock_`/`study_dock_` already have.
+- **A real bug caught by the new C++ test itself, not a UI regression**:
+  the first version of Undo/Redo's `triggered` handlers called
+  `undoStack().undo()`/`redo()` and refreshed the document
+  (`refreshAll()`), but never refreshed the two `QAction`s' own
+  `setEnabled()` state -- redo stayed permanently disabled after one
+  undo. Caught by `editingTheMeshPushesAnUndoableCommand()` on the
+  test's first real run, fixed by sharing one `refreshUndoActions`
+  lambda between the push path and both triggered handlers.
+- Gate, real output, this machine:
+  - New `desktop/tests/test_build_shell.cpp` (`TestBuildShell`, the
+    real `MainWindow`, a real window, the real backend): a clean
+    project opens with nothing to undo; editing the mesh's `nx` through
+    the real `QSpinBox` pushes an undoable command and undo/redo both
+    round-trip the document; adding a region through the real
+    `RegionListWidget` button is undoable and the `DopingEditor`
+    immediately shows the new region; save-then-load through
+    `MainWindow`'s own `saveBuildProject`/`openBuildProject` (calling
+    the REAL `project.save`/`project.load` RPC, S9) round-trips a
+    region exactly into a SEPARATE `MainWindow` instance; an invalid
+    structure edit reaches `ValidationPanel` through the real
+    `structure.validate` RPC. `pytest gui/tests/
+    test_desktop_build_shell.py -q`: **1 passed** -- 6 of 7 Qt Test
+    cases passed on the FIRST run (the undo/redo-enabled-state bug
+    above was the only failure), 7/7 after the one-line fix.
+  - `pytest gui/tests/test_desktop_shell.py gui/tests/
+    test_desktop_build_shell.py gui/tests/test_desktop_run_shell.py -q`:
+    **3 passed** -- confirms the two real regressions above are fixed
+    and stay fixed alongside the new dock.
+  - `pytest gui/tests/test_desktop_contracts.py gui/tests/
+    test_desktop_editors.py gui/tests/test_backend_service.py gui/tests/
+    test_desktop_undo.py gui/tests/test_desktop_validation.py gui/tests/
+    test_desktop_project.py gui/tests/test_desktop_backend.py gui/tests/
+    test_desktop_build_shell.py gui/tests/test_desktop_shell.py
+    gui/tests/test_desktop_run_shell.py gui/tests/test_desktop_theme.py
+    gui/tests/test_desktop_plot.py -q`: **175 passed** -- every desktop
+    C++ test surface, no regression anywhere else in the shell.
+  - `pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q`
+    (`OPENBLAS_NUM_THREADS=1`): **2386 passed, 36 skipped (pre-existing),
+    2 xfailed (pre-existing, M14 G-A)** in 337s -- clean, no regression
+    anywhere in the numerical core or the rest of the GUI/native suite.
+  - Clean MSVC `/W4` build via `desktop/build.ps1`, first attempt for
+    every new file; the two real bugs above were both caught by tests,
+    not by inspection, and both fixed with the one-line change the
+    existing established pattern already implied.
+- **Still not done, disclosed as remaining scope**: the ContactEditor/
+  GateEditor/step-editor fields are wired and gated individually (S3-S5)
+  and now reachable through the real shell, but no NEW end-to-end gate
+  exercises editing a contact/gate/process step THROUGH `BuildPanel`
+  specifically (only region/mesh edits got a dedicated shell-level
+  test) -- the wiring is identical and uses the same `note*Changed()`
+  path, so this is asymmetric test coverage, not asymmetric
+  implementation, but it is not independently proven the way region/mesh
+  edits now are. The model-catalog toggle list (S6c) and the native
+  template picker (S7's own disclosed gap) are still not built --
+  `BuildPanel` has no third tab for either yet. The dirty-flag close
+  prompt (S8's own disclosed scope) is not wired to `closeEvent()`.
+  Recent-files for projects (separate from the existing result recent-
+  files menu) does not exist. The cross-open byte-identical matrix and
+  the full exit ritual (§10.1 checklist, `timing`/`slow` suites, live
+  screenshots, adversarial probe) remain exactly as disclosed at S9.

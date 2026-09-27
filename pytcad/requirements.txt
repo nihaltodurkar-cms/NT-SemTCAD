@@ -22,11 +22,13 @@
 numpy>=2.0
 scipy>=1.14
 
-# --- GUI (desktop app: QML/Qt frontend, viewport plotting, 3D viewer) ---
-PySide6>=6.11
+# --- plotting/3D (examples/, and the backend_service business logic
+#     gui/services/ still carries for backend_service/ and the native
+#     desktop app -- PySide6/QML itself was removed from this repo,
+#     along with pyvistaqt, which only the deleted gui/services/
+#     viewer3d.py needed) ---
 matplotlib>=3.9
 pyvista>=0.48
-pyvistaqt>=0.12
 
 # --- optional solvers/meshing the code soft-imports at the call site
 #     (pytest.importorskip / a function-local import) rather than at

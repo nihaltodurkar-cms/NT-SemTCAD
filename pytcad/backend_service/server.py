@@ -58,6 +58,26 @@ Methods:
                                -> {"path", "fields", "unit", "timings"}
     analysis.recombination_map {"result": path} -> same shape, field "R"
 
+  P4 S1 (NATIVE-DESKTOP-PLAN.md section 20.4) -- structure/process
+  validation, wrapping the same checks StructureModel.validate()/
+  process_model.validate_flow() already apply (no new logic):
+
+    structure.validate {"structure", "mesh"} -> [{"message", "object_id"}]
+    process.validate   {"process"} -> [{"message", "object_id"}]
+
+  P4 S9 (section 20.4) -- native project load/save, distinct from the
+  older project.spec (P3 S2, a bare resolved DeviceSpec for the Run
+  panel only):
+
+    project.load {"path"} -> {"name", "structure", "mesh", "process",
+                              "sweep", "models"} (each None/object as
+                              project_store.load_project already returns)
+    project.save {"path", "name", "structure"?, "mesh"?, "process"?,
+                  "sweep"?, "models"?, "spec_version"?, "target_version"?}
+                 -> {"path", "schema_version"}; a schema-6-only project
+                    saved at target_version=5 fails loudly
+                    (IncompatibleDowngradeError, section 20.3 decision 4)
+
   Only with TCAD_BACKEND_DEBUG=1 in the environment (the client tests'
   hang/crash probes; "method not found" otherwise):
 
@@ -193,6 +213,72 @@ def _project_spec(params):
     name, spec, sweep, models = project_run_inputs(path)
     return {"name": name, "spec": spec.to_dict(),
             "sweep": sweep.to_dict() if sweep is not None else None, "models": models}
+
+
+def _project_load(params):
+    """P4 S9 (NATIVE-DESKTOP-PLAN.md section 20.4): the native app's
+    project-open path -- distinct from project.spec (P3 S2), which only
+    ever hands back a bare, already-resolved DeviceSpec for the Run
+    panel. This returns each piece as its OWN dict, matching exactly the
+    shape desktop's StructureDocument/MeshDocument/ProcessFlowDocument
+    (S1) already parse, so the native app's project controller needs no
+    new document type -- just three existing parsers plus sweep/models
+    carried as opaque JSON, the same way the QML GUI already treats
+    them."""
+    from gui.services.project_store import load_project
+    method = "project.load"
+    path = _param(params, "path", str, method)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f"project file not found: {path}")
+    name, structure, mesh, process, sweep, models = load_project(path)
+    return {
+        "name": name,
+        "structure": structure.to_dict() if structure is not None else None,
+        "mesh": mesh.to_dict() if mesh is not None else None,
+        "process": process.to_dict(),
+        "sweep": sweep.to_dict() if sweep is not None else None,
+        "models": models,
+    }
+
+
+def _project_save(params):
+    """P4 S9: the native app's project-save path. `spec_version`/
+    `target_version` expose decision 1/4's own parameters (NATIVE-
+    DESKTOP-PLAN.md section 20.3) -- a downgrade the caller cannot
+    represent at schema 5 surfaces as project_store.py's own
+    IncompatibleDowngradeError, wrapped in the ordinary -32000
+    application-error envelope like any other refusal here (no special
+    casing needed; the native client reads the error TYPE name, the
+    same way it already would for any other named exception)."""
+    from gui.services.structure_model import MeshModel, StructureModel
+    from gui.services.process_model import ProcessFlow
+    from gui.services.device_spec import SweepSpec
+    from gui.services.project_store import SCHEMA_VERSION, save_project
+    method = "project.save"
+    path = _param(params, "path", str, method)
+    name = _param(params, "name", str, method)
+    structure_d = params.get("structure")
+    mesh_d = params.get("mesh")
+    process_d = params.get("process")
+    sweep_d = params.get("sweep")
+    models = params.get("models")
+    for key, value in (("structure", structure_d), ("mesh", mesh_d),
+                       ("process", process_d), ("models", models)):
+        if value is not None and not isinstance(value, dict):
+            raise TypeError(f"{method}: '{key}' must be an object or null")
+    structure = StructureModel.from_dict(structure_d) if structure_d else None
+    mesh = MeshModel.from_dict(mesh_d) if mesh_d else None
+    process = ProcessFlow.from_dict(process_d or {"steps": []})
+    sweep = SweepSpec.from_dict(sweep_d) if sweep_d else None
+    spec_version = params.get("spec_version", 1)
+    if not isinstance(spec_version, int) or isinstance(spec_version, bool):
+        raise TypeError(f"{method}: 'spec_version' must be an integer")
+    target_version = params.get("target_version", SCHEMA_VERSION)
+    if not isinstance(target_version, int) or isinstance(target_version, bool):
+        raise TypeError(f"{method}: 'target_version' must be an integer")
+    save_project(path, name, structure, mesh, process, sweep, models,
+                spec_version=spec_version, target_version=target_version)
+    return {"path": path, "schema_version": target_version}
 
 
 def _run_options(params):
@@ -365,6 +451,23 @@ def _configure_run(params):
         backend=backend, engine=engine).to_dict()
 
 
+# -- P4 S1: structure/process validation --------------------------------------
+
+def _structure_validate(params):
+    from gui.services.structure_model import MeshModel, StructureModel
+    method = "structure.validate"
+    structure = StructureModel.from_dict(_param(params, "structure", dict, method))
+    mesh = MeshModel.from_dict(_param(params, "mesh", dict, method))
+    return [e.to_dict() for e in structure.validate(mesh)]
+
+
+def _process_validate(params):
+    from gui.services.process_model import ProcessFlow, validate_flow
+    method = "process.validate"
+    flow = ProcessFlow.from_dict(_param(params, "process", dict, method))
+    return [e.to_dict() for e in validate_flow(flow)]
+
+
 # -- P1 S4: derived maps ------------------------------------------------------
 
 def _param(params, key, kind, method):
@@ -495,6 +598,8 @@ METHODS = {
     "spec.from_example": _examples_build,
     "spec.load": _spec_load,
     "project.spec": _project_spec,
+    "project.load": _project_load,
+    "project.save": _project_save,
     "run.options": _run_options,
     "spec.configure_run": _configure_run,
     "spec.job_text": _job_text,
@@ -503,6 +608,8 @@ METHODS = {
     "comparison.job": _comparison_job,
     "study.templates": _study_templates,
     "study.rows": _study_rows,
+    "structure.validate": _structure_validate,
+    "process.validate": _process_validate,
     "analysis.band_map": _band_map,
     "analysis.recombination_map": _recombination_map,
 }

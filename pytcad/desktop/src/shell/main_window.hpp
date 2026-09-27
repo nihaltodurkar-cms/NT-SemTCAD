@@ -61,6 +61,8 @@ class RunPanel;
 class TelemetryPanel;
 class StudyController;
 class StudyPanel;
+class ProjectController;
+class BuildPanel;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -142,6 +144,18 @@ public:
     ads::CDockWidget* studyDock() const { return study_dock_; }
     QAction* runAction() const { return run_act_; }
     QAction* stopAction() const { return stop_act_; }
+    // -- the Device Builder (P4 shell assembly, section 21) --------------------------
+    ProjectController* projectController() const { return project_ctl_; }
+    BuildPanel* buildPanel() const { return build_panel_; }
+    ads::CDockWidget* buildDock() const { return build_dock_; }
+    QAction* undoAction() const { return undo_act_; }
+    QAction* redoAction() const { return redo_act_; }
+    // File > New/Open/Save/Save As project, exposed for tests (no dialog):
+    // newBuildProject() always succeeds; the others report through the
+    // same error path save/open results already use.
+    void newBuildProject();
+    bool openBuildProject(const QString& path);
+    bool saveBuildProject(const QString& path, int target_version = 6);
     // The directory runs write to: the settings key run/dir, else
     // <LocalAppData>/PyTCAD/runs (decision 4).
     QString runsDir() const;
@@ -195,6 +209,11 @@ private:
     bool resultFileUnchanged(QString* why) const;
 
     void buildRunning();   // the Run and Console docks, their actions and wiring
+    void buildDeviceBuilder();  // the Build dock, ProjectController, and its menu/actions
+    void chooseOpenProject();
+    void chooseSaveProjectAs();
+    void requestStructureValidation();
+    void requestProcessValidation();
     void onRunFinished(const QString& path);
     void updateRunStatus();
     void beginTelemetry();
@@ -219,6 +238,16 @@ private:
     ads::CDockWidget* study_dock_ = nullptr;
     QAction* run_act_ = nullptr;
     QAction* stop_act_ = nullptr;
+    ProjectController* project_ctl_ = nullptr;
+    BuildPanel* build_panel_ = nullptr;
+    ads::CDockWidget* build_dock_ = nullptr;
+    QAction* undo_act_ = nullptr;
+    QAction* redo_act_ = nullptr;
+    QAction* new_project_act_ = nullptr;
+    QAction* open_project_act_ = nullptr;
+    QAction* save_project_act_ = nullptr;
+    QAction* save_project_as_act_ = nullptr;
+    QString project_path_;
     QAction* save_as_ = nullptr;
     QTimer* run_tick_ = nullptr;   // the status bar's elapsed time, once a second
     qint64 run_started_ms_ = 0;

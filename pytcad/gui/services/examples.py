@@ -587,6 +587,112 @@ def finfet_3d_example_spec():
         ])
 
 
+def finfet_3d_comsol_template_example_spec():
+    """3D tri-gate FinFET reproducing COMSOL's Semiconductor Module "Fin
+    Field-Effect Transistor" demo geometry (applications/Semiconductor_
+    Module/Transistors/finfet.mph) -- the GUI counterpart of
+    examples/14_finfet3d_comsol_template.py. See that script's own
+    module docstring for the full derivation and, more importantly, the
+    diagnosed root cause of its flat Id-Vg curve (reproduced below).
+
+    COMSOL's model is a bare geometry/mesh template (dimensionless block
+    sizes, physics set separately in the GUI): a 3.0 x 0.7 x 0.7 fin
+    built from 8 boolean blocks -- source cap (0.5) | spacer (0.2) |
+    gate (1.6, wrapped by two 0.25-thick oxide blocks on the sidewalls)
+    | spacer (0.2) | drain cap (0.5). This spec maps those SAME
+    proportions onto real dimensions at the same 0.1 um/unit scale
+    examples/14 uses: Lg=160nm, Lsd=50nm, fin 70nm x 70nm, tox=10nm,
+    Na=1e18 p-type body, Nsd=1e19 n+ source/drain.
+
+    DIAGNOSED (not assumed) why this curve is nearly flat, not a
+    textbook switching curve -- see examples/14's docstring for the
+    full sweep (mesh NX in {6,12,24}; Lg in {1.6um,3.0um}; Na in
+    {1e18,5e18,1e19}; a -1..+4 V wide Vg sweep; a body-contact-removed
+    control) that ruled out mesh resolution, DIBL/punch-through (wrong
+    sign: a LONGER gate gives MORE current here), and the grounded body
+    contact (removing it rescales magnitude, not shape) one at a time.
+    The gate never drives this structured-mesh model into a resolved
+    strong-inversion regime anywhere in a +-5x-past-Vth sweep; Id
+    instead tracks a depletion/leakage-current signature (~100x drop
+    per decade of Na). Prime remaining suspect, NOT yet confirmed: the
+    transverse mesh (NY=NZ=4 here) may be too coarse to resolve an
+    inversion sheet at the oxide interface. Loaded as-is, not tuned to
+    look like a textbook curve -- use the Sweeps panel to reproduce the
+    same flat Id-Vg and judge for yourself.
+
+    Reuses pytcad.finfet3d.build_finfet3d (the same M26 builder
+    finfet_3d_example_spec above uses) purely to construct the
+    mesh/doping/contacts, which are then read off into a DeviceSpec --
+    same relationship every builder-backed example in this module has
+    to its own pytcad-core function.
+    """
+    from pytcad.finfet3d import build_finfet3d
+
+    SCALE = 0.1e-6  # meters per COMSOL geometry unit
+    Lsd = 0.5 * SCALE
+    Lg = 1.6 * SCALE
+    Hfin = 0.7 * SCALE
+    Wfin = 0.7 * SCALE
+    tox_cm = 0.1 * SCALE * 100.0  # 10 nm, in cm
+    Na = 1e18
+    Nsd_peak = 1e20
+
+    dev = build_finfet3d(Lsd=Lsd, Lg=Lg, Hfin=Hfin, Wfin=Wfin, tox_cm=tox_cm,
+                          Na=Na, Nsd_peak=Nsd_peak, NX=6, NY=4, NZ=4,
+                          mesh_ratio=1.3)
+
+    x, y, z = dev.mesh.x, dev.mesh.y, dev.mesh.z
+    nz = z.size
+    L = 2 * Lsd + Lg
+    i_src = np.where(x <= Lsd)[0].tolist()
+    i_drn = np.where(x >= Lsd + Lg)[0].tolist()
+    i_gate = np.where((x > Lsd) & (x < Lsd + Lg))[0].tolist()
+
+    top_gate = _top_face_node_indices(i_gate, nz)
+    left_i, left_j, left_k = [], [], []
+    for i_idx in i_gate:
+        for j_idx in range(1, y.size):
+            left_i.append(i_idx); left_j.append(j_idx); left_k.append(0)
+    right_i, right_j, right_k = [], [], []
+    for i_idx in i_gate:
+        for j_idx in range(1, y.size):
+            right_i.append(i_idx); right_j.append(j_idx); right_k.append(nz - 1)
+
+    return DeviceSpec(
+        mesh=MeshSpec(dimensionality=3,
+                      axes={"x": x.tolist(), "y": y.tolist(), "z": z.tolist()}),
+        doping=DopingSpec(kind="array", values=dev.doping.tolist(),
+                          ntotal=dev.Ntot.tolist()),
+        contacts=[
+            ContactSpec(name="source", kind="ohmic",
+                        nodes=_top_face_node_indices(i_src, nz), V=0.0),
+            ContactSpec(name="drain", kind="ohmic",
+                        nodes=_top_face_node_indices(i_drn, nz), V=0.0),
+            ContactSpec(name="body", kind="ohmic",
+                        nodes=_bottom_face_node_indices(x.size, y.size, nz),
+                        V=0.0),
+            ContactSpec(name="gate_top", kind="gate", nodes=top_gate,
+                        V=0.0, tox_cm=tox_cm,
+                        Vfb=dev.bcs["gate_top"].Vfb, normal_axis="y"),
+            ContactSpec(name="gate_left", kind="gate",
+                        nodes={"i": left_i, "j": left_j, "k": left_k},
+                        V=0.0, tox_cm=tox_cm,
+                        Vfb=dev.bcs["gate_left"].Vfb, normal_axis="z"),
+            ContactSpec(name="gate_right", kind="gate",
+                        nodes={"i": right_i, "j": right_j, "k": right_k},
+                        V=0.0, tox_cm=tox_cm,
+                        Vfb=dev.bcs["gate_right"].Vfb, normal_axis="z"),
+        ],
+        bias={"source": 0.0, "drain": 0.0, "body": 0.0,
+              "gate_top": 0.0, "gate_left": 0.0, "gate_right": 0.0},
+        structure_regions=[
+            {"name": "source", "box": [0.0, Lsd, 0.0, Hfin, 0.0, Wfin]},
+            {"name": "channel",
+             "box": [Lsd, Lsd + Lg, 0.0, Hfin, 0.0, Wfin]},
+            {"name": "drain", "box": [Lsd + Lg, L, 0.0, Hfin, 0.0, Wfin]},
+        ])
+
+
 def pn_junction_3d_example_spec():
     """3D asymmetric PN junction diode with Gaussian-graded junction.
 
@@ -935,6 +1041,7 @@ EXAMPLES = {"mosfet_2d": mosfet_example_spec,
            "resistor_3d": resistor_3d_example_spec,
            "mosfet_3d": mosfet_3d_example_spec,
            "finfet_3d": finfet_3d_example_spec,
+           "finfet_3d_comsol": finfet_3d_comsol_template_example_spec,
            "pn_junction_3d": pn_junction_3d_example_spec,
            "bjt_3d": bjt_3d_example_spec,
            "moscap_3d": moscap_3d_example_spec,

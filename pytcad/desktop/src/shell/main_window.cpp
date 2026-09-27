@@ -2,8 +2,11 @@
 
 #include "console_panel.hpp"
 #include "display_panel.hpp"
+#include "document/validation.hpp"
 #include "run/batch_controller.hpp"
+#include "run/project_controller.hpp"
 #include "run/study_controller.hpp"
+#include "shell/build_panel.hpp"
 #include "shell/study_panel.hpp"
 #include "run/run_controller.hpp"
 #include "run_panel.hpp"
@@ -26,6 +29,7 @@
 #include <QDropEvent>
 #include <QDateTime>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFont>
 #include <QFileDialog>
@@ -232,6 +236,7 @@ MainWindow::MainWindow(std::unique_ptr<AppSettings> settings, QWidget* parent)
             rebuildPlot();
     });
     buildRunning();  // P3-S4: the Run and Console docks
+    buildDeviceBuilder();  // P4 shell assembly (section 21): the Build dock
     file->insertAction(recent_->menuAction(), save_as_);
     tools->addSeparator();
     tools->addAction(run_act_);
@@ -268,6 +273,8 @@ MainWindow::~MainWindow() {
     batch_ = nullptr;
     delete study_ctl_;
     study_ctl_ = nullptr;
+    delete project_ctl_;
+    project_ctl_ = nullptr;
     if (!backend_) return;
     for (BackendReply* r : backend_->findChildren<BackendReply*>()) r->disconnect(this);
     delete backend_;
@@ -306,6 +313,8 @@ void MainWindow::resetLayout() {
     docks_->addDockWidget(ads::CenterDockWidgetArea, run_dock_, fields_dock_->dockAreaWidget());
     study_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, study_dock_, fields_dock_->dockAreaWidget());
+    build_dock_->toggleView(true);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, build_dock_, fields_dock_->dockAreaWidget());
     fields_dock_->setAsCurrentTab();
     console_dock_->toggleView(true);
     docks_->addDockWidget(ads::CenterDockWidgetArea, console_dock_, info_dock_->dockAreaWidget());
@@ -476,6 +485,221 @@ void MainWindow::buildRunning() {
                 reportError(title, summary);
             });
     connect(run_ctl_, &RunController::runCanceled, this, [this] { statusBar()->showMessage(tr("Run canceled.")); });
+}
+
+// P4 shell assembly (NATIVE-DESKTOP-PLAN.md section 21): the ONE place
+// structure/mesh/process edits happen in the native app -- S1-S8's
+// editors, undo stack and validation panel, finally wired to a single
+// live ProjectController and the backend's project.load/project.save.
+void MainWindow::buildDeviceBuilder() {
+    project_ctl_ = new ProjectController(
+        [this] {
+            ensureBackend();
+            return backend_;
+        },
+        this);
+
+    build_panel_ = new BuildPanel(this);
+    build_panel_->setProject(project_ctl_);
+    build_dock_ = new ads::CDockWidget(docks_, tr("Build"));
+    build_dock_->setObjectName("BuildDock");
+    build_dock_->setWidget(build_panel_);
+    docks_->addDockWidget(ads::CenterDockWidgetArea, build_dock_, fields_dock_->dockAreaWidget());
+    // ADS switches the tab group's current tab to whatever was just added
+    // -- every other addition to this same area (Run, Study) restores
+    // focus to Fields right after; this one didn't, and a real shell test
+    // caught it: fieldsDock()->grab() started returning the (hidden,
+    // blank) Build tab's image instead of the Fields list, failing the
+    // theme pixel-colour gate.
+    fields_dock_->setAsCurrentTab();
+
+    connect(build_panel_, &BuildPanel::validateStructureRequested, this, &MainWindow::requestStructureValidation);
+    connect(build_panel_, &BuildPanel::validateProcessRequested, this, &MainWindow::requestProcessValidation);
+
+    new_project_act_ = new QAction(tr("&New project"), this);
+    new_project_act_->setObjectName("NewProjectAction");
+    connect(new_project_act_, &QAction::triggered, this, &MainWindow::newBuildProject);
+
+    open_project_act_ = new QAction(tr("&Open project..."), this);
+    open_project_act_->setObjectName("OpenProjectAction");
+    connect(open_project_act_, &QAction::triggered, this, &MainWindow::chooseOpenProject);
+
+    save_project_act_ = new QAction(tr("&Save project"), this);
+    save_project_act_->setObjectName("SaveProjectAction");
+    save_project_act_->setShortcut(QKeySequence::Save);
+    connect(save_project_act_, &QAction::triggered, this, [this] {
+        if (project_path_.isEmpty()) {
+            chooseSaveProjectAs();
+            return;
+        }
+        saveBuildProject(project_path_);
+    });
+
+    save_project_as_act_ = new QAction(tr("Save project &as..."), this);
+    save_project_as_act_->setObjectName("SaveProjectAsAction");
+    connect(save_project_as_act_, &QAction::triggered, this, &MainWindow::chooseSaveProjectAs);
+
+    undo_act_ = new QAction(tr("&Undo"), this);
+    undo_act_->setObjectName("UndoAction");
+    undo_act_->setShortcut(QKeySequence::Undo);
+    undo_act_->setEnabled(false);
+    redo_act_ = new QAction(tr("&Redo"), this);
+    redo_act_->setObjectName("RedoAction");
+    redo_act_->setShortcut(QKeySequence::Redo);
+    redo_act_->setEnabled(false);
+    // The UndoStack has no changed() signal of its own (S8's own scope: a
+    // Qt-free data-layer class) -- refresh the two actions' enabled state
+    // right after every push/undo/redo call site instead of trying to
+    // observe it generically. A real bug here on first run: undo()/redo()'s
+    // own triggered handlers only refreshed the document (refreshAll()),
+    // never these two actions' own enabled state, so redo stayed disabled
+    // forever after one undo -- caught by editingTheMeshPushesAnUndoable
+    // Command(), not assumed fixed just because the wiring existed.
+    auto refreshUndoActions = [this] {
+        undo_act_->setEnabled(project_ctl_->undoStack().can_undo());
+        redo_act_->setEnabled(project_ctl_->undoStack().can_redo());
+    };
+    connect(undo_act_, &QAction::triggered, this, [this, refreshUndoActions] {
+        project_ctl_->undoStack().undo();
+        build_panel_->refreshAll();
+        refreshUndoActions();
+    });
+    connect(redo_act_, &QAction::triggered, this, [this, refreshUndoActions] {
+        project_ctl_->undoStack().redo();
+        build_panel_->refreshAll();
+        refreshUndoActions();
+    });
+    connect(build_panel_, &BuildPanel::validateStructureRequested, this, refreshUndoActions);
+    connect(build_panel_, &BuildPanel::validateProcessRequested, this, refreshUndoActions);
+
+    auto* project_menu = menuBar()->addMenu(tr("&Project"));
+    project_menu->addAction(new_project_act_);
+    project_menu->addAction(open_project_act_);
+    project_menu->addAction(save_project_act_);
+    project_menu->addAction(save_project_as_act_);
+    project_menu->addSeparator();
+    project_menu->addAction(undo_act_);
+    project_menu->addAction(redo_act_);
+    project_menu->addAction(build_dock_->toggleViewAction());
+
+    auto* tools = findChild<QToolBar*>("MainToolBar");
+    if (tools) {
+        tools->addSeparator();
+        tools->addAction(undo_act_);
+        tools->addAction(redo_act_);
+    }
+}
+
+void MainWindow::newBuildProject() {
+    project_ctl_->newProject();
+    project_path_.clear();
+    build_panel_->refreshAll();
+    undo_act_->setEnabled(false);
+    redo_act_->setEnabled(false);
+    build_panel_->setStructureErrors({});
+    build_panel_->setProcessErrors({});
+}
+
+bool MainWindow::openBuildProject(const QString& path) {
+    bool ok = false;
+    QString error_title, error_detail;
+    QMetaObject::Connection loaded_conn, failed_conn;
+    QEventLoop loop;
+    loaded_conn = connect(project_ctl_, &ProjectController::projectLoaded, &loop, [&] {
+        ok = true;
+        loop.quit();
+    });
+    failed_conn = connect(project_ctl_, &ProjectController::projectLoadFailed, &loop,
+                          [&](const QString& title, const QString& detail) {
+                              error_title = title;
+                              error_detail = detail;
+                              loop.quit();
+                          });
+    project_ctl_->load(path);
+    loop.exec();
+    disconnect(loaded_conn);
+    disconnect(failed_conn);
+    if (!ok) {
+        reportError(error_title.isEmpty() ? tr("Could not open the project") : error_title, error_detail);
+        return false;
+    }
+    project_path_ = path;
+    build_panel_->refreshAll();
+    undo_act_->setEnabled(false);
+    redo_act_->setEnabled(false);
+    build_panel_->setStructureErrors({});
+    build_panel_->setProcessErrors({});
+    requestStructureValidation();
+    requestProcessValidation();
+    return true;
+}
+
+bool MainWindow::saveBuildProject(const QString& path, int target_version) {
+    bool ok = false;
+    QString error_title, error_detail;
+    QMetaObject::Connection saved_conn, failed_conn;
+    QEventLoop loop;
+    saved_conn = connect(project_ctl_, &ProjectController::projectSaved, &loop, [&] {
+        ok = true;
+        loop.quit();
+    });
+    failed_conn = connect(project_ctl_, &ProjectController::projectSaveFailed, &loop,
+                          [&](const QString& title, const QString& detail) {
+                              error_title = title;
+                              error_detail = detail;
+                              loop.quit();
+                          });
+    project_ctl_->save(path, target_version);
+    loop.exec();
+    disconnect(saved_conn);
+    disconnect(failed_conn);
+    if (!ok) {
+        reportError(error_title.isEmpty() ? tr("Could not save the project") : error_title, error_detail);
+        return false;
+    }
+    project_path_ = path;
+    return true;
+}
+
+void MainWindow::chooseOpenProject() {
+    const QString path = QFileDialog::getOpenFileName(this, tr("Open project"), QString(),
+                                                       tr("PyTCAD projects (*.json)"));
+    if (path.isEmpty()) return;
+    openBuildProject(path);
+}
+
+void MainWindow::chooseSaveProjectAs() {
+    const QString path = QFileDialog::getSaveFileName(this, tr("Save project as"), project_path_,
+                                                       tr("PyTCAD projects (*.json)"));
+    if (path.isEmpty()) return;
+    saveBuildProject(path);
+}
+
+void MainWindow::requestStructureValidation() {
+    ensureBackend();
+    nlohmann::json params;
+    params["structure"] = project_ctl_->structure().json();
+    params["mesh"] = project_ctl_->mesh().json();
+    BackendReply* reply = backend_->call("structure.validate", params, 30000);
+    connect(reply, &BackendReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (!reply->ok()) return;
+        build_panel_->setStructureErrors(
+            structure_error_messages(parse_validation_errors(reply->result())));
+    });
+}
+
+void MainWindow::requestProcessValidation() {
+    ensureBackend();
+    nlohmann::json params;
+    params["process"] = project_ctl_->process().json();
+    BackendReply* reply = backend_->call("process.validate", params, 30000);
+    connect(reply, &BackendReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        if (!reply->ok()) return;
+        build_panel_->setProcessErrors(
+            format_process_errors(project_ctl_->process(), parse_validation_errors(reply->result())));
+    });
 }
 
 // The Telemetry dock follows the run just started: what it is, and whether

@@ -15,9 +15,7 @@ import os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-import numpy as np
 import pytest
-from PySide6.QtCore import QCoreApplication
 
 from gui.services.structure_model import (
     BoundarySpec, ContactModel, GateModel, MeshModel, RegionSpec, StructureModel)
@@ -220,72 +218,3 @@ def test_unsupported_newer_version_still_rejected(tmp_path):
         json.dump(data, fh)
     with pytest.raises(UnsupportedProjectVersionError):
         load_project(path)
-
-
-# ----------------------------------------------------------------------
-#  controller integration
-# ----------------------------------------------------------------------
-@pytest.fixture(scope="module")
-def qapp():
-    yield QCoreApplication.instance() or QCoreApplication([])
-
-
-def test_save_load_restores_armed_sweep_config(qapp, tmp_path):
-    from gui.controllers.app_controller import AppController
-    app = AppController()
-    app.loadStructureExample("mosfet_2d_structure")
-    app.setSweepConfig("drain", 0.0, 0.6, 0.2)
-
-    path = str(tmp_path / "proj.json")
-    app.saveProject(path, "My Project")
-
-    app2 = AppController()
-    fired = []
-    app2.sweepChanged.connect(lambda: fired.append(1))
-    app2.loadProject(path)
-    assert app2.hasSweepConfig is True
-    cfg = app2._sweep_config
-    assert (cfg.contact, cfg.start, cfg.stop, cfg.step) == ("drain", 0.0, 0.6, 0.2)
-    assert fired, "sweepChanged must fire so QML bindings refresh"
-
-
-def test_loading_project_without_sweep_clears_config(qapp, tmp_path):
-    from gui.controllers.app_controller import AppController
-    app = AppController()
-    app.loadStructureExample("mosfet_2d_structure")
-    app.setSweepConfig("drain", 0.0, 0.6, 0.2)
-    path = str(tmp_path / "proj.json")
-    app.saveProject(path, "My Project")
-
-    app.clearSweepConfig()
-    # re-save without an armed sweep
-    app.saveProject(path, "My Project")
-    app.loadProject(path)
-    assert app.hasSweepConfig is False
-
-
-def test_loading_project_drops_stale_results(qapp, tmp_path):
-    """A project file never contains results, so after loading one there
-    must be no 'results loaded' state left over from whatever was solved
-    before the load."""
-    from gui.controllers.app_controller import AppController
-    from gui.services.result_store import NpzResultStore
-
-    app = AppController()
-    d = {"dimensionality": np.array(1),
-         "axis_x": np.array([0.0, 1e-4]),
-         "field__potential": np.array([0.0, 1.0]),
-         "unit__potential": np.array("V"),
-         "solved_bias": np.array(False)}
-    stale = str(tmp_path / "stale.npz")
-    np.savez(stale + ".tmp.npz", **d)
-    os.replace(stale + ".tmp.npz", stale)
-    app._store = NpzResultStore(stale)
-    assert app.hasResult is True
-
-    other = AppController()
-    other.loadStructureExample("mosfet_2d_structure")
-    other.saveProject(str(tmp_path / "proj.json"), "Other")
-    app.loadProject(str(tmp_path / "proj.json"))
-    assert app.hasResult is False, \
-        "loading a project must not keep a previous run's results on show"

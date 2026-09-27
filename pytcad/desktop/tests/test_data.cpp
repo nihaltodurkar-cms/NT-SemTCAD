@@ -4,6 +4,9 @@
 #include "data/npz.hpp"
 #include "data/pyjson.hpp"
 #include "document/device_spec_document.hpp"
+#include "document/mesh_document.hpp"
+#include "document/process_document.hpp"
+#include "document/structure_document.hpp"
 
 #include <QtTest/QtTest>
 
@@ -11,8 +14,15 @@
 #include <cstring>
 #include <limits>
 
+using tcad::desktop::ContactData;
 using tcad::desktop::DeviceSpecDocument;
+using tcad::desktop::GateData;
+using tcad::desktop::MeshDocument;
 using tcad::desktop::NpzError;
+using tcad::desktop::ProcessFlowDocument;
+using tcad::desktop::ProcessStepData;
+using tcad::desktop::RegionData;
+using tcad::desktop::StructureDocument;
 using tcad::desktop::parse_npy;
 using tcad::desktop::is_python_int;
 using tcad::desktop::parse_python_json;
@@ -162,6 +172,182 @@ private slots:
         QVERIFY_THROWS_EXCEPTION(std::exception, DeviceSpecDocument::parse("[1, 2]"));
         QVERIFY_THROWS_EXCEPTION(std::exception, DeviceSpecDocument::parse(R"({"mesh": {}})"));
         QVERIFY_THROWS_EXCEPTION(std::exception, DeviceSpecDocument::parse("{not json"));
+    }
+
+    // -- P4 S1: StructureDocument/MeshDocument/ProcessFlowDocument -------
+    // (NATIVE-DESKTOP-PLAN.md section 20.1's correction: these wrap
+    // StructureModel/MeshModel/ProcessFlow's own to_dict() shape, not
+    // DeviceSpecDocument -- see structure_document.hpp's header comment.)
+
+    void structureDocumentIsLosslessAndTyped() {
+        const std::string text =
+            R"({"width_cm": 0.01, "height_cm": 0.005, "material": "Silicon",)"
+            R"( "regions": [{"id": "r1", "name": "R1", "x_min": 0.0, "x_max": 0.005,)"
+            R"(   "y_min": 0.0, "y_max": 0.005, "net_doping_cm3": 1e16, "z_min": null,)"
+            R"(   "z_max": null, "material": "SILICON", "doping_profile": "uniform",)"
+            R"(   "profile_peak_cm3": null, "profile_sigma_y": null, "profile_sigma_lat": null,)"
+            R"(   "profile_edge_x": null, "profile_high_side": "left"}],)"
+            R"( "contacts": [{"id": "c1", "name": "C1",)"
+            R"(   "boundary": {"edge": "left", "range_lo": null, "range_hi": null}, "V": 0.0}],)"
+            R"( "gates": [], "depth_cm": null, "future_key": {"z": [1, 2]}})";
+        const auto d = StructureDocument::parse(text);
+        QCOMPARE(d.width_cm(), 0.01);
+        QCOMPARE(d.height_cm(), 0.005);
+        QCOMPARE(d.material(), std::string("Silicon"));
+        QVERIFY(!d.depth_cm().has_value());
+        QCOMPARE(d.region_count(), std::size_t(1));
+        QCOMPARE(d.region(0).id, std::string("r1"));
+        QCOMPARE(d.region(0).net_doping_cm3, 1e16);
+        QVERIFY(!d.region(0).z_min.has_value());
+        QCOMPARE(d.contact_count(), std::size_t(1));
+        QCOMPARE(d.contact(0).boundary.edge, std::string("left"));
+        QCOMPARE(d.gate_count(), std::size_t(0));
+
+        const auto again = StructureDocument::parse(d.dump());
+        QVERIFY(again.json() == d.json());
+        QVERIFY(again.json().contains("future_key"));  // unknown top-level key survives
+        QCOMPARE(again.json().begin().key(), std::string("width_cm"));  // key order kept
+    }
+
+    void structureDocumentMutatorsEditInPlace() {
+        auto d = StructureDocument::parse(
+            R"({"width_cm": 1.0, "height_cm": 2.0})");  // regions/contacts/gates default to []
+        d.set_width_cm(3.0);
+        QCOMPARE(d.width_cm(), 3.0);
+
+        RegionData r;
+        r.id = "r_new";
+        r.name = "New";
+        r.net_doping_cm3 = -1e15;
+        r.z_min = 1e-4;  // exercise the optional-field round trip
+        r.z_max = 2e-4;
+        d.add_region(r);
+        QCOMPARE(d.region_count(), std::size_t(1));
+        QCOMPARE(d.region(0).z_min.value(), 1e-4);
+
+        QVERIFY(d.move_region("r_new", -5));  // clamps to index 0, still found -> true
+        QVERIFY(!d.move_region("no-such-id", -1));  // documented no-op -> false
+
+        RegionData edited = d.region(0);
+        edited.x_max = 5e-4;
+        edited.net_doping_cm3 = 2e15;
+        QVERIFY(d.set_region("r_new", edited));
+        QCOMPARE(d.region(0).x_max, 5e-4);
+        QCOMPARE(d.region(0).net_doping_cm3, 2e15);
+        QCOMPARE(d.region_count(), std::size_t(1));  // set_region never adds a row
+        QVERIFY(!d.set_region("no-such-id", edited));
+
+        QVERIFY(d.remove_region("r_new"));
+        QCOMPARE(d.region_count(), std::size_t(0));
+        QVERIFY(!d.remove_region("r_new"));  // already gone -> false
+
+        ContactData contact;
+        contact.id = "c_new";
+        contact.name = "New Contact";
+        contact.boundary.edge = "left";
+        d.add_contact(contact);
+        ContactData editedContact = d.contact(0);
+        editedContact.V = 1.5;
+        QVERIFY(d.set_contact("c_new", editedContact));
+        QCOMPARE(d.contact(0).V, 1.5);
+        QVERIFY(!d.set_contact("no-such-id", editedContact));
+
+        GateData gate;
+        gate.id = "g_new";
+        gate.name = "New Gate";
+        gate.boundary.edge = "top";
+        gate.tox_cm = 2e-7;
+        d.add_gate(gate);
+        GateData editedGate = d.gate(0);
+        editedGate.V = 2.5;
+        editedGate.vfb_mode = "manual";
+        editedGate.vfb_manual = -0.7;
+        QVERIFY(d.set_gate("g_new", editedGate));
+        QCOMPARE(d.gate(0).V, 2.5);
+        QCOMPARE(d.gate(0).vfb_manual.value(), -0.7);
+        QVERIFY(!d.set_gate("no-such-id", editedGate));
+    }
+
+    void meshDocumentIsLosslessAndTyped() {
+        const auto d = MeshDocument::parse(
+            R"({"nx": 40, "ny": 24, "grading": "uniform", "x_focus": null, "y_focus": null,)"
+            R"( "h_min": null, "h_max": null, "ratio": 1.15, "nz": null, "z_focus": null})");
+        QCOMPARE(d.nx(), 40);
+        QVERIFY(!d.h_min().has_value());
+        QVERIFY(!d.nz().has_value());
+        const auto again = MeshDocument::parse(d.dump());
+        QVERIFY(again.json() == d.json());
+    }
+
+    void meshDocumentMutatorsEditInPlace() {
+        auto d = MeshDocument::parse(R"({})");  // defaults fill every field (parse's own contract)
+        QCOMPARE(d.nx(), 40);
+        d.set_nx(50);
+        d.set_h_min(1e-7);
+        d.set_nz(12);
+        QCOMPARE(d.nx(), 50);
+        QCOMPARE(d.h_min().value(), 1e-7);
+        QCOMPARE(d.nz().value(), 12);
+        d.set_nz(std::nullopt);
+        QVERIFY(!d.nz().has_value());
+    }
+
+    void processFlowDocumentIsLosslessAndTyped() {
+        const std::string text =
+            R"({"steps": [{"id": "p1", "name": "Substrate", "operation": "substrate",)"
+            R"(   "enabled": true, "parameters": {"length_cm": 0.1}}], "future_key": 1})";
+        const auto d = ProcessFlowDocument::parse(text);
+        QCOMPARE(d.step_count(), std::size_t(1));
+        QCOMPARE(d.step(0).operation, std::string("substrate"));
+        QCOMPARE(d.step(0).parameters.at("length_cm").get<double>(), 0.1);
+        const auto again = ProcessFlowDocument::parse(d.dump());
+        QVERIFY(again.json() == d.json());
+        QVERIFY(again.json().contains("future_key"));
+    }
+
+    void processFlowDocumentMutatorsEditInPlace() {
+        auto d = ProcessFlowDocument::parse(
+            R"({"steps": [{"id": "p1", "name": "Substrate", "operation": "substrate",)"
+            R"(   "enabled": true, "parameters": {}}]})");
+        ProcessStepData s;
+        s.id = "p2";
+        s.name = "Anneal";
+        s.operation = "anneal";
+        s.parameters = {{"temperature_C", 1000}};
+        d.add_step(s);
+        QCOMPARE(d.step_count(), std::size_t(2));
+
+        QVERIFY(d.move_step("p2", -1));
+        QCOMPARE(d.step(0).id, std::string("p2"));  // moved to the front
+
+        QVERIFY(d.set_step_enabled("p1", false));
+        QCOMPARE(d.step(1).enabled, false);
+        QVERIFY(!d.set_step_enabled("no-such-id", true));
+
+        // Order is now [p2, p1] (the move above); p1 is at index 1.
+        QVERIFY(d.set_step_parameters("p1", {{"length_cm", 0.02}, {"background_doping_cm3", 1e16}}));
+        QCOMPARE(d.step(1).parameters.at("length_cm").get<double>(), 0.02);
+        QVERIFY(!d.set_step_parameters("no-such-id", {}));
+
+        const std::string dup_id = d.duplicate_step("p1");
+        QVERIFY(!dup_id.empty());
+        QCOMPARE(dup_id.size(), std::size_t(8));
+        QCOMPARE(d.step_count(), std::size_t(3));
+        QCOMPARE(d.step(1).id, std::string("p1"));   // the original, untouched
+        QCOMPARE(d.step(2).id, dup_id);              // inserted immediately after it
+        QCOMPARE(d.step(2).name, std::string("Substrate (copy)"));
+        QVERIFY(d.step(2).parameters == d.step(1).parameters);  // fields copied; QVERIFY not
+                                                                 // QCOMPARE -- see specDocumentIsLosslessAndTyped's own comment above
+        QCOMPARE(d.duplicate_step("no-such-id"), std::string(""));
+
+        QVERIFY(d.remove_step("p2"));
+        QCOMPARE(d.step_count(), std::size_t(2));
+        QVERIFY(!d.remove_step("p2"));
+    }
+
+    void processFlowDocumentRejectsNonFlows() {
+        QVERIFY_THROWS_EXCEPTION(std::exception, ProcessFlowDocument::parse("[1, 2]"));
+        QVERIFY_THROWS_EXCEPTION(std::exception, ProcessFlowDocument::parse(R"({"steps": {}})"));
     }
 
     // Python's json.dumps writes NaN/Infinity/-Infinity; json.loads reads

@@ -29,6 +29,8 @@ void register_thermal(nanobind::module_& m);
 void register_dg(nanobind::module_& m);
 void register_unstructured3d(nanobind::module_& m);
 void register_device3d(nanobind::module_& m);
+void register_catalog(nanobind::module_& m);  // NATIVE-DESKTOP-PLAN.md P4 S6, UI/data-layer registry, not a numerical kernel
+void register_templates(nanobind::module_& m);  // NATIVE-DESKTOP-PLAN.md P4 S7, ditto
 
 namespace nb = nanobind;
 
@@ -88,6 +90,8 @@ NB_MODULE(_core, m) {
     register_dg(m);
     register_unstructured3d(m);
     register_device3d(m);
+    register_catalog(m);
+    register_templates(m);
 
     nb::register_exception_translator(
         [](const std::exception_ptr& p, void*) {

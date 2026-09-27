@@ -91,9 +91,11 @@ need a real display: the viewer needs a GL surface, and
   real `backend_service` and the misbehaving fakes in
   `tests/fake_backend.py`: timeouts, kills mid-call, crashes, protocol
   errors. No display needed.
-- **Theme:** `gui/tests/test_desktop_theme.py` (tokens equal
-  `gui/qml/Theme.qml`'s; every token a grey except the status colours;
-  no hard-coded colours outside `src/theme/`).
+- **Theme:** `gui/tests/test_desktop_theme.py` (every token a grey
+  except the status colours; no hard-coded colours outside
+  `src/theme/`). PySide6/QML removed from this repo: this used to also
+  gate tokens against `gui/qml/Theme.qml`, which no longer exists --
+  `src/theme/` is now the sole implementation.
 - **HiDPI:** `gui/tests/test_desktop_hidpi.py` (the selftest and the
   shell view tests at `QT_SCALE_FACTOR` 1, 1.5 and 2).
 - **PlotView (P2):** `gui/tests/test_desktop_plot.py` runs

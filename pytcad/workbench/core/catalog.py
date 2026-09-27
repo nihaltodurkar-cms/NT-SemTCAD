@@ -1,410 +1,51 @@
 """The Model Catalog: physics as documented, selectable components.
 
-This is the educational heart of M1.  Every physics model the solver
-actually implements is registered here with its equations, the material
-parameters it consumes, references, and an HONEST applicability note --
-including limitations like field_mobility's 1D-only status.
+As of P4 S6 (NATIVE-DESKTOP-PLAN.md section 20.3 decision 3), C++ is the
+SOLE implementation -- the registry data (equations, parameters,
+references, applicability, limitations for every physics model flag)
+and the four operations below live in `core/src/uicore/catalog.cpp`
+(data in `catalog_data.inc`, generated once from this module's own
+former `_MODELS` dict, never hand-retyped) and are exposed as
+`pytcad._core.ModelCatalog`/`ModelInfo`. This module is a thin
+compatibility layer, not a second implementation kept for comparison --
+see the plan's own "no permanent oracle" language for why.
 
-M1 scope: the catalog is METADATA + configuration validation.  The
-solver's Models flags remain the execution truth; default_config()
-returns exactly the wire-format defaults (DeviceSpec._default_models),
-so adopting the catalog changes no solver behavior.  Later milestones
-build the Physics Lab UI and provenance records on top of this registry.
+Follows the EXACT lazy-`require_accel()` pattern `pytcad/_accel.py`
+already uses for every accelerated numerical kernel: importing this
+module never fails (`workbench/core/device.py`'s own
+`models: dict = field(default_factory=ModelCatalog.default_config)`
+would otherwise turn "extension not built" into "cannot even import
+device.py" at class-definition time), but calling any of
+list()/describe()/default_config()/validate() without `pytcad._core`
+built raises the same actionable `ImportError` every other accelerated
+kernel does.
 """
-from dataclasses import dataclass
+from pytcad import _accel
 
-
-@dataclass(frozen=True)
-class ModelInfo:
-    key: str                      # matches a DeviceSpec.models flag name
-    title: str
-    equations: tuple              # human-readable equation strings
-    parameters: tuple             # Semiconductor field names consumed
-    references: tuple             # literature citations
-    applicability: str            # where it applies (dimensions, devices)
-    enabled_by_default: bool
-    limitations: str = ""         # honest statement of what it canNOT do
-
-
-_MODELS = {
-    "doping_mobility": ModelInfo(
-        key="doping_mobility",
-        title="Doping-dependent mobility (Caughey-Thomas)",
-        equations=(
-            "mu(N) = mu_min + (mu_max - mu_min) / (1 + (N/Nref)^alpha)",
-        ),
-        parameters=("mu_n_min", "mu_n_max", "mu_n_Nref", "mu_n_alpha",
-                    "mu_n_Texp", "mu_p_min", "mu_p_max", "mu_p_Nref",
-                    "mu_p_alpha", "mu_p_Texp"),
-        references=(
-            "Caughey & Thomas, Proc. IEEE 55, 2192-2193 (1967)",
-            "temperature exponent per Scharfetter-Gummel convention",
-        ),
-        applicability="1D, 2D, 3D; all doped silicon",
-        enabled_by_default=True,
-    ),
-    "field_mobility": ModelInfo(
-        key="field_mobility",
-        title="High-field mobility / velocity saturation (Canali)",
-        equations=(
-            "v_sat via mu(E): carriers stop accelerating above ~1e4 V/cm",
-        ),
-        parameters=("vsat_n", "vsat_p", "beta_n", "beta_p"),
-        references=("Canali et al., IEEE Trans. Electron Devices 22, "
-                    "1045 (1975)",),
-        applicability="1D only",
-        enabled_by_default=False,
-        limitations="Not implemented above 1D: raises NotImplementedError "
-                    "in 2D/3D solvers because there is no single field "
-                    "direction on an unstructured current flow.",
-    ),
-    "srh": ModelInfo(
-        key="srh",
-        title="Shockley-Read-Hall trap recombination",
-        equations=(
-            "R_SRH = (n*p - ni^2) / (tau_p*(n + nie) + tau_n*(p + nie))",
-            "tau(N) via Scharfetter's empirical lifetime fit",
-        ),
-        parameters=("tau_n0", "tau_p0", "tau_Nref"),
-        references=(
-            "Shockley & Read, Phys. Rev. 87, 835 (1952)",
-            "Hall, Phys. Rev. 87, 387 (1952)",
-            "Scharfetter, Solid-State Electronics 8, 1299 (1965)",
-        ),
-        applicability="1D, 2D, 3D; dominant in depleted/quasi-neutral regions",
-        enabled_by_default=True,
-    ),
-    "auger": ModelInfo(
-        key="auger",
-        title="Auger recombination (three-particle)",
-        equations=("R_Auger = (n*p - ni^2) * (Cn*n + Cp*p)",),
-        parameters=("Cn_auger", "Cp_auger"),
-        references=("Dziewior & Schmid, Appl. Phys. Lett. 31, 346 (1977)",),
-        applicability="1D, 2D, 3D; dominant at high carrier/doping density",
-        enabled_by_default=True,
-    ),
-    "bgn": ModelInfo(
-        key="bgn",
-        title="Bandgap narrowing (Slotboom, heavy doping)",
-        equations=("nie_eff = ni^2 * exp(dEg(N)/kT) with Slotboom's "
-                   "apparent-BGN fit",),
-        parameters=("bgn_E0", "bgn_N0"),
-        references=(
-            "Slotboom & de Graaff, Solid-State Electron. 19, 857 (1976)",
-            "del Alamo, integrated BGN fit (course notes)",
-        ),
-        applicability="1D, 2D, 3D; significant above N ~ 1e17 cm^-3",
-        enabled_by_default=True,
-    ),
-    # M13 phase 2
-    "fd": ModelInfo(
-        key="fd",
-        title="Fermi-Dirac carrier statistics (parabolic-band F_{1/2})",
-        equations=(
-            "n = Nc * F_{1/2}(eta_n),  p = Nv * F_{1/2}(eta_p)",
-            "eta_n = (E_Fn - E_c)/kT,  eta_p = (E_v - E_Fp)/kT",
-            "generalized SG edge factor: delta_n += d ln(nu), nu = "
-            "F(eta)exp(-eta) (carrier-specific opposite signs);",
-            "equilibrium product np_eq = nie_eff^2 * nu_n * nu_p",
-        ),
-        parameters=(),
-        references=(
-            "Lundstrom, Fundamentals of Carrier Transport (2000), ch. 15",
-            "Bessemoulin-Christensen, Netw. Heterog. Media 7 (2012) -- "
-            "modified Scharfetter-Gummel convergence",
-            "validated vs independent quadrature + Sommerfeld series "
-            "(M13 gates G1-G7, tests/test_m13_fermi.py, "
-            "tests/test_m13_solver.py)",
-        ),
-        applicability="1D (device.py); parabolic bands only; valid eta in "
-                      "[-40, +40], exact Boltzmann tail below; composes "
-                      "with Slotboom BGN only through nie_eff as pinned in "
-                      "M13-FERMI-DIRAC-PLAN.md section 4.8",
-        enabled_by_default=False,
-        limitations="No non-parabolic bands, no valley splitting, no "
-                    "density-gradient quantum correction (M20). TAT+FD "
-                    "composition keeps its declared-untested status "
-                    "until M15/M16.",
-    ),
-    # M12-S2
-    "tat": ModelInfo(
-        key="tat",
-        title="Trap-assisted tunneling (Hurkx field-enhanced SRH)",
-        equations=(
-            "R_TAT = R_SRH * Gamma(F),  Gamma = enhancement factor >= 1",
-            "Gamma via WKB tunneling escape probabilities in the SRH "
-            "denominator (plan-specified form), field F = |E| [V/cm]",
-            "trap level Et = trap_et_rel * Eg above the valence band "
-            "(trap_et_rel = 0.5 -> midgap, the SRH default)",
-        ),
-        parameters=(),
-        references=(
-            "Hurkx, Klaassen & Knuvers, IEEE Trans. Electron Devices 39, "
-            "331 (1992)",
-        ),
-        applicability="1D (device.py); local-field enhancement of the "
-                      "existing SRH term; silicon coefficients",
-        enabled_by_default=False,
-        limitations="Default OFF reproduces plain SRH bit-for-bit "
-                    "(Gamma=1 identically at F=0, and the M13 goldens "
-                    "gate this). Midgap trap (trap_et_rel=0.5, a Models "
-                    "field, not a per-model catalog parameter) can "
-                    "underflow Gamma to exactly 1.0 (no enhancement) at "
-                    "realizable bulk-Si fields -- an honest physics "
-                    "result of the WKB factor law, not a bug (see "
-                    "CLAUDE.md's TAT WKB gotcha). Not ported to 2D/3D; "
-                    "TAT+FD composition is declared untested (M13-FD "
-                    "plan's own limitations note).",
-    ),
-    "impact": ModelInfo(
-        key="impact",
-        title="Impact ionization (van Overstraeten-de Man)",
-        equations=(
-            "G = [alpha_n(|E|)|Jn| + alpha_p(|E|)|Jp|] / q",
-            "alpha(E) = A exp(-B/E), piecewise at E_SWITCH = 5e5 V/cm",
-            "coupled via lagged-source outer iteration (frozen per bias "
-            "solve, updated between solves -- M12-TAT precedent)",
-        ),
-        parameters=(),
-        references=(
-            "van Overstraeten & de Man, Solid-State Electron. 13, 583 "
-            "(1970)",
-            "Sentaurus/Taurus device manual parameter tables",
-        ),
-        applicability="1D (device.py) and structured 2D/3D "
-                      "(device2d.py/device3d.py, M34-S6: alpha at the "
-                      "field component along each carrier's current); "
-                      "local-field model; silicon coefficients; "
-                      "breakdown regime requires voltage continuation",
-        enabled_by_default=False,
-        limitations="The nonlocal (effective-field) variant is "
-                    "`impact_nonlocal` (1D M34-S2, structured 2D/3D "
-                    "M34-S6c); unstructured Device2D refuses both; no "
-                    "carrier-temperature coupling; devsim backend not "
-                    "supported; near-BV convergence requires the "
-                    "staged-generation continuation.",
-    ),
-    "btbt": ModelInfo(
-        key="btbt",
-        title="Band-to-band tunneling (local Kane/Hurkx)",
-        equations=(
-            "G = A * F^2 * exp(-B / F)  [cm^-3 s^-1], F = |E| [V/cm]",
-            "coupled live into the Newton residual/Jacobian (M15 R1b "
-            "pattern) with dG/dpsi chain-ruled through the node field",
-        ),
-        parameters=(),
-        references=(
-            "Hurkx, Klaassen & Knuvers, IEEE Trans. Electron Devices 39, "
-            "331 (1992), Table I (silicon direct BTBT)",
-            "Kane, J. Phys. Chem. Solids 12, 181 (1960) -- the "
-            "F^2 exp(-B/F) local form's origin",
-        ),
-        applicability="1D (device.py) and structured 2D/3D "
-                      "(pytcad/btbt_grid.py, M16-S2); local-field model; "
-                      "silicon coefficients; Zener/GIDL regime",
-        enabled_by_default=False,
-        limitations="The nonlocal path model is the separate, "
-                    "first-principles `btbt_nonlocal` (M34), not a "
-                    "nonlocal recalibration of this one. The plain "
-                    "local Kane/Hurkx form is known to UNDERESTIMATE "
-                    "leakage at large reverse bias relative to nonlocal "
-                    "BTBT (single average field stands in for the whole "
-                    "tunneling path); gated on its known failure mode "
-                    "(the M16 high-bias non-plateau gate). Unstructured "
-                    "Device2D refuses it; no Modified-Hurkx dynamic "
-                    "correction.",
-    ),
-    "btbt_nonlocal": ModelInfo(
-        key="btbt_nonlocal",
-        title="Band-to-band tunneling (nonlocal Kane WKB path)",
-        equations=(
-            "G_T = |dEv/dx|_xi / (36 hbar) * (int dx/kappa)^-1 "
-            "* [1 - exp(-km^2 int dx/kappa)] * exp(-2 int kappa dx)",
-            "kappa(x) from Kane's two-band dispersion (Esseni eq 9), "
-            "integrated exactly along a piecewise-linear band",
-            "holes generated at the start x_i, electrons at the live "
-            "delta = 1 crossing x_f -- one pair per tunneling event",
-        ),
-        parameters=("m_n_star", "m_p_star"),
-        references=(
-            "D. Esseni, M. Pala, P. Palestri, C. Alper, T. Rollo, "
-            "Semicond. Sci. Technol. 32, 083005 (2017), sec. 2.1, "
-            "eqs (8)-(12), doi:10.1088/1361-6641/aa6fca",
-            "E. O. Kane, J. Phys. Chem. Solids 12, 181 (1960)",
-        ),
-        applicability="1D, structured 2D and 3D (device.py, device2d.py, "
-                      "device3d.py); homojunctions; field-line tunnel "
-                      "paths in 2D/3D",
-        enabled_by_default=False,
-        limitations="First-principles Kane WKB rate from bare mr/Eg, NOT "
-                    "the empirical Hurkx calibration `btbt` uses -- two "
-                    "independent models, not a local/nonlocal pair of one "
-                    "calibration. Single dominant zero-transverse-momentum "
-                    "channel with (fc - fv) = 1, so it generates at zero "
-                    "bias too. Refused on heterostructures and on "
-                    "unstructured meshes. Path geometry is frozen per bias "
-                    "solve and re-located at convergence; at a gate "
-                    "(Robin) boundary a path is kept inside the "
-                    "semiconductor, which is exact only at insulating "
-                    "boundaries.",
-    ),
-    "impact_nonlocal": ModelInfo(
-        key="impact_nonlocal",
-        title="Impact ionization, nonlocal effective field",
-        equations=(
-            "alpha(E_eff) with lambda dE_eff/ds + E_eff = |E| along each "
-            "carrier's drift direction",
-            "E_eff(k+1) = a E_eff(k) + (1 - a) |E_k|, a = exp(-h/lambda) "
-            "(exact per edge)",
-        ),
-        parameters=(),
-        references=(
-            "J.W. Slotboom, G. Streutker, M.J. van Dort, P.H. Woerlee, "
-            "A. Pruijmboom, D.J. Gravesteijn, 'Non-local impact "
-            "ionization in silicon devices', IEDM 1991 (IEEE Xplore "
-            "235484; abstract: lambda_e = 650 A)",
-            "van Overstraeten & de Man, Solid-State Electron. 13, 583 "
-            "(1970) -- the coefficients evaluated at E_eff",
-        ),
-        applicability="1D and structured 2D/3D (device.py, device2d.py, "
-                      "device3d.py, M34-S6c: pytcad/ii_nonlocal_grid.py); "
-                      "modifies `impact` and requires it",
-        enabled_by_default=False,
-        limitations="Only the IEDM abstract was accessible: the "
-                    "relaxation equation is the drift-dominated form of "
-                    "its simplified energy balance as constructed here, "
-                    "not a quotation. lambda_p = lambda_n (no hole value "
-                    "was accessible). Transport direction from the field "
-                    "on edges above 100 V/cm, inherited from the nearest "
-                    "strong edge on the SAME grid line (2D/3D: fixed "
-                    "transverse indices, varying only along that edge's "
-                    "own axis). Unstructured Device2D refuses it.",
-    ),
-    "surface_mobility": ModelInfo(
-        key="surface_mobility",
-        title="Surface/inversion-layer mobility (Lombardi CVT)",
-        equations=(
-            "1/mu_eff = 1/mu_CT + 1/mu_phonon + 1/mu_SR",
-            "mu_phonon = B / (T * E_eff^{1/3})",
-            "mu_SR = delta / E_eff^2  (delta in V/s)",
-        ),
-        parameters=(),
-        references=(
-            "Lombardi, Manzini, Saporito & Vanzi, IEEE Trans. CAD 7(11), "
-            "1164-1171 (1988)",
-            "COMSOL 'Lombardi Surface Mobility' documentation (delta_n/"
-            "delta_p numeric cross-check)",
-        ),
-        applicability="2D (device2d.py) MOSFET channel with a gate "
-                      "contact; raises in 1D/3D",
-        enabled_by_default=False,
-        limitations="Phonon term is a simplified single-parameter stand-"
-                    "in, not Lombardi's full doping-dependent two-term "
-                    "form (M14 G-A, open -- see M14-SURFACE-MOBILITY-"
-                    "PLAN.md); applied lagged in the Newton loop, scoped "
-                    "to mesh row 0 (the gate-adjacent surface).",
-    ),
-    "dg": ModelInfo(
-        key="dg",
-        title="Density-gradient quantum correction (Ancona-Stafford)",
-        equations=(
-            "n = n_classical * exp(-Lambda_n / V_T),  "
-            "p = p_classical * exp(-Lambda_p / V_T)",
-            "Lambda = -(gamma * hbar^2 / (2 m* q)) * (sqrt(n))''/sqrt(n) "
-            "[V]",
-        ),
-        parameters=(),
-        references=(
-            "Ancona & Stafford, IEEE Trans. Electron Devices 46, 1799 "
-            "(1999)",
-            "Ancona, Superlattices & Microstructures 27, 457 (2000)",
-        ),
-        applicability="1D equilibrium (device.py) and MOSCapacitor C-V "
-                      "(moscap.py); Boltzmann statistics only (dg+fd "
-                      "refused)",
-        enabled_by_default=False,
-        limitations="Equilibrium-only: Device1D.solve_bias and Device2D/3D "
-                    "refuse (DG transport is out of M20 scope); gamma=1.0 "
-                    "default is the uncalibrated Bohm value; Lambda "
-                    "lagged inside Newton with an outer fixed point "
-                    "(frozen-quantum-potential, the M12-TAT precedent); "
-                    "|Lambda| clamped at 20*V_T (deep-bulk guard).",
-    ),
-    "incomplete_ion": ModelInfo(
-        key="incomplete_ion",
-        title="Incomplete dopant ionization (shallow B/P/As)",
-        equations=(
-            "N_D+ = N_D / (1 + g_D exp((E_F - E_D)/kT)),  g_D = 2",
-            "N_A- = N_A / (1 + g_A exp((E_A - E_F)/kT)),  g_A = 4",
-            "E_D = E_c - 45 meV,  E_A = E_v + 45 meV (hydrogenic)",
-        ),
-        parameters=(),
-        references=(
-            "Sze & Ng, Physics of Semiconductor Devices, 3rd ed., ch. 7 "
-            "(freeze-out curves)",
-            "Altermatt et al., IEEE Trans. Electron Devices 49 (2002)",
-            "gated vs literature bands at 77/150/250/300 K "
-            "(tests/test_m13_solver.py G7b/c)",
-        ),
-        applicability="1D and structured 2D/3D (device.py, device2d.py, "
-                      "device3d.py, M41: device.py's ionized_doping is "
-                      "shared by all three); independent of the fd flag; "
-                      "single-species per profile (majority side carries "
-                      "all dopants); below the Mott transition "
-                      "(~4e18 cm^-3 for Si:P)",
-        enabled_by_default=False,
-        limitations="Hydrogenic model invalid at degenerate doping and "
-                    "for deep levels; no dopant-species input on net-"
-                    "doping profiles. Unstructured Device2D refuses it, "
-                    "as does band_offset='affinity' in every device.",
-    ),
-}
+__all__ = ["ModelCatalog"]
 
 
 class ModelCatalog:
-    """Registry API: list()/describe()/validate()/default_config()."""
+    """Registry API: list()/describe()/validate()/default_config().
+    See core/src/uicore/catalog.cpp for the real implementation --
+    nothing here is a second copy of it."""
 
-    @classmethod
-    def list(cls):
-        return sorted(_MODELS)
+    @staticmethod
+    def list():
+        _accel.require_accel()
+        return _accel.core.ModelCatalog.list()
 
-    @classmethod
-    def describe(cls, key):
-        try:
-            return _MODELS[key]
-        except KeyError:
-            raise KeyError(
-                f"unknown physics model '{key}' (known models: "
-                f"{', '.join(cls.list())})") from None
+    @staticmethod
+    def describe(key):
+        _accel.require_accel()
+        return _accel.core.ModelCatalog.describe(key)
 
-    @classmethod
-    def default_config(cls):
-        """The wire-format default: EXACTLY DeviceSpec._default_models().
-        field_mobility defaults off because of its honest 1D-only limit."""
-        return {key: info.enabled_by_default
-                for key, info in _MODELS.items()}
+    @staticmethod
+    def default_config():
+        _accel.require_accel()
+        return _accel.core.ModelCatalog.default_config()
 
-    @classmethod
-    def validate(cls, config):
-        """Validate a ModelConfig dict against the registry.  Raises
-        ValueError with an actionable message; returns None."""
-        if not isinstance(config, dict):
-            raise ValueError(
-                f"model config must be a dict of {{model_key: bool}}, got "
-                f"{type(config).__name__}")
-        unknown = sorted(set(config) - set(_MODELS))
-        if unknown:
-            raise ValueError(
-                f"unknown physics model(s) {unknown}; known models: "
-                f"{', '.join(cls.list())}")
-        for key, value in config.items():
-            if not isinstance(value, bool):
-                raise ValueError(
-                    f"model '{key}' must be true or false, got "
-                    f"{value!r}")
-        # M34-S2: the effective field only modifies the local impact
-        # model's coefficients -- on its own it would do nothing.
-        if config.get("impact_nonlocal") and not config.get("impact"):
-            raise ValueError(
-                "model 'impact_nonlocal' modifies 'impact' and needs it "
-                "enabled too")
+    @staticmethod
+    def validate(config):
+        _accel.require_accel()
+        return _accel.core.ModelCatalog.validate(config)

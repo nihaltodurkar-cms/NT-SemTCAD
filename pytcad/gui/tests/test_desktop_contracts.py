@@ -22,6 +22,12 @@
 3. DeviceSpec (plan 4.1): Python DeviceSpec -> C++ document -> Python
    DeviceSpec is lossless for every shipped example.
 4. The C++ unit tests pass.
+5. Structure/mesh/process documents (P4 S1, plan 20.4): one fixed
+   mutation script, applied both to real StructureModel/MeshModel/
+   ProcessFlow objects in Python and to StructureDocument/MeshDocument/
+   ProcessFlowDocument in C++, produces an equal result (compared as
+   parsed JSON, not raw text -- new entries are not required to match
+   Python's asdict() key order).
 
 Skipped (not failed) when the desktop app has not been built -- build
 with `powershell -File desktop\\build.ps1` (plan section 7).
@@ -126,6 +132,61 @@ def solved(tmp_path_factory):
 
 
 SOLVED = ["diode_1d", "mosfet_2d", "resistor_3d", "resistor_3d_sweep"]
+
+
+# -- 6. Physics Lab convergence/continuation views (P4 S6b) -----------------------------
+# Mirrors PhysicsLabController.convergenceData()/continuationData()'s own transformation
+# (gui/controllers/lab_controller.py, read directly before writing this) applied to the
+# same file's real RunRecord -- not a separate implementation of the logic, an independent
+# check of the SAME documented transformation the native tool also applies.
+
+def _expected_convergence(record):
+    if record is None or not record.trace:
+        return []
+    out = []
+    for step in record.trace:
+        metrics = {name: [float(v) if v is not None else float("nan") for v in series]
+                  for name, series in step.metrics.items()}
+        out.append({"stage": step.stage, "iterations": [float(i) for i in step.iterations], "metrics": metrics})
+    return out
+
+
+def _expected_continuation(record):
+    if record is None or not record.continuation_records:
+        return []
+    out = []
+    for i, rec in enumerate(record.continuation_records):
+        out.append({"index": i, "parameter": str(rec.get("parameter", rec.get("V", ""))),
+                    "nodes": str(rec.get("nodes", "")), "accepted": bool(rec.get("accepted", True))})
+    return out
+
+
+@pytest.mark.parametrize("name", SOLVED)
+def test_physics_lab_convergence_and_continuation_match_the_run_record(solved, name):
+    got = _assert_conforms(solved[name])
+    store = NpzResultStore(solved[name])
+    record = store.run_record()
+    pl = got["result"]["physics_lab"]
+
+    expected_conv = _expected_convergence(record)
+    assert len(pl["convergence"]) == len(expected_conv)
+    for actual, expected in zip(pl["convergence"], expected_conv):
+        assert actual["stage"] == expected["stage"]
+        assert actual["iterations"] == expected["iterations"]
+        assert set(actual["metrics"]) == set(expected["metrics"])
+        for key, values in expected["metrics"].items():
+            got_values = actual["metrics"][key]
+            assert len(got_values) == len(values)
+            for g, e in zip(got_values, values):
+                assert (g != g and e != e) or g == e  # NaN != NaN; compare equal otherwise
+
+    expected_cont = _expected_continuation(record)
+    assert pl["continuation"] == expected_cont
+    if name == "diode_1d":
+        assert expected_conv, "sanity: this fixture is a real bias solve with a real trace"
+    # None of this GUI's own fixtures drive a continuation ladder (that needs
+    # impact-ionization/breakdown ramps, not part of any SOLVED example) -- the
+    # non-empty-continuation path is gated by continuation.py's own tests, not here.
 
 
 @pytest.mark.parametrize("name", SOLVED)
@@ -857,6 +918,83 @@ def test_device_spec_round_trips_losslessly(tmp_path, name):
     assert view["axis_sizes"] == [len(spec.mesh.axes.get(a, [])) for a in ("x", "y", "z")]
     assert view["contacts"] == [c.name for c in spec.contacts]
     assert view["backend"] == spec.backend
+
+
+# -- 5. Structure/mesh/process document mutators --------------------------------------
+# The fixed script mirrors tcad_structure_roundtrip.cpp's own script exactly (see that
+# file's header comment) -- change one side, change the other.
+
+def _apply_structure_script(structure):
+    from gui.services.structure_model import BoundarySpec, ContactModel, GateModel, RegionSpec
+    structure.width_cm = structure.width_cm * 2.0
+    structure.add_region(RegionSpec(
+        id="r_new", name="New Region", x_min=1e-4, x_max=2e-4, y_min=0.0, y_max=5e-5,
+        net_doping_cm3=1e17))
+    structure.move_region("r_new", -1)
+    structure.find_region("r_new").net_doping_cm3 = -5e16
+    structure.add_contact(ContactModel(id="c_new", name="New Contact",
+                                       boundary=BoundarySpec(edge="right")))
+    structure.find_contact("c_new").V = 1.5
+    structure.add_gate(GateModel(id="g_new", name="New Gate",
+                                 boundary=BoundarySpec(edge="top"), tox_cm=2e-7))
+    gate = structure.find_gate("g_new")
+    gate.V = 2.5
+    gate.vfb_mode = "manual"
+    gate.vfb_manual = -0.7
+    structure.remove_region("does-not-exist")  # documented no-op
+
+
+def _apply_mesh_script(mesh):
+    mesh.nx = mesh.nx + 4
+    mesh.h_min = 1e-7
+    mesh.ratio = 1.2
+
+
+def _apply_process_script(flow):
+    from gui.services.process_model import ProcessStep
+    flow.add_step(ProcessStep(id="p_new", name="Anneal", operation="anneal",
+                              parameters={"temperature_C": 1000, "time_s": 600}))
+    flow.move_step("p_new", -1)
+    flow.find_step("p_new").enabled = False
+    flow.find_step("p_new").parameters = {"temperature_C": 900, "time_s": 300}
+    flow.remove_step("does-not-exist")  # documented no-op
+
+
+def test_structure_mesh_process_documents_match_python_after_the_same_script(tmp_path):
+    from gui.services.process_model import ProcessFlow, ProcessStep
+    from gui.services.structure_model import MeshModel, StructureModel
+
+    structure = StructureModel(width_cm=0.01, height_cm=0.005)
+    mesh = MeshModel()
+    flow = ProcessFlow(steps=[ProcessStep(id="p1", name="Substrate", operation="substrate",
+                                          parameters={"length_cm": 0.1})])
+
+    s_in, s_out = tmp_path / "structure_in.json", tmp_path / "structure_out.json"
+    m_in, m_out = tmp_path / "mesh_in.json", tmp_path / "mesh_out.json"
+    p_in, p_out = tmp_path / "process_in.json", tmp_path / "process_out.json"
+    for path, obj in ((s_in, structure), (m_in, mesh), (p_in, flow)):
+        with open(path, "w") as fh:
+            json.dump(obj.to_dict(), fh)
+
+    out = _tool("structure_roundtrip", str(s_in), str(s_out), str(m_in), str(m_out),
+               str(p_in), str(p_out))
+    assert out.returncode == 0, out.stdout + out.stderr
+
+    _apply_structure_script(structure)
+    _apply_mesh_script(mesh)
+    _apply_process_script(flow)
+
+    with open(s_out) as fh:
+        assert json.load(fh) == structure.to_dict()
+    with open(m_out) as fh:
+        assert json.load(fh) == mesh.to_dict()
+    with open(p_out) as fh:
+        assert json.load(fh) == flow.to_dict()
+
+    view = json.loads(out.stdout)
+    assert view == {"region_count": len(structure.regions), "contact_count": len(structure.contacts),
+                    "gate_count": len(structure.gates), "mesh_nx": mesh.nx,
+                    "step_count": len(flow.steps)}
 
 
 # -- 4. C++ unit tests ---------------------------------------------------------------

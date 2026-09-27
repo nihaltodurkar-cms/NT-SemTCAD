@@ -14,6 +14,7 @@
 // then carries {"ok": false, "error": "..."}).
 #include "data/line_cut.hpp"
 #include "data/npz.hpp"
+#include "data/physics_lab_data.hpp"
 #include "data/pyjson.hpp"
 #include "data/result_model.hpp"
 
@@ -158,6 +159,32 @@ Json result_view(const ResultModel& m) {
                  {"transient_points", m.transient_points()},
                  {"ac_points", m.ac_points()}};
     r["series"] = series_view(m);
+    // P4 S6b: the Physics Lab's convergence/continuation views, formatted
+    // exactly as PhysicsLabController.convergenceData()/continuationData()
+    // do -- the Python contract test compares this against calling those
+    // directly on the same file, through NpzResultStore.run_record().
+    // Guarded like region_materials/structure_regions above: trace() is a
+    // LAZY accessor (it can throw NpzError on a malformed converge__trace,
+    // same as the store), so it must not crash the whole dump -- caught
+    // and reported as "physics_lab_error" instead (found by an EXISTING
+    // test, test_series_accessors_fail_on_access_like_the_store, which
+    // failed against a first, unguarded version of this block).
+    try {
+        Json stages = Json::array();
+        for (const auto& stage : tcad::desktop::convergence_data(m)) {
+            Json metrics = Json::object();
+            for (const auto& [name, values] : stage.metrics) metrics[name] = enc(values);
+            stages.push_back({{"stage", stage.stage}, {"iterations", enc(stage.iterations)}, {"metrics", metrics}});
+        }
+        Json continuation = Json::array();
+        for (const auto& row : tcad::desktop::continuation_data(m))
+            continuation.push_back({{"index", row.index}, {"parameter", row.parameter},
+                                    {"nodes", row.nodes}, {"accepted", row.accepted}});
+        r["physics_lab"] = {{"convergence", stages}, {"continuation", continuation}};
+    } catch (const NpzError& e) {
+        r["physics_lab"] = nullptr;
+        r["physics_lab_error"] = e.what();
+    }
     r["snapshots"] = nullptr;
     if (m.has_sweep_snapshots()) {
         try {

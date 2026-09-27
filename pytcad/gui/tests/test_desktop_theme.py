@@ -1,13 +1,10 @@
 """NATIVE-DESKTOP-PLAN.md P1 S3c theme gates for the native app, for ONE
 black-and-white scheme (the user's decision, 2026-09-26).
 
-1. Drift: every native theme token that mirrors a gui/qml/Theme.qml colour
-   equals it exactly. A QML rename or recolour therefore fails here, not
-   silently.
-2. Black and white: every native token is a grey (r == g == b) except the
+1. Black and white: every native token is a grey (r == g == b) except the
    status colours, which carry meaning. Data colours (plot series, region
    palette, colour maps) are not theme tokens and keep their colours.
-3. No hard-coded colours in the native sources outside src/theme/ and the
+2. No hard-coded colours in the native sources outside src/theme/ and the
    colour-map module (colour maps encode values, not UI). This was the
    QML GUI's Phase 3/4 review finding; here it is a gate. The patterns
    are checked against known-bad snippets first, so a pattern that
@@ -15,6 +12,11 @@ black-and-white scheme (the user's decision, 2026-09-26).
 
 What the running window paints (palette, VTK background, ADS panels, the
 plot) is in the shell e2e test (desktop/tests/test_shell.cpp).
+
+PySide6/QML removed from this repo: the "drift" gate (every native token
+that mirrors a gui/qml/Theme.qml colour equals it exactly) was removed
+with it -- Theme.qml no longer exists, and the native theme it was once
+derived from is now the sole implementation.
 """
 import json
 import os
@@ -26,16 +28,7 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 BUILD = os.path.join(ROOT, "build", "desktop")
 MANIFEST = os.path.join(BUILD, "desktop_runtime.json")
-THEME_QML = os.path.join(ROOT, "gui", "qml", "Theme.qml")
 SRC = os.path.join(ROOT, "desktop", "src")
-
-# Theme.qml colours: `[readonly] property color <name>: "#rrggbb"` (the
-# opaque tokens a native token can mirror; Qt.rgba overlays are QML-only).
-_PROP = re.compile(r"(?:readonly\s+)?property\s+color\s+(\w+)\s*:\s*\"(#[0-9a-fA-F]{6})\"")
-
-
-def _qml_colours():
-    return {m.group(1): m.group(2).lower() for m in _PROP.finditer(open(THEME_QML, encoding="utf-8").read())}
 
 
 def _tokens():
@@ -53,21 +46,6 @@ def _hex_rgb(h):
 
 needs_build = pytest.mark.skipif(not os.path.isfile(MANIFEST),
                                  reason="native desktop app not built (powershell -File desktop\build.ps1)")
-
-
-@needs_build
-def test_native_tokens_mirror_theme_qml():
-    tokens = _tokens()
-    qml = _qml_colours()
-    assert {"background", "text", "accent", "chromeBg", "panel"} <= set(qml),         "the Theme.qml parser found too little -- fix the parser, not the gate"
-    mirrored = 0
-    for t in tokens:
-        if not t["qml"]:
-            continue
-        assert t["qml"] in qml, f"native token {t['name']} mirrors Theme.qml '{t['qml']}', which is gone or not opaque"
-        assert t["hex"].lower() == qml[t["qml"]], f"{t['name']} {t['hex']} != Theme.qml {t['qml']} {qml[t['qml']]}"
-        mirrored += 1
-    assert mirrored >= 15
 
 
 @needs_build

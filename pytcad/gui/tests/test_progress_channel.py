@@ -12,29 +12,25 @@
    (stage, iteration), at most 50 records a second with the essentials
    never dropped, relayed sweep lines with a null contact, pass-through
    unchanged.
-4. The QML JobRunner (decision 7): progress records never reach the
-   console; the child runs unbuffered, so a stage's Newton lines arrive
-   while it runs (measured on the 2D MOSFET's bias stage); lines split
-   across reads -- mid-UTF-8 too -- and a final line without a newline
-   are read whole.
+
+PySide6/QML removed from this repo: point 4 (the QML JobRunner's own
+live-progress wiring, decision 7) was removed with it -- points 1-3
+above are the tap/grammar itself, Qt-free, unaffected.
 """
 import io
 import json
 import os
 import subprocess
 import sys
-import time
 
 import numpy as np
 import pytest
-from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, ROOT)
 
 from gui.services import examples, progress_channel  # noqa: E402
 from gui.services.device_spec import SweepSpec, TransientSpec, WaveformSpec  # noqa: E402
-from gui.services.job_runner import JobRunner  # noqa: E402
 from gui.services.result_store import NpzResultStore  # noqa: E402
 
 EVENTS = {"stage", "sweep_point", "newton", "transient_step", "done", "error"}
@@ -226,73 +222,3 @@ def test_a_relayed_sweep_line_has_a_null_contact_and_value():
     pts = [r for r in _records(out) if r["event"] == "sweep_point"]
     assert (pts[0]["contact"], pts[0]["value"]) == ("gate", 0.25)
     assert (pts[1]["contact"], pts[1]["value"]) == (None, None)
-
-
-# ----------------------------------------------------- 4. the QML JobRunner
-@pytest.fixture(scope="module")
-def qapp():
-    yield QCoreApplication.instance() or QCoreApplication([])
-
-
-def _run_runner(runner, spec, timeout_ms=300000):
-    loop = QEventLoop()
-    outcome = {}
-    runner.finished.connect(lambda p: (outcome.update(kind="finished", path=p), loop.quit()))
-    runner.failed.connect(lambda s, d: (outcome.update(kind="failed", summary=s, details=d), loop.quit()))
-    QTimer.singleShot(timeout_ms, loop.quit)
-    runner.start(spec)
-    loop.exec()
-    return outcome
-
-
-def test_qml_runner_is_live_and_hides_progress_records(qapp, tmp_path):
-    """Decision 7, measured: the MOSFET's bias-stage Newton lines arrive
-    WHILE the stage runs (before this fix all nine arrived together at its
-    end), and no PYTCAD_PROGRESS record reaches the console."""
-    runner = JobRunner(work_dir=str(tmp_path))
-    events = []
-    t0 = time.perf_counter()
-    runner.stageChanged.connect(lambda s: events.append(("stage", s, time.perf_counter() - t0)))
-    runner.residualChanged.connect(lambda r: events.append(("residual", r, time.perf_counter() - t0)))
-    console = []
-    runner.progressLine.connect(console.append)
-    outcome = _run_runner(runner, examples.EXAMPLES["mosfet_2d"]())
-    assert outcome.get("kind") == "finished", outcome
-    assert not any(l.startswith(progress_channel.PREFIX) for l in console)
-    stages = [e for e in events if e[0] == "stage"]
-    i_bias = next(i for i, e in enumerate(events) if e[:2] == ("stage", "bias"))
-    i_next = next(i for i in range(i_bias + 1, len(events)) if events[i][0] == "stage")
-    bias = [e[2] for e in events[i_bias + 1:i_next] if e[0] == "residual"]
-    assert len(bias) >= 3, stages
-    # spread over the stage, not one burst at its end
-    assert bias[-1] - bias[0] > 0.25 * (events[i_next][2] - events[i_bias][2]), (bias, stages)
-
-
-def test_qml_runner_starts_the_child_unbuffered(qapp, tmp_path):
-    """Decision 7 itself. The test above passes even without it, because
-    solver_runner's tap flushes after each record -- so this child prints
-    plain, unflushed lines (as the core does, and as lines the tap drops
-    or does not parse arrive): only an unbuffered child delivers them as
-    printed, 0.25 s apart, instead of all five at its exit."""
-    runner = JobRunner(work_dir=str(tmp_path), module="gui.tests.fixtures.slow_printer")
-    seen = []
-    t0 = time.perf_counter()
-    runner.residualChanged.connect(lambda r: seen.append(time.perf_counter() - t0))
-    outcome = _run_runner(runner, examples.EXAMPLES["diode_1d"](), timeout_ms=60000)
-    assert outcome.get("kind") == "finished", outcome
-    assert len(seen) == 5
-    assert seen[-1] - seen[0] > 0.6, seen          # 4 x 0.25 s apart, not one burst
-
-
-def test_qml_runner_reads_lines_split_across_reads(qapp, tmp_path):
-    runner = JobRunner(work_dir=str(tmp_path), module="gui.tests.fixtures.chunked_writer")
-    stages, residuals, console = [], [], []
-    runner.stageChanged.connect(stages.append)
-    runner.residualChanged.connect(residuals.append)
-    runner.progressLine.connect(console.append)
-    outcome = _run_runner(runner, examples.EXAMPLES["diode_1d"](), timeout_ms=60000)
-    assert outcome.get("kind") == "finished", outcome        # RESULT_PATH without a newline, read
-    assert stages == ["equilibrium"]                          # not "equil"
-    assert residuals == [1.25e-2]                             # not 1.0
-    assert "note: µm ✓" in console                  # the split UTF-8 character intact
-    assert not any("PYTCAD_PROGRESS" in l or l.startswith('"t"') for l in console)

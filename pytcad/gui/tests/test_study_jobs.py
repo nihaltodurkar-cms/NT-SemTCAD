@@ -1,16 +1,17 @@
 """NATIVE-DESKTOP-PLAN.md P3-S7: the local Study, backend side.
 
 The native app builds a study's rows and jobs through the backend
-(study.templates, study.rows, from gui/services/study_jobs.py), which
-StudyController.configureStudy now calls too. Gated here against the
-QML controller itself, driven headless:
-  - study.rows equals StudyController.configureStudy's rows (params,
+(study.templates, study.rows, from gui/services/study_jobs.py) --
+PySide6/QML removed this repo's QML StudyController, which used to call
+the SAME gui.services.study_jobs functions directly (study_jobs.py
+itself is Qt-free and unaffected). Gated here as a conformance check
+between the backend RPC and a direct call to study_jobs.py:
+  - study.rows equals a direct study_jobs.study_rows() call (params,
     statuses, errors, axes) for a 2x2 mos_capacitor study that
     includes a rejected value;
-  - every row's job_text is byte-identical to the job file the QML
-    pool runner would write for that row (equilibrium-only);
-  - study.templates equals the templates' own parameter lists;
-  - the existing M30 study tests pass unchanged (run separately).
+  - every row's job_text is byte-identical to study_jobs.row_spec()'s
+    own job file for that row (equilibrium-only);
+  - study.templates equals the templates' own parameter lists.
 """
 import json
 import os
@@ -22,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 
 from backend_service import server  # noqa: E402
-from gui.controllers.study_controller import StudyController  # noqa: E402
+from gui.services import study_jobs  # noqa: E402
 from workbench.core.templates import get_template, list_templates  # noqa: E402
 
 
@@ -35,18 +36,17 @@ MOS_BASE = {}
 MOS_SPLITS = {"na_cm3": [-1e16, -5e16], "tox_cm": [1e-6, 2e-4]}  # 2e-4 > hi=1e-4: rejected
 
 
-def test_study_rows_equals_qmls_configure_study():
-    ctl = StudyController(app=None)
-    assert ctl.configureStudy("mos_capacitor", MOS_BASE, MOS_SPLITS)
-    qml_rows = [{"params": r["params"], "status": r["status"], "error": r["error"]}
-               for r in ctl.rows]
+def test_study_rows_matches_a_direct_call():
+    axes, rows = study_jobs.study_rows("mos_capacitor", MOS_BASE, MOS_SPLITS)
+    expected_rows = [{"params": r["params"], "status": r["status"], "error": r["error"]}
+                     for r in rows]
 
     result = _call("study.rows", {"template_id": "mos_capacitor", "base": MOS_BASE,
                                   "splits": MOS_SPLITS})["result"]
-    assert result["axes"] == ctl.splitAxes
+    assert result["axes"] == axes
     native_rows = [{"params": r["params"], "status": r["status"], "error": r["error"]}
                   for r in result["rows"]]
-    assert native_rows == qml_rows
+    assert native_rows == expected_rows
     assert len(result["rows"]) == 4
     assert sum(1 for r in result["rows"] if r["status"] == "build_error") == 2
 
@@ -54,7 +54,7 @@ def test_study_rows_equals_qmls_configure_study():
         if row["status"] == "build_error":
             assert row["job_text"] is None
         else:
-            job = ctl._spec_for_row(ctl._rows[i])   # no setBias call: bias is None
+            job = study_jobs.row_spec(rows[i]["device"])
             assert row["job_text"].encode("utf-8") == json.dumps(job.to_dict()).encode("utf-8")
 
 

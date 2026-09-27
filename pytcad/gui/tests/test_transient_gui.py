@@ -9,9 +9,10 @@ Contract under test:
     solvers, never reimplemented here -- and run_job() stamps a
     schema-v3 transient__* block that validate_result()/NpzResultStore
     read back correctly.
-  - AppController's transient config slots/properties mirror the sweep
-    config ones (arm/clear/read-back, mutual exclusion with an armed
-    sweep, pre-flight validation before Run starts a subprocess).
+
+PySide6/QML removed from this repo: the AppController transient
+config-slot tests (arm/clear/read-back, mutual exclusion with an armed
+sweep, pre-flight validation before Run) were removed with it.
 """
 import os, subprocess, sys
 
@@ -206,63 +207,3 @@ def test_solver_backend_rejects_incomplete_transient_block(tmp_path):
            "transient__current__left": np.array([0.0, 1.0])})
     with pytest.raises(ResultSchemaError, match="transient__meta"):
         validate_result(p)
-
-
-# ----------------------------------------------------------------------
-#  AppController wiring
-# ----------------------------------------------------------------------
-@pytest.fixture(scope="module")
-def qapp():
-    from PySide6.QtGui import QGuiApplication
-    yield QGuiApplication.instance() or QGuiApplication([])
-
-
-def _controller_with_diode(qapp):
-    from gui.controllers.app_controller import AppController
-    c = AppController()
-    c.loadExample("diode_1d")
-    return c
-
-
-def test_set_and_clear_transient_config(qapp):
-    c = _controller_with_diode(qapp)
-    assert not c.hasTransientConfig
-    c.setTransientConfig("anode", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11)
-    assert c.hasTransientConfig
-    cfg = c.transientConfig()
-    assert cfg["contact"] == "anode" and cfg["kind"] == "step"
-    assert cfg["v1"] == pytest.approx(0.6)
-    c.clearTransientConfig()
-    assert not c.hasTransientConfig
-    assert c.transientConfig() is None
-
-
-def test_set_transient_config_rejects_invalid_values(qapp):
-    c = _controller_with_diode(qapp)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.setTransientConfig("anode", "step", 0.0, 0.6, 0.0, 0.0, 0.0, 1e-11)
-    assert not c.hasTransientConfig
-    assert errors and errors[0][0] == "Invalid transient configuration"
-
-
-def test_run_rejects_sweep_and_transient_armed_together(qapp):
-    c = _controller_with_diode(qapp)
-    c.setSweepConfig("anode", 0.0, 0.5, 0.1)
-    c.setTransientConfig("anode", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.run()
-    assert not c.busy
-    assert any(s == "Cannot run more than one of Sweep/Transient/AC together"
-              for s, d in errors)
-
-
-def test_run_rejects_transient_on_unregistered_contact(qapp):
-    c = _controller_with_diode(qapp)
-    c.setTransientConfig("ghost", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.run()
-    assert not c.busy
-    assert any(s == "Transient run cannot run on this device" for s, d in errors)

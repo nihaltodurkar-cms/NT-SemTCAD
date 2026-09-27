@@ -6,8 +6,15 @@
 > after this note are kept as the record of the earlier design, not as current spec.
 > Layout, type, spacing, motion and component structure are unchanged.
 >
-> What is current (`gui/qml/Theme.qml`, mirrored exactly by the native app's
-> `desktop/src/theme/tokens.hpp`):
+> **PySide6/QML since removed from this repo** -- `gui/qml/Theme.qml` and
+> `gui/tests/test_theme_tokens.py` no longer exist; the native app's
+> `desktop/src/theme/tokens.hpp` (and its own gate, `gui/tests/
+> test_desktop_theme.py`) is now the SOLE implementation of the scheme
+> described below, not a mirror of anything. The description otherwise
+> still holds.
+>
+> What is current (`desktop/src/theme/tokens.hpp`, was mirrored from
+> `gui/qml/Theme.qml` before that file was removed):
 > - **One scheme.** No `Theme.dark`, no `toggle()`, no Ctrl+D, no View > theme item,
 >   no toolbar sun/moon button; the native app has no View > Theme menu and ignores
 >   the OS colour scheme.
@@ -24,9 +31,8 @@
 >   data, not theme.
 > - **The window palette is pinned** to these tokens in `Main.qml` (Qt's own controls
 >   otherwise follow the OS scheme); `textOnAccent` is the text on the black accent.
-> - Gates: `gui/tests/test_theme_tokens.py` (every non-status Theme.qml colour is a
->   grey; black on white; no mode switch) and `gui/tests/test_desktop_theme.py`
->   (native tokens equal Theme.qml's and are grey except status).
+> - Gate: `gui/tests/test_desktop_theme.py` (native tokens are grey except
+>   status; no hard-coded colours outside the theme module).
 
 > Category: Professional Engineering Tool (EDA / TCAD)
 > A dense, dark instrument surface for semiconductor process/device simulation. Precision over polish, state legibility over decoration. Built for Qt Quick/QML + PySide6.

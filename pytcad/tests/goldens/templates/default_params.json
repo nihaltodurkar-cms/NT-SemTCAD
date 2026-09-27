@@ -1,0 +1,670 @@
+{
+ "hbt": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 26,
+   "ny": 24,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 4.5e-05,
+      "range_lo": 1.5e-05
+     },
+     "id": "emitter_c",
+     "name": "emitter"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "left",
+      "range_hi": 7.5e-06,
+      "range_lo": 6e-06
+     },
+     "id": "base_c",
+     "name": "base"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "bottom",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "collector_c",
+     "name": "collector"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [],
+   "height_cm": 1.15e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "collector",
+     "material": "GAAS",
+     "name": "GaAs collector",
+     "net_doping_cm3": 1e+16,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 6e-05,
+     "x_min": 0.0,
+     "y_max": 6e-06,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "base",
+     "material": "GAAS",
+     "name": "GaAs base",
+     "net_doping_cm3": -5e+18,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 6e-05,
+     "x_min": 0.0,
+     "y_max": 7.5e-06,
+     "y_min": 6e-06,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "emitter",
+     "material": "AL0.3GA0.7AS",
+     "name": "Al0.3Ga0.7As emitter",
+     "net_doping_cm3": 5e+17,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 4.5e-05,
+     "x_min": 1.5e-05,
+     "y_max": 1.15e-05,
+     "y_min": 7.5e-06,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 6e-05
+  }
+ },
+ "hemt": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 40,
+   "ny": 30,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 1.7500000000000002e-05,
+      "range_lo": 0.0
+     },
+     "id": "source_c",
+     "name": "source"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 5e-05,
+      "range_lo": 3.2500000000000004e-05
+     },
+     "id": "drain_c",
+     "name": "drain"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "bottom",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "substrate_c",
+     "name": "substrate"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 3.2500000000000004e-05,
+      "range_lo": 1.7500000000000002e-05
+     },
+     "gate_type": "n+poly",
+     "id": "gate_c",
+     "name": "gate",
+     "tox_cm": 2e-06,
+     "vfb_manual": -0.8,
+     "vfb_mode": "manual"
+    }
+   ],
+   "height_cm": 1e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "buffer",
+     "material": "GAAS",
+     "name": "GaAs buffer",
+     "net_doping_cm3": 100000000000000.0,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 5e-05,
+     "x_min": 0.0,
+     "y_max": 5e-06,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "channel",
+     "material": "GAAS",
+     "name": "GaAs channel",
+     "net_doping_cm3": 1000000000000000.0,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 5e-05,
+     "x_min": 0.0,
+     "y_max": 7.000000000000001e-06,
+     "y_min": 5e-06,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "barrier",
+     "material": "AL0.3GA0.7AS",
+     "name": "Al0.3Ga0.7As barrier",
+     "net_doping_cm3": 1e+18,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 5e-05,
+     "x_min": 0.0,
+     "y_max": 1e-05,
+     "y_min": 7.000000000000001e-06,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 5e-05
+  }
+ },
+ "mos_capacitor": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 40,
+   "ny": 20,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "bottom",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "body_c",
+     "name": "body"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "gate_type": "n+poly",
+     "id": "gate",
+     "name": "gate",
+     "tox_cm": 1e-06,
+     "vfb_manual": null,
+     "vfb_mode": "computed"
+    }
+   ],
+   "height_cm": 2e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "sub",
+     "material": "SILICON",
+     "name": "Substrate",
+     "net_doping_cm3": -1e+16,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 0.0001,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 0.0001
+  }
+ },
+ "nmos": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 80,
+   "ny": 40,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 3e-05,
+      "range_lo": 0.0
+     },
+     "id": "source_c",
+     "name": "source"
+    },
+    {
+     "V": 0.05,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 0.00012,
+      "range_lo": 9e-05
+     },
+     "id": "drain_c",
+     "name": "drain"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "bottom",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "body_c",
+     "name": "body"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [
+    {
+     "V": 1.0,
+     "boundary": {
+      "edge": "top",
+      "range_hi": 9e-05,
+      "range_lo": 3e-05
+     },
+     "gate_type": "n+poly",
+     "id": "gate",
+     "name": "gate",
+     "tox_cm": 5e-07,
+     "vfb_manual": null,
+     "vfb_mode": "computed"
+    }
+   ],
+   "height_cm": 2e-05,
+   "material": "Silicon",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "channel",
+     "material": "SILICON",
+     "name": "Channel",
+     "net_doping_cm3": -1e+17,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 0.00012,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "source",
+     "material": "SILICON",
+     "name": "Source",
+     "net_doping_cm3": 1e+19,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 3e-05,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "drain",
+     "material": "SILICON",
+     "name": "Drain",
+     "net_doping_cm3": 1e+19,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 0.00012,
+     "x_min": 9e-05,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 0.00012
+  }
+ },
+ "pin_diode": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 60,
+   "ny": 10,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "left",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "p_c",
+     "name": "p"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "right",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "n_c",
+     "name": "n"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [],
+   "height_cm": 2e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "p_side",
+     "material": "SILICON",
+     "name": "P+ side",
+     "net_doping_cm3": -1e+19,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 2e-05,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "intrinsic",
+     "material": "SILICON",
+     "name": "Intrinsic",
+     "net_doping_cm3": 10000000000000.0,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 6.000000000000001e-05,
+     "x_min": 2e-05,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "n_side",
+     "material": "SILICON",
+     "name": "N+ side",
+     "net_doping_cm3": 1e+19,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 8e-05,
+     "x_min": 6.000000000000001e-05,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 8e-05
+  }
+ },
+ "pn_diode": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 40,
+   "ny": 10,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "left",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "p_c",
+     "name": "p"
+    },
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "right",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "n_c",
+     "name": "n"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [],
+   "height_cm": 2e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "p_side",
+     "material": "SILICON",
+     "name": "P side",
+     "net_doping_cm3": -1e+18,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 5e-05,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    },
+    {
+     "doping_profile": "uniform",
+     "id": "n_side",
+     "material": "SILICON",
+     "name": "N side",
+     "net_doping_cm3": 1e+18,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 0.0001,
+     "x_min": 5e-05,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 0.0001
+  }
+ },
+ "resistor": {
+  "mesh": {
+   "grading": "uniform",
+   "h_max": null,
+   "h_min": null,
+   "nx": 40,
+   "ny": 10,
+   "nz": null,
+   "ratio": 1.15,
+   "x_focus": null,
+   "y_focus": null,
+   "z_focus": null
+  },
+  "structure": {
+   "contacts": [
+    {
+     "V": 0.0,
+     "boundary": {
+      "edge": "left",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "left_c",
+     "name": "left"
+    },
+    {
+     "V": 0.1,
+     "boundary": {
+      "edge": "right",
+      "range_hi": null,
+      "range_lo": null
+     },
+     "id": "right_c",
+     "name": "right"
+    }
+   ],
+   "depth_cm": null,
+   "gates": [],
+   "height_cm": 2e-05,
+   "material": "SILICON",
+   "regions": [
+    {
+     "doping_profile": "uniform",
+     "id": "body",
+     "material": "SILICON",
+     "name": "Body",
+     "net_doping_cm3": 1e+17,
+     "profile_edge_x": null,
+     "profile_high_side": "left",
+     "profile_peak_cm3": null,
+     "profile_sigma_lat": null,
+     "profile_sigma_y": null,
+     "x_max": 0.0001,
+     "x_min": 0.0,
+     "y_max": 2e-05,
+     "y_min": 0.0,
+     "z_max": null,
+     "z_min": null
+    }
+   ],
+   "width_cm": 0.0001
+  }
+ }
+}

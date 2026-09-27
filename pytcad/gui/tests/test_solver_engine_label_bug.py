@@ -20,12 +20,12 @@ abstractmethods: most stores legitimately carry neither." has_record/
 run_record simply never got that treatment. SpecResultStore (and any
 other non-Npz store) inherited no default and crashed instead of
 answering honestly.
+
+PySide6/QML removed from this repo: the two AppController-driven
+regression tests (loadExample()/solverEngineLabel before and after a
+real solve) were removed with it -- the root cause itself, and its fix,
+live entirely in gui/services/result_store.py, gated below directly.
 """
-import time
-
-from PySide6.QtWidgets import QApplication
-
-from gui.controllers.app_controller import AppController
 from gui.services.result_store import SpecResultStore
 
 
@@ -42,26 +42,3 @@ def test_spec_result_store_answers_has_record_honestly_instead_of_crashing():
     store = SpecResultStore(spec)
     assert store.has_record() is False
     assert store.run_record() is None
-
-
-def test_solver_engine_label_does_not_crash_before_any_solve():
-    app = QApplication.instance() or QApplication([])
-    ctl = AppController()
-    ctl.loadExample("diode_1d")  # sets self._store to a SpecResultStore
-    # This is the exact call that raised AttributeError before the fix.
-    assert ctl.solverEngineLabel == ""
-
-
-def test_solver_engine_label_reports_the_real_engine_after_a_solve():
-    app = QApplication.instance() or QApplication([])
-    ctl = AppController()
-    ctl.loadExample("diode_1d")
-    ctl.run()
-    for _ in range(300):
-        app.processEvents()
-        time.sleep(0.01)
-        if not ctl.busy:
-            break
-    assert ctl.hasResult, "solve did not complete in time for this test"
-    # A real diode_1d solve uses the direct sparse solver by default.
-    assert ctl.solverEngineLabel == "Direct"

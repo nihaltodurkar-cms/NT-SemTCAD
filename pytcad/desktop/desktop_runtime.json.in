@@ -9,11 +9,17 @@
     "run_shell_tests": "tcad_desktop_run_shell_tests.exe",
     "npz_dump": "tcad_npz_dump.exe",
     "spec_roundtrip": "tcad_spec_roundtrip.exe",
+    "structure_roundtrip": "tcad_structure_roundtrip.exe",
     "theme_dump": "tcad_theme_dump.exe",
     "desktop": "tcad_desktop.exe",
     "unit_tests": "tcad_desktop_unit_tests.exe",
     "shell_tests": "tcad_desktop_shell_tests.exe",
     "plot_ticks": "tcad_plot_ticks.exe",
-    "plot_tests": "tcad_desktop_plot_tests.exe"
+    "plot_tests": "tcad_desktop_plot_tests.exe",
+    "editor_tests": "tcad_desktop_editor_tests.exe",
+    "undo_tests": "tcad_desktop_undo_tests.exe",
+    "project_tests": "tcad_desktop_project_tests.exe",
+    "build_shell_tests": "tcad_desktop_build_shell_tests.exe",
+    "validation_tests": "tcad_desktop_validation_tests.exe"
   }
 }

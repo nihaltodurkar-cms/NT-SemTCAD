@@ -110,6 +110,8 @@ add_library(tcad_core OBJECT
   src/unstructured3d/kernels.cpp
   src/device3d/kernels.cpp
   src/device3d/poisson_eq.cpp
+  src/uicore/catalog.cpp
+  src/uicore/templates.cpp
 )
 target_include_directories(tcad_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
 # M34-S4 / M43 / M42-S3: the path tracer, thermal-grid, and
@@ -169,6 +171,8 @@ nanobind_add_module(_core STABLE_ABI NB_STATIC ${_TCAD_NB_OPTS}
   bindings/dg_bindings.cpp
   bindings/unstructured3d_bindings.cpp
   bindings/device3d_bindings.cpp
+  bindings/catalog_bindings.cpp
+  bindings/templates_bindings.cpp
 )
 target_link_libraries(_core PRIVATE tcad_core)
 # The compiler toolchain lives in a SEPARATE, dedicated conda env

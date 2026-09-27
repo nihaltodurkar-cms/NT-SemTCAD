@@ -168,47 +168,11 @@ def test_hemt_band_step_at_interface():
     assert step >= 0.15, \
         f"T5 FAIL: conduction-band step at interface {step:.4f} eV"
 
-
-# ------------------------------------------------- GUI editor surface
-def _gapp():
-    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtGui import QGuiApplication
-    return QGuiApplication.instance() or QGuiApplication([])
-
-
-def test_region_material_editor_binds_and_edits():
-    """The DopingEditor gains a material combobox fed from the library;
-    choosing an entry edits Region.material through the controller with
-    undo support, and to_device_spec() reflects it."""
-    gapp = _gapp()
-    from gui import app as gui_app
-    engine, controller = gui_app.create_engine(gapp)
-    try:
-        root = engine.rootObjects()[0]
-        assert root.findChild(object, "regionMaterialBox") is not None, \
-            "missing regionMaterialBox combobox"
-
-        names = controller.materialNames
-        assert "SILICON" in names and "GAAS" in names
-
-        controller.loadStructureExample("mosfet_2d_structure")
-        rid = controller.structure.regions[0].id
-        controller.setRegionMaterial(rid, "gaas")   # case-insensitive
-        assert controller.structure.regions[0].material == "GAAS"
-        assert controller.isDirty is True
-
-        spec = controller.structure.to_device_spec(
-            controller.mesh_model)
-        assert spec.region_materials, \
-            "edited material did not reach region_materials"
-        assert spec.region_materials[0]["material"] == "GAAS"
-
-        # unknown key refuses loudly
-        with pytest.raises(KeyError, match="UNOBTANIUM"):
-            controller.setRegionMaterial(rid, "UNOBTANIUM")
-
-        # undo restores the previous (canonical default) material
-        controller.undo()
-        assert controller.structure.regions[0].material == "SILICON"
-    finally:
-        engine.deleteLater()
+# PySide6/QML removed from this repo: the former "GUI editor surface"
+# test (test_region_material_editor_binds_and_edits, a DopingEditor/
+# QML/AppController round trip) was removed with it. The underlying
+# region-material editing this exercised is now StructureModel.
+# to_device_spec()'s own region_materials emission (still covered by
+# test_authored_spec_emits_region_materials above) plus the native
+# DopingEditor's material field (desktop/src/editors/doping_editor.cpp,
+# gated in gui/tests/test_desktop_editors.py).

@@ -9,7 +9,9 @@ PLAN.md` and `pytcad/3D-VISUALIZATION-PLAN.md` for GUI state.
 
 ## What this is
 
-PyTCAD: validated TCAD toolkit (1D/2D/3D drift-diffusion, process simulation) + Semiconductor Workbench layer (`workbench/`) + PySide6/QML desktop GUI (`gui/`). Every educational surface backed by real computation. Never fake, never mock, never weaken tests.
+PyTCAD: validated TCAD toolkit (1D/2D/3D drift-diffusion, process simulation) + Semiconductor Workbench layer (`workbench/`) + a native C++/Qt Widgets desktop GUI (`desktop/`, see `NATIVE-DESKTOP-PLAN.md`). Every educational surface backed by real computation. Never fake, never mock, never weaken tests.
+
+**PySide6/QML removed from this repo (explicit user decision).** `gui/qml/`, `gui/controllers/`, `gui/app.py`, and every PySide6-dependent `gui/services/` module (`viewer3d.py`, `job_runner.py`, `remote_job_runner.py`, `icon_provider.py`, `gui_state_validator.py`, `grid_builders.py`) are gone; there is no `python -m gui.app` anymore, and `gui/README.md`'s top-level instructions describe that removed app (kept as historical record, marked accordingly). `gui/services/` itself is NOT removed: the Qt-free modules in it (`device_spec.py`, `structure_model.py`, `process_model.py`, `project_store.py`, `examples.py`, `solver_runner.py`, `run_config.py`, and more) are the shared business logic `backend_service/` (a Qt-free JSON-RPC service, `NATIVE-DESKTOP-PLAN.md` section 4) and the native app's own backend process both depend on -- they are not "the GUI" in the PySide6 sense and were kept. `gui/tests/` was triaged file by file to match: files entirely about the removed QML/controller layer were deleted outright; files mixing pure `gui/services/`-level tests with QML/controller-driven ones were trimmed to keep only the former (several rewritten to compare the backend RPC against a direct Python call instead of against a now-gone controller, the same conformance pattern `test_backend_service.py` already used). The "QML / PySide6" gotchas section further down is kept as historical record of real incidents from that era -- it no longer describes live code, but the lessons (Qt ownership, marshalling, offscreen-platform limits) generalize and cost real debugging time to learn once.
 
 ## Layout
 
@@ -25,17 +27,22 @@ workbench/
   physics/         analysis-layer physics (impact_ionization,
                    tunneling) -- published-value gated
   workflow.py      deck front end (TEMPLATE/BIAS/SWEEP statements)
-gui/
-  services/        DeviceSpec (wire format), JobRunner (subprocess),
-                   ResultStore, solver_runner/moscap_runner/process_runner,
-                   examples.py (File-menu quick-load DeviceSpecs, 1D/2D/3D),
-                   viewer3d.py (PyVista/VTK 3D viewer, a separate QWidget
-                   window -- see 3D-VISUALIZATION-PLAN.md)
-  controllers/     AppController + small per-domain controllers
-  qml/             Main.qml, panels/, components/, Theme.qml
+gui/               PySide6/QML removed (see "What this is" above);
+                   gui/services/ survives as Qt-free business logic
+  services/        DeviceSpec (wire format), ResultStore,
+                   solver_runner/moscap_runner/process_runner,
+                   examples.py (quick-load DeviceSpecs, 1D/2D/3D),
+                   run_config.py, project_store.py, structure_model.py,
+                   process_model.py, and more -- all Qt-free
+backend_service/   Qt-free JSON-RPC service the native app's backend
+                   process runs; calls into gui/services/ above
+desktop/           the native C++/Qt Widgets desktop app (see
+                   NATIVE-DESKTOP-PLAN.md)
 tests/             core validation (incl. test_model_benchmarks.py --
                    new physics MUST land here first)
-gui/tests/         GUI-level tests (headless QML pattern)
+gui/tests/         tests for gui/services/'s Qt-free logic, conformance
+                   checks against backend_service/'s RPC methods, and
+                   native-app test-binary wrappers (test_desktop_*.py)
 ARCHITECTURE.md sec 4b   governing roadmap M13-M30
 pytcad/M14-SURFACE-MOBILITY-PLAN.md   the one genuinely OPEN item (G-A)
 pytcad/M16-BTBT-PLAN.md / M17-TRANSIENT-PLAN.md / M18-AC-PLAN.md /
@@ -168,7 +175,7 @@ Suite invariant: **N passed, zero warnings**. `pytest.ini` exempts one intention
     4. Record which goldens moved, which did not, and WHY each --
        a golden that moves for an unexplained reason is a defect, not
        a re-baseline.
-- Layering: QML -> controllers -> services -> QProcess subprocess -> npz -> ResultStore -> canvas. Controllers/canvas never import pytcad.
+- Layering (native app): desktop C++ shell -> BackendClient (JSON-RPC) -> backend_service/ -> gui/services/ -> subprocess -> npz -> ResultStore. Historical (removed) layering: QML -> controllers -> services -> QProcess subprocess -> npz -> ResultStore -> canvas.
 - `DeviceSpec` stays wire format. Subprocess isolation per run.
 - New physics model = published-value benchmark in `tests/test_model_benchmarks.py` FIRST + catalog metadata.
 - Optional deps stay optional (devsim auto-detected). Deliberate EXCEPTION: pyvista/pyvistaqt (in requirements.txt) HARD dependency of gui/ — 3D viewer (gui/services/viewer3d.py, 3D-VISUALIZATION-PLAN.md) imports unconditionally at module level, discussed and approved with user, not oversight. Don't silently make optional/guarded to match devsim pattern without asking.
@@ -189,7 +196,7 @@ Plan -> user approves -> TDD (red first) -> implement -> hard debug (fuzz/probe 
 - Engines tabulate ni differently -> cross-engine psi agrees only ~25 mV, I-V to constant factor ~2; anchor each engine to analytic values, not pointwise comparison.
 - `solve(info=True)` returns {'converged', 'iterations'} — use it.
 
-**QML / PySide6**
+**QML / PySide6 (HISTORICAL — this code is removed from the repo; kept as a record of real incidents, not a description of live code)**
 - Plain Python attributes INVISIBLE to QML property lookup: every controller handed to QML needs @Property(QObject). (Bit twice: treeModel/consoleModel, then cv controller.)
 - Context-property controllers must be Qt children of parent controller, not bare attributes — else shutdown GC races QML bindings, TypeError spam. Test ownership via shiboken validity after engine teardown, not stderr capture (Qt writes via cached C stream fd redirection misses).
 - `.visible` reflects EFFECTIVE visibility through hidden ancestors (StackLayout/tabs): headless tests must activate right tab before asserting child visibility.

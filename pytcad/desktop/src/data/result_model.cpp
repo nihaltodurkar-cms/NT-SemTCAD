@@ -476,6 +476,10 @@ std::optional<nlohmann::ordered_json> ResultModel::region_materials() const {
     return json_meta("region_materials__meta");
 }
 
+std::optional<nlohmann::ordered_json> ResultModel::continuation_records() const {
+    return json_meta("continuation__records");
+}
+
 std::optional<nlohmann::ordered_json> ResultModel::structure_regions() const {
     return json_meta("structure_regions__meta");
 }

@@ -48,7 +48,12 @@ add_library(tcad_desktop_data STATIC
   src/data/contour_levels.cpp
   src/data/line_cut.cpp
   src/data/result_model.cpp
-  src/document/device_spec_document.cpp)
+  src/data/physics_lab_data.cpp
+  src/document/device_spec_document.cpp
+  src/document/structure_document.cpp
+  src/document/mesh_document.cpp
+  src/document/process_document.cpp
+  src/document/validation.cpp)
 target_include_directories(tcad_desktop_data PUBLIC src)
 target_link_libraries(tcad_desktop_data PUBLIC nlohmann_json::nlohmann_json)
 if(ZLIB_FOUND)
@@ -64,6 +69,8 @@ target_include_directories(tcad_theme_dump PRIVATE src)
 target_link_libraries(tcad_theme_dump PRIVATE tcad_desktop_data)
 add_executable(tcad_spec_roundtrip src/tools/spec_roundtrip.cpp)
 target_link_libraries(tcad_spec_roundtrip PRIVATE tcad_desktop_data)
+add_executable(tcad_structure_roundtrip src/tools/structure_roundtrip.cpp)
+target_link_libraries(tcad_structure_roundtrip PRIVATE tcad_desktop_data)
 
 # -- PlotView's Qt-free axis maths (P2-S2): matplotlib's locators and
 #    formatters, contract-tested by gui/tests/test_desktop_plot_ticks.py
@@ -88,7 +95,8 @@ add_library(tcad_desktop_run STATIC src/run/runner_base.hpp
   src/run/batch_controller.cpp src/run/batch_controller.hpp
   src/run/study_controller.cpp src/run/study_controller.hpp
   src/run/remote_host.cpp src/run/remote_host.hpp
-  src/run/remote_job_runner.cpp src/run/remote_job_runner.hpp)
+  src/run/remote_job_runner.cpp src/run/remote_job_runner.hpp
+  src/run/project_controller.cpp src/run/project_controller.hpp)
 target_include_directories(tcad_desktop_run PUBLIC src)
 target_link_libraries(tcad_desktop_run PUBLIC tcad_desktop_backend tcad_desktop_data Qt6::Core nlohmann_json::nlohmann_json)
 
@@ -106,6 +114,21 @@ add_library(tcad_desktop_ui STATIC
   src/shell/console_panel.cpp src/shell/console_panel.hpp
   src/shell/telemetry_panel.cpp src/shell/telemetry_panel.hpp
   src/shell/study_panel.cpp src/shell/study_panel.hpp
+  src/editors/mesh_editor.cpp src/editors/mesh_editor.hpp
+  src/editors/structure_editor_view.cpp src/editors/structure_editor_view.hpp
+  src/editors/region_list_widget.cpp src/editors/region_list_widget.hpp
+  src/editors/doping_editor.cpp src/editors/doping_editor.hpp
+  src/editors/contact_list_widget.cpp src/editors/contact_list_widget.hpp
+  src/editors/gate_list_widget.cpp src/editors/gate_list_widget.hpp
+  src/editors/contact_editor.cpp src/editors/contact_editor.hpp
+  src/editors/gate_editor.cpp src/editors/gate_editor.hpp
+  src/editors/process_step_list_widget.cpp src/editors/process_step_list_widget.hpp
+  src/editors/substrate_step_editor.cpp src/editors/substrate_step_editor.hpp
+  src/editors/implant_step_editor.cpp src/editors/implant_step_editor.hpp
+  src/editors/anneal_step_editor.cpp src/editors/anneal_step_editor.hpp
+  src/editors/oxidize_step_editor.cpp src/editors/oxidize_step_editor.hpp
+  src/shell/validation_panel.cpp src/shell/validation_panel.hpp
+  src/shell/build_panel.cpp src/shell/build_panel.hpp
   src/views/field/field_view.cpp src/views/field/field_view.hpp
   src/views/field/field_view_3d.cpp
   src/views/colormaps.cpp src/views/colormaps.hpp
@@ -151,6 +174,11 @@ target_link_libraries(tcad_desktop_run_tests PRIVATE tcad_desktop_run tcad_deskt
 add_executable(tcad_desktop_remote_tests tests/test_remote_job_runner.cpp)
 target_link_libraries(tcad_desktop_remote_tests PRIVATE tcad_desktop_run tcad_desktop_data Qt6::Test)
 
+# ProjectController gates (P4 S9, plan section 20.4): the real backend's
+# project.load/project.save; run by gui/tests/test_desktop_project.py.
+add_executable(tcad_desktop_project_tests tests/test_project.cpp)
+target_link_libraries(tcad_desktop_project_tests PRIVATE tcad_desktop_run tcad_desktop_data Qt6::Test)
+
 # PlotView gates (P2-S2): the real widget rendered offscreen with grab(),
 # probed; run by gui/tests/test_desktop_plot.py at display scales 1/1.5/2.
 add_executable(tcad_desktop_plot_tests tests/test_plot.cpp)
@@ -166,6 +194,33 @@ vtk_module_autoinit(TARGETS tcad_desktop_run_shell_tests MODULES ${VTK_LIBRARIES
 add_executable(tcad_desktop_shell_tests tests/test_shell.cpp)
 target_link_libraries(tcad_desktop_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
 vtk_module_autoinit(TARGETS tcad_desktop_shell_tests MODULES ${VTK_LIBRARIES})
+
+# Device Builder shell assembly gates (P4 section 21, plan section 20.4):
+# the real MainWindow's Build dock against the real backend; run by
+# gui/tests/test_desktop_build_shell.py.
+add_executable(tcad_desktop_build_shell_tests tests/test_build_shell.cpp)
+target_link_libraries(tcad_desktop_build_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
+vtk_module_autoinit(TARGETS tcad_desktop_build_shell_tests MODULES ${VTK_LIBRARIES})
+
+# MeshEditor / StructureEditorView gates (P4 S2, plan section 20.4): the
+# real widgets, driven through their testable methods; run by
+# gui/tests/test_desktop_editors.py.
+add_executable(tcad_desktop_editor_tests tests/test_editors.cpp)
+target_link_libraries(tcad_desktop_editor_tests PRIVATE tcad_desktop_ui Qt6::Test)
+vtk_module_autoinit(TARGETS tcad_desktop_editor_tests MODULES ${VTK_LIBRARIES})
+
+# UndoStack gates (P4 S8, plan section 20.4): Qt-free logic, tested with
+# QtTest for convenience only (no widget/window needed); run by
+# gui/tests/test_desktop_undo.py.
+add_executable(tcad_desktop_undo_tests tests/test_undo.cpp)
+target_link_libraries(tcad_desktop_undo_tests PRIVATE tcad_desktop_data Qt6::Test)
+
+# ValidationPanel gates (P4 S8, plan section 20.4): the real widget plus
+# the Qt-free error-formatting logic; run by
+# gui/tests/test_desktop_validation.py.
+add_executable(tcad_desktop_validation_tests tests/test_validation.cpp)
+target_link_libraries(tcad_desktop_validation_tests PRIVATE tcad_desktop_ui Qt6::Test)
+vtk_module_autoinit(TARGETS tcad_desktop_validation_tests MODULES ${VTK_LIBRARIES})
 
 # -- runtime manifest: where the Qt/VTK DLLs live, for the Python contract
 #    tests and the dev launcher (no DLLs are copied in dev builds) ----------

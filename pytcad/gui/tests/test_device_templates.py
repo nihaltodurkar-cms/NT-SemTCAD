@@ -9,17 +9,18 @@ Contract under test:
     mosfet_2d_structure example EXACTLY (equivalence golden).
   - Every template builds a spec through the existing adapter/builder
     chain and solves through the REAL CLI with schema-valid output.
-  - BuilderController adopts built devices into the existing Structure
-    workbench; the QML panel drives it end-to-end.
-"""
-import json, os, subprocess, sys, time
 
-os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+PySide6/QML removed from this repo: the former BuilderController/QML
+adoption tests (which drove `BuilderController` and a live QML engine)
+were removed with it. The native C++ desktop app's own template picker
+UI is separate, later work -- see NATIVE-DESKTOP-PLAN.md P4 S7.
+"""
+import json, os, subprocess, sys
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 import numpy as np
 import pytest
-from PySide6.QtGui import QGuiApplication
 
 from workbench.core.templates import TEMPLATES, get_template, list_templates
 
@@ -143,75 +144,6 @@ def test_pin_diode_has_three_regions_with_a_wide_intrinsic_layer():
 
 
 # ----------------------------------------------------------------------
-#  BuilderController: adoption into the existing Structure workbench
-# ----------------------------------------------------------------------
-def test_builder_adopts_into_structure_workbench(qapp=None):
-    qapp = QGuiApplication.instance() or QGuiApplication([])
-    from gui.controllers.builder_controller import BuilderController
-    from gui.controllers.app_controller import AppController
-    app = AppController()
-    b = BuilderController(app)
-
-    assert b.templateIds == ["hbt", "hemt", "mos_capacitor", "nmos",
-                             "pin_diode", "pn_diode", "resistor"]
-    b.selectTemplate("pn_diode")
-    b.setParameterValue("na_cm3", "-1e18")
-    b.build()
-
-    assert app.structure is not None
-    regions = app.structure.regions
-    assert len(regions) == 2 and \
-        regions[0].net_doping_cm3 == -1e18 and \
-        regions[1].net_doping_cm3 == 1e18
-    # adopted devices are immediately runnable
-    app.run()
-    assert app.busy or app.hasResult or True   # smoke: run accepted the spec
-
-
-def test_builder_reports_bad_parameters_without_building(qapp=None):
-    qapp = QGuiApplication.instance() or QGuiApplication([])
-    from gui.controllers.builder_controller import BuilderController
-    from gui.controllers.app_controller import AppController
-    app = AppController()
-    b = BuilderController(app)
-    b.selectTemplate("pn_diode")
-    b.setParameterValue("length_cm", "-3.0")
-    errs = []
-    b.buildError.connect(lambda s, d: errs.append(s))
-    b.build()
-    assert errs and app.structure is None
-
-
-# ----------------------------------------------------------------------
-#  QML panel end-to-end
-# ----------------------------------------------------------------------
-def test_qml_panel_drives_a_real_build(gapp=None):
-    gapp = QGuiApplication.instance() or QGuiApplication([])
-    from gui import app as gui_app
-    engine, ctl = gui_app.create_engine(gapp)
-    root = engine.rootObjects()[0]
-
-    panel = root.findChild(object, "deviceTemplatesPanel")
-    assert panel is not None
-    box = root.findChild(object, "templateBox")
-    assert box.property("count") == 7      # pn_diode, pin_diode, resistor, mos_cap, nmos, hemt, hbt
-
-    titles = [str(t) for t in
-              root.findChild(object, "templateParamColumn").children()] if False else None
-
-    btn = root.findChild(object, "buildTemplateButton")
-    from PySide6.QtCore import QMetaObject
-    QMetaObject.invokeMethod(btn, "clicked")
-
-    def pump(sec=0.4):
-        end = time.time() + sec
-        while time.time() < end:
-            gapp.processEvents(); time.sleep(0.01)
-    pump()
-    assert ctl.structure is not None, "QML Build did not adopt a device"
-
-
-# ----------------------------------------------------------------------
 #  hard-debug regressions
 # ----------------------------------------------------------------------
 def test_fractional_mesh_parameter_rejected_not_coerced():
@@ -221,16 +153,3 @@ def test_fractional_mesh_parameter_rejected_not_coerced():
     # and the integral form still works
     dev = t.build({"nx": 41})
     assert dev.mesh_nx == 41
-
-
-def test_select_unknown_template_reports_error_not_raise(qapp=None):
-    qapp = QGuiApplication.instance() or QGuiApplication([])
-    from gui.controllers.builder_controller import BuilderController
-    from gui.controllers.app_controller import AppController
-    b = BuilderController(AppController())
-    errs = []
-    b.buildError.connect(lambda s, d: errs.append((s, d)))
-    before = b.selectedTemplateId()
-    b.selectTemplate("bjt")                    # must not raise
-    assert errs and "unknown device template" in errs[0][1]
-    assert b.selectedTemplateId() == before    # selection unchanged

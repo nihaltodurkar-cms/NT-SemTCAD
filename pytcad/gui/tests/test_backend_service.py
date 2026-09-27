@@ -348,3 +348,117 @@ def test_warmup_imports_the_map_stack_and_no_gui():
     out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip().splitlines()[-1] == "True [] True True"
+
+
+# -- P4 S1: structure.validate / process.validate ----------------------------
+
+def test_structure_validate_matches_direct_call_when_valid(rpc):
+    from gui.services.structure_model import MeshModel, StructureModel
+    call, _ = rpc
+    structure = StructureModel(width_cm=0.01, height_cm=0.005)
+    mesh = MeshModel()
+    got = call("structure.validate", {"structure": structure.to_dict(), "mesh": mesh.to_dict()})
+    assert "error" not in got, got
+    expected = [e.to_dict() for e in structure.validate(mesh)]
+    assert expected == []  # sanity: this fixture is actually valid
+    assert got["result"] == _json_roundtrip(expected)
+
+
+def test_structure_validate_matches_direct_call_when_invalid(rpc):
+    from gui.services.structure_model import MeshModel, StructureModel
+    call, _ = rpc
+    structure = StructureModel(width_cm=-1.0, height_cm=0.005)
+    mesh = MeshModel()
+    got = call("structure.validate", {"structure": structure.to_dict(), "mesh": mesh.to_dict()})
+    assert "error" not in got, got
+    expected = [e.to_dict() for e in structure.validate(mesh)]
+    assert expected  # sanity: this fixture is actually invalid
+    assert got["result"] == _json_roundtrip(expected)
+
+
+def test_process_validate_matches_direct_call_when_valid(rpc):
+    from gui.services.process_model import ProcessFlow, ProcessStep, validate_flow
+    call, _ = rpc
+    flow = ProcessFlow(steps=[ProcessStep(
+        id="p1", name="Substrate", operation="substrate",
+        parameters={"length_cm": 0.1, "background_doping_cm3": 1e15,
+                    "mesh": {"h_min_cm": 1e-7, "h_max_cm": 1e-5, "ratio": 1.2}})])
+    got = call("process.validate", {"process": flow.to_dict()})
+    assert "error" not in got, got
+    expected = [e.to_dict() for e in validate_flow(flow)]
+    assert expected == []  # sanity: this fixture is actually valid
+    assert got["result"] == _json_roundtrip(expected)
+
+
+def test_process_validate_matches_direct_call_when_invalid(rpc):
+    from gui.services.process_model import ProcessFlow, validate_flow
+    call, _ = rpc
+    flow = ProcessFlow(steps=[])  # no substrate step -> invalid
+    got = call("process.validate", {"process": flow.to_dict()})
+    assert "error" not in got, got
+    expected = [e.to_dict() for e in validate_flow(flow)]
+    assert expected  # sanity: this fixture is actually invalid
+    assert got["result"] == _json_roundtrip(expected)
+
+
+# -- P4 S9: project.load / project.save ---------------------------------------
+
+def test_project_save_then_load_round_trips_through_the_rpc(rpc, tmp_path):
+    from gui.services.structure_model import (
+        BoundarySpec, ContactModel, MeshModel, RegionSpec, StructureModel)
+    from gui.services.process_model import ProcessFlow, ProcessStep
+    call, _ = rpc
+    structure = StructureModel(width_cm=4e-5, height_cm=2e-5, regions=[
+        RegionSpec("ch", "Channel", 0.0, 4e-5, 0.0, 2e-5, -1e17)],
+        contacts=[ContactModel("c1", "left", BoundarySpec("left"), 0.0)])
+    mesh = MeshModel(nx=10, ny=6)
+    flow = ProcessFlow(steps=[ProcessStep(
+        id="p1", name="Substrate", operation="substrate",
+        parameters={"length_cm": 0.1, "background_doping_cm3": 1e15,
+                    "mesh": {"h_min_cm": 1e-7, "h_max_cm": 1e-5, "ratio": 1.2}})])
+    path = str(tmp_path / "p.json")
+
+    saved = call("project.save", {"path": path, "name": "P",
+                                  "structure": structure.to_dict(),
+                                  "mesh": mesh.to_dict(), "process": flow.to_dict()})
+    assert "error" not in saved, saved
+    assert saved["result"] == {"path": path, "schema_version": 6}
+
+    loaded = call("project.load", {"path": path})
+    assert "error" not in loaded, loaded
+    result = loaded["result"]
+    assert result["name"] == "P"
+    assert result["structure"] == _json_roundtrip(structure.to_dict())
+    assert result["mesh"] == _json_roundtrip(mesh.to_dict())
+    assert result["process"] == _json_roundtrip(flow.to_dict())
+    assert result["sweep"] is None
+    assert result["models"] is None
+
+
+def test_project_load_matches_direct_call(rpc, tmp_path):
+    from gui.services.process_model import ProcessFlow
+    from gui.services.project_store import load_project, save_project
+    call, _ = rpc
+    path = str(tmp_path / "p.json")
+    save_project(path, "Direct", None, None, ProcessFlow())
+    got = call("project.load", {"path": path})
+    assert "error" not in got, got
+    name, structure, mesh, process, sweep, models = load_project(path)
+    expected = {"name": name, "structure": None, "mesh": None,
+               "process": process.to_dict(), "sweep": None, "models": None}
+    assert got["result"] == _json_roundtrip(expected)
+
+
+def test_project_load_missing_file_is_a_named_error(rpc, tmp_path):
+    call, _ = rpc
+    got = call("project.load", {"path": str(tmp_path / "missing.json")})
+    assert got["error"]["data"]["type"] == "FileNotFoundError"
+
+
+def test_project_save_downgrade_refusal_is_a_named_error(rpc, tmp_path):
+    call, _ = rpc
+    path = str(tmp_path / "p.json")
+    got = call("project.save", {"path": path, "name": "P",
+                                "spec_version": 2, "target_version": 5})
+    assert got["error"]["data"]["type"] == "IncompatibleDowngradeError"
+    assert not os.path.exists(path)

@@ -19,6 +19,18 @@ import math
 # finding M-4.)
 MAX_SWEEP_POINTS = 100_000
 
+# NATIVE-DESKTOP-PLAN.md section 20.3 decision 1: an additive integer
+# field on DeviceSpec, one version ahead of anything that exists today.
+# Only version 1 (the implied default, this whole file's shape before
+# this field existed) is understood; a future native-only wire-format
+# addition bumps this and DeviceSpec.from_dict refuses anything else
+# loudly rather than best-effort-parsing it.
+CURRENT_SPEC_VERSION = 1
+
+
+class UnsupportedSpecVersionError(Exception):
+    pass
+
 
 @dataclass
 class SweepSpec:
@@ -482,13 +494,29 @@ class DeviceSpec:
     # (enforced in AppController.run(), same as sweep+transient
     # already are). See pytcad/M18-AC-PLAN.md sections 12-16.
     ac: ACSpec = None
+    # NATIVE-DESKTOP-PLAN.md section 20.3 decision 1: additive, absent
+    # implies version 1 -- to_dict() below OMITS this key entirely at
+    # the default so every existing job file/golden/round-trip-equality
+    # check that predates this field stays byte-identical; nothing sets
+    # it above 1 yet (no version-2 feature exists), so in practice this
+    # key never appears on the wire today. Forward-looking infrastructure
+    # for the decision, not a behavior change on its own.
+    spec_version: int = CURRENT_SPEC_VERSION
 
     # -- serialization ------------------------------------------------
     def to_dict(self):
-        return asdict(self)
+        d = asdict(self)
+        if self.spec_version == 1:
+            del d["spec_version"]
+        return d
 
     @classmethod
     def from_dict(cls, d):
+        version = d.get("spec_version", 1)
+        if not isinstance(version, int) or version < 1 or version > CURRENT_SPEC_VERSION:
+            raise UnsupportedSpecVersionError(
+                f"device spec version {version!r} is not supported "
+                f"(this build supports up to {CURRENT_SPEC_VERSION})")
         sweep = d.get("sweep")
         transient = d.get("transient")
         ac_d = d.get("ac")
@@ -516,6 +544,7 @@ class DeviceSpec:
             backend=d.get("backend", "pytcad"),
             engine=d.get("engine", "auto"),
             structure_regions=sr,
+            spec_version=version,
         )
 
     def to_json(self, path):

@@ -8,7 +8,6 @@ against the MOSCapacitor analytic landmark) -- promoted into the Qt-free
 service layer, not reinvented.  Non-converged points are excluded from
 every statistic before anything is reported.
 """
-import json
 import os, subprocess, sys
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -245,56 +244,3 @@ def test_channel_selection_falls_back_to_first_channel_when_no_vth_exists():
     stats = summarize(sw)
     assert "threshold_voltage_v" not in stats
     assert stats["current_max"] == pytest.approx(1e-6)  # from "first", not "second"
-
-
-# ----------------------------------------------------------------------
-#  controller reachability: rows appear in the Results tree node
-# ----------------------------------------------------------------------
-def test_results_node_shows_sweep_derived_rows(tmp_path, qapp=None):
-    from PySide6.QtCore import QCoreApplication
-    qapp = QCoreApplication.instance() or QCoreApplication([])
-    from gui.controllers.app_controller import AppController
-
-    app = AppController()
-    d = {
-        "dimensionality": np.array(1),
-        "axis_x": np.array([0.0, 1e-4]),
-        "field__potential": np.array([0.0, 1.0]),
-        "unit__potential": np.array("V"),
-        "field__doping": np.array([1e17, 1e17]),
-        "unit__doping": np.array("cm^-3"),
-        "solved_bias": np.array(True),
-        "sweep__voltage": np.array([-1.0, -0.5, 0.0, 0.5]),
-        "sweep__converged": np.array([True, True, True, True]),
-        "unit__sweep_current": np.array("A/cm^2"),
-        "sweep__meta": np.array(json.dumps(
-            {"contact": "left", "start": -1.0, "stop": 0.5,
-             "step": 0.5, "dimensionality": 1})),
-        "sweep__current__device": np.array([1e-12, 1e-9, 1e-6, 1e-3]),
-    }
-    path = str(tmp_path / "sweep_derived_test.npz")
-    np.savez(path + ".tmp.npz", **d)
-    os.replace(path + ".tmp.npz", path)
-
-    # a result only ever exists after a run, and a run requires a spec --
-    # mirror that real state instead of poking at internals' order
-    from gui.services.device_spec import ContactSpec, DeviceSpec, DopingSpec, MeshSpec
-    app.spec = DeviceSpec(
-        mesh=MeshSpec(dimensionality=1, axes={"x": [0.0, 1e-4]}),
-        doping=DopingSpec(kind="array", values=[1e17, 1e17]),
-        contacts=[
-            ContactSpec(name="left", kind="ohmic", nodes={"i": [0]}, V=0.0),
-            ContactSpec(name="right", kind="ohmic", nodes={"i": [1]}, V=0.0),
-        ])
-    app._on_finished(path)
-
-    rows = dict(app._properties_for("results"))
-    assert any("Sweep" in k for k in rows), rows
-    assert rows["Sweep points"] == "4 of 4 converged"
-    assert "A/cm^2" in rows["Sweep Imax (left)"], rows["Sweep Imax (left)"]
-    # Final review M-2: 'left' is an ohmic contact here, so Ion/Ioff and
-    # a threshold are not meaningful for this output-characteristic
-    # sweep and must be absent (gate-swept rows are covered in
-    # test_v04_review_fixes.py).
-    assert "Sweep Ion/Ioff" not in rows
-    assert "Sweep Vth (max-gm est.)" not in rows

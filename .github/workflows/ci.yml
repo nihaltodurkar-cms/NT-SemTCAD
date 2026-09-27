@@ -54,16 +54,9 @@ jobs:
           python-version: "3.11"
           cache: pip
       - uses: lukka/get-cmake@latest
-      # PySide6 needs these even for QT_QPA_PLATFORM=offscreen, which
-      # gui/tests/conftest.py sets for itself. A bare runner has none of
-      # them and the GUI suite fails at import with a bare "could not
-      # load the Qt platform plugin".
-      - name: Qt runtime libraries
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libglu1-mesa libxkbcommon-x11-0 libdbus-1-3 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0
+      # PySide6/QML removed from this repo -- gui/tests/ is now plain
+      # Python (business logic + the backend_service RPC layer), so no
+      # Qt platform plugin or its runtime libraries are needed here.
       - name: Install
         working-directory: pytcad
         run: |

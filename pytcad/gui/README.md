@@ -1,4 +1,20 @@
-# PyTCAD Desktop GUI (v0.1 – v0.5.x)
+# PyTCAD Desktop GUI (v0.1 – v0.5.x) — REMOVED
+
+**PySide6/QML was removed from this repo.** `gui/qml/`, `gui/controllers/`,
+`gui/app.py`, and every PySide6-dependent `gui/services/` module
+(`viewer3d.py`, `job_runner.py`, `remote_job_runner.py`, `icon_provider.py`,
+`gui_state_validator.py`, `grid_builders.py`) are gone; there is no
+`python -m gui.app` anymore. The rest of this file is kept as the
+historical record of that app's development (v0.1 through v0.5.x) --
+none of the commands below work as written. The current desktop
+application is the native C++/Qt Widgets app under `desktop/` (see
+`../NATIVE-DESKTOP-PLAN.md`); `gui/services/` itself is NOT removed --
+the Qt-free modules in it (`device_spec.py`, `structure_model.py`,
+`process_model.py`, `project_store.py`, `examples.py`, `solver_runner.py`,
+`run_config.py`, etc.) remain the shared business logic `backend_service/`
+and the native app's Python backend service both depend on.
+
+---
 
 A PySide6 / Qt Quick desktop frontend for the PyTCAD solver.
 

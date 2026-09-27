@@ -10,9 +10,10 @@ Contract under test:
     (Device1D) / pytcad.ac2d.y_parameters() (Device2D) -- the
     ALREADY-GATED M18 phase 1-3 solvers, never reimplemented here --
     and stamps an ac__* block NpzResultStore reads back correctly.
-  - AppController's AC config slots/properties mirror the sweep/
-    transient ones (arm/clear/read-back, 3-way mutual exclusion,
-    pre-flight validation before Run starts a subprocess).
+
+PySide6/QML removed from this repo: the AppController AC config-slot
+tests (arm/clear/read-back, 3-way mutual exclusion, pre-flight
+validation before Run) were removed with it.
 """
 import os, sys
 
@@ -495,105 +496,3 @@ def test_cli_3d_ac_matches_direct_ac3d_call(tmp_path):
     assert np.allclose(res.C, C_ref, rtol=1e-6)
     assert np.allclose(res.G, G_ref, rtol=1e-6)
 
-
-# ---------------------------------------------------------------- AppController wiring
-@pytest.fixture(scope="module")
-def qapp():
-    from PySide6.QtGui import QGuiApplication
-    yield QGuiApplication.instance() or QGuiApplication([])
-
-
-def _controller_with_diode(qapp):
-    from gui.controllers.app_controller import AppController
-    c = AppController()
-    c.loadExample("diode_1d")
-    return c
-
-
-def test_set_and_clear_ac_config(qapp):
-    c = _controller_with_diode(qapp)
-    assert not c.hasACConfig
-    c.setACConfig("anode", 1.0, 1e9, 30)
-    assert c.hasACConfig
-    cfg = c.acConfig()
-    assert cfg["contact"] == "anode"
-    assert cfg["f_start"] == pytest.approx(1.0)
-    assert cfg["f_stop"] == pytest.approx(1e9)
-    assert cfg["n_points"] == 30
-    c.clearACConfig()
-    assert not c.hasACConfig
-    assert c.acConfig() is None
-
-
-def test_set_ac_config_rejects_invalid_values(qapp):
-    c = _controller_with_diode(qapp)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.setACConfig("anode", 1e9, 1.0, 30)   # f_stop < f_start
-    assert not c.hasACConfig
-    assert errors and errors[0][0] == "Invalid AC configuration"
-
-
-def test_can_run_ac_true_for_a_3d_spec(qapp):
-    """M45 landed ac3d.py: canRunAc no longer excludes a 3D spec (it
-    used to, back when no ac3d module existed -- see
-    app_controller.py's own canRunAc docstring)."""
-    from gui.services.device_spec import ContactSpec, DeviceSpec, DopingSpec, MeshSpec
-    c = _controller_with_diode(qapp)
-    assert c.canRunAc is True
-    x = np.linspace(0.0, 2e-4, 5)
-    y = np.linspace(0.0, 1e-4, 4)
-    z = np.linspace(0.0, 1e-4, 4)
-    doping = np.full((z.size, y.size, x.size), 1e17)
-    c.spec = DeviceSpec(
-        mesh=MeshSpec(dimensionality=3,
-                      axes={"x": x.tolist(), "y": y.tolist(), "z": z.tolist()}),
-        doping=DopingSpec(kind="array", values=doping.tolist()),
-        contacts=[ContactSpec(name="left", kind="ohmic",
-                              nodes={"i": [0], "j": [0], "k": [0]}, V=0.0)],
-        bias={"left": 0.0})
-    assert c.canRunAc is True
-
-
-def test_can_run_ac_false_with_no_spec(qapp):
-    c = _controller_with_diode(qapp)
-    c.spec = None
-    assert c.canRunAc is False
-
-
-def test_run_rejects_more_than_one_of_sweep_transient_ac_armed(qapp):
-    c = _controller_with_diode(qapp)
-    c.setSweepConfig("anode", 0.0, 0.5, 0.1)
-    c.setACConfig("anode", 1.0, 1e9, 10)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.run()
-    assert not c.busy
-    assert any("Sweep/Transient/AC" in s for s, d in errors)
-
-
-def test_run_rejects_ac_on_unregistered_contact(qapp):
-    c = _controller_with_diode(qapp)
-    c.setACConfig("ghost", 1.0, 1e9, 10)
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.run()
-    assert not c.busy
-    assert any(s == "AC analysis cannot run on this device" for s, d in errors)
-
-
-def test_run_with_ac_armed_tags_the_result(tmp_path, qapp):
-    c = _controller_with_diode(qapp)
-    c.setACConfig("anode", 1.0, 1e6, 5)
-
-    errors = []
-    c.errorRaised.connect(lambda s, d: errors.append((s, d)))
-    c.run()
-    t0 = __import__("time").time()
-    while c.busy and __import__("time").time() - t0 < 60:
-        qapp.processEvents(); __import__("time").sleep(0.02)
-
-    assert not errors, errors
-    assert c.hasAc
-    res = c.acResultForQml
-    assert res is not None and res.port == "anode" and res.freqs.size == 5

@@ -3,14 +3,18 @@
 The native app builds no job itself (section 17.5 decision 1): the backend
 service loads the device (spec.from_example, spec.load, project.spec),
 offers the backends and engines (run.options) and applies the run
-configuration (spec.configure_run) through gui/services/run_config.py,
-which AppController.run() now calls too.
+configuration (spec.configure_run) through gui/services/run_config.py.
 
-Gated here, each against the QML controller driven headless:
+Gated here, each against a DIRECT call to gui/services/run_config.py
+(PySide6/QML removed from this repo: these used to also cross-check
+against AppController, which called the exact same run_config functions
+-- the conformance being proven, RPC-equals-direct-Python-call, is
+unaffected by that controller's removal):
   - every run() refusal: the same (title, detail) through the RPC;
-  - every accepted run: the spec QML hands its runner equals the RPC's;
-  - the backend/engine options equal the QML selectors';
-  - a project runs with its saved sweep and models, as QML runs it;
+  - every accepted run: the spec a direct configure_run() call produces
+    equals the RPC's;
+  - the backend/engine options equal a direct call's;
+  - a project runs with its saved sweep and models;
   - a flow-only or invalid project is refused, named;
   - the loaders equal their direct Python calls; bad params are
     INVALID_PARAMS; and the round-trip latency is measured.
@@ -28,11 +32,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 
 from backend_service import server  # noqa: E402
-from gui.controllers.app_controller import AppController  # noqa: E402
 from gui.services import examples, run_config  # noqa: E402
-from gui.services.device_spec import DeviceSpec  # noqa: E402
+from gui.services.device_spec import ACSpec, DeviceSpec, SweepSpec, TransientSpec, WaveformSpec  # noqa: E402
 from gui.services.process_model import ProcessFlow, ProcessStep  # noqa: E402
 from gui.services.project_store import save_project  # noqa: E402
+from gui.services.run_config import RunConfigError  # noqa: E402
 from gui.services.structure_model import (  # noqa: E402
     BoundarySpec, ContactModel, MeshModel, RegionSpec, StructureModel)
 from workbench.core.catalog import ModelCatalog  # noqa: E402
@@ -54,79 +58,48 @@ def _json(obj):
     return json.loads(json.dumps(obj, allow_nan=False))
 
 
-class _Qml:
-    """An AppController whose runner records instead of starting."""
-
-    def __init__(self):
-        self.ctl = AppController()
-        self.errors, self.started, self.job_files = [], [], []
-        self.ctl.errorRaised.connect(lambda t, d: self.errors.append((t, d)))
-        self.ctl._runner.start = self._record
-
-    def _record(self, spec):
-        """What QML's JobRunner.start receives, and the job file it would
-        write: its own call, spec.to_json, into a temporary file."""
-        import tempfile
-        self.started.append(spec.to_dict())
-        fd, path = tempfile.mkstemp(suffix=".json")
-        os.close(fd)
-        try:
-            spec.to_json(path)
-            with open(path, "rb") as fh:
-                self.job_files.append(fh.read())
-        finally:
-            os.remove(path)
-
-    def run(self):
-        """(pre-run spec dict, run params for the RPC); then runs."""
-        c = self.ctl
-        before = c.spec.to_dict() if c.spec is not None else None
-        run = {"sweep": c._sweep_config.to_dict() if c._sweep_config else None,
-               "transient": c._transient_config.to_dict() if c._transient_config else None,
-               "ac": c._ac_config.to_dict() if c._ac_config else None,
-               "equilibrium_only": c.lab.equilibrium_only,
-               "models": dict(c.lab.model_config),
-               "backend": c.selectedBackend, "engine": c.selectedEngine}
-        c.run()
-        return before, run
+def _run_via_rpc(spec, **kwargs):
+    return _call("spec.configure_run", {"spec": spec.to_dict(), "run": kwargs})
 
 
 # -- refusals -------------------------------------------------------------------
 
-def _swap_device(q, name="mosfet_2d"):
-    """Arm on the diode, then load a device without its contact: the
-    device changed under an armed configuration."""
-    q.ctl.loadExample(name)
-
-
 REFUSALS = {
-    "sweep_contact_gone": lambda q: (q.ctl.setSweepConfig("anode", 0.0, 0.5, 0.1),
-                                     _swap_device(q)),
-    "transient_contact_gone": lambda q: q.ctl.setTransientConfig(
-        "ghost", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11),
-    "ac_contact_gone": lambda q: (q.ctl.setACConfig("anode", 1e3, 1e9, 5), _swap_device(q)),
-    "sweep_and_transient": lambda q: (q.ctl.setSweepConfig("anode", 0.0, 0.5, 0.1),
-                                      q.ctl.setTransientConfig("anode", "step", 0.0, 0.6,
-                                                               0.0, 0.0, 1e-9, 1e-11)),
-    "transient_and_ac": lambda q: (q.ctl.setTransientConfig("anode", "step", 0.0, 0.6,
-                                                            0.0, 0.0, 1e-9, 1e-11),
-                                   q.ctl.setACConfig("anode", 1e3, 1e9, 5)),
-    "equilibrium_only_with_sweep": lambda q: (q.ctl.setSweepConfig("anode", 0.0, 0.5, 0.1),
-                                              q.ctl.lab.setEquilibriumOnly(True)),
-    "devsim_on_2d": lambda q: (_swap_device(q), q.ctl.setBackend("devsim")),
+    "sweep_contact_gone": (lambda: examples.EXAMPLES["mosfet_2d"](),
+                           dict(sweep=SweepSpec(contact="anode", start=0.0, stop=0.5, step=0.1))),
+    "transient_contact_gone": (lambda: examples.EXAMPLES["diode_1d"](),
+                               dict(transient=TransientSpec(
+                                   contact="ghost", waveform=WaveformSpec(kind="step", v0=0.0, v1=0.6),
+                                   t_end=1e-9, dt0=1e-11))),
+    "ac_contact_gone": (lambda: examples.EXAMPLES["mosfet_2d"](),
+                       dict(ac=ACSpec(contact="anode", f_start=1e3, f_stop=1e9, n_points=5))),
+    "sweep_and_transient": (lambda: examples.EXAMPLES["diode_1d"](),
+                            dict(sweep=SweepSpec(contact="anode", start=0.0, stop=0.5, step=0.1),
+                                 transient=TransientSpec(
+                                     contact="anode", waveform=WaveformSpec(kind="step", v0=0.0, v1=0.6),
+                                     t_end=1e-9, dt0=1e-11))),
+    "transient_and_ac": (lambda: examples.EXAMPLES["diode_1d"](),
+                        dict(transient=TransientSpec(
+                            contact="anode", waveform=WaveformSpec(kind="step", v0=0.0, v1=0.6),
+                            t_end=1e-9, dt0=1e-11),
+                            ac=ACSpec(contact="anode", f_start=1e3, f_stop=1e9, n_points=5))),
+    "equilibrium_only_with_sweep": (lambda: examples.EXAMPLES["diode_1d"](),
+                                    dict(sweep=SweepSpec(contact="anode", start=0.0, stop=0.5, step=0.1),
+                                         equilibrium_only=True)),
+    "devsim_on_2d": (lambda: examples.EXAMPLES["mosfet_2d"](), dict(backend="devsim")),
 }
 
 
 @pytest.mark.parametrize("case", sorted(REFUSALS))
 def test_every_run_refusal_is_the_same_through_the_rpc(case):
-    q = _Qml()
-    q.ctl.loadExample("diode_1d")
-    REFUSALS[case](q)
-    q.errors.clear()                   # arm-time messages are not the run's
-    spec, run = q.run()
-    assert not q.started and len(q.errors) == 1, (case, q.errors)
-    title, detail = q.errors[0]
-    resp = _call("spec.configure_run", {"spec": spec, "run": run})
+    make_spec, kwargs = REFUSALS[case]
+    spec = make_spec()
+    with pytest.raises(RunConfigError) as exc:
+        run_config.configure_run(spec, **kwargs)
+    title, detail = exc.value.title, exc.value.detail
+
+    resp = _run_via_rpc(spec, **{k: (v.to_dict() if hasattr(v, "to_dict") else v)
+                                 for k, v in kwargs.items()})
     err = resp["error"]
     assert err["code"] == server.APPLICATION_ERROR
     assert err["data"] == {"type": "RunConfigError", "title": title, "detail": detail}
@@ -141,12 +114,10 @@ def test_the_refusals_cover_every_title_run_config_raises():
     raised = set(re.findall(r'RunConfigError\(f?"([^"]+)"', src))
     seen = set()
     for case in REFUSALS:
-        q = _Qml()
-        q.ctl.loadExample("diode_1d")
-        REFUSALS[case](q)
-        q.errors.clear()
-        q.run()
-        seen.add(q.errors[0][0])
+        make_spec, kwargs = REFUSALS[case]
+        with pytest.raises(RunConfigError) as exc:
+            run_config.configure_run(make_spec(), **kwargs)
+        seen.add(exc.value.title)
     assert {t.replace("{backend}", "devsim") for t in raised} == seen
 
 
@@ -160,77 +131,66 @@ def _models_without(key):
 
 
 ACCEPTED = {
-    "bias": ("diode_1d", lambda q: None),
-    "sweep": ("diode_1d", lambda q: q.ctl.setSweepConfig("anode", 0.0, 0.5, 0.1)),
-    "transient": ("diode_1d", lambda q: q.ctl.setTransientConfig(
-        "anode", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11)),
-    "ac": ("diode_1d", lambda q: q.ctl.setACConfig("anode", 1e3, 1e9, 5)),
-    "equilibrium_only": ("mosfet_2d", lambda q: q.ctl.lab.setEquilibriumOnly(True)),
-    "engine_direct": ("resistor_3d", lambda q: q.ctl.setEngine("direct")),
-    "models_toggled": ("diode_1d", lambda q: q.ctl.lab.setModelConfig(_models_without("auger"))),
-    "devsim_1d": ("diode_1d", lambda q: (q.ctl.setBackend("devsim"), q.ctl.setEngine("direct"))),
+    "bias": (lambda: examples.EXAMPLES["diode_1d"](), dict()),
+    "sweep": (lambda: examples.EXAMPLES["diode_1d"](),
+             dict(sweep=SweepSpec(contact="anode", start=0.0, stop=0.5, step=0.1))),
+    "transient": (lambda: examples.EXAMPLES["diode_1d"](),
+                 dict(transient=TransientSpec(
+                     contact="anode", waveform=WaveformSpec(kind="step", v0=0.0, v1=0.6),
+                     t_end=1e-9, dt0=1e-11))),
+    "ac": (lambda: examples.EXAMPLES["diode_1d"](),
+          dict(ac=ACSpec(contact="anode", f_start=1e3, f_stop=1e9, n_points=5))),
+    "equilibrium_only": (lambda: examples.EXAMPLES["mosfet_2d"](), dict(equilibrium_only=True)),
+    "engine_direct": (lambda: examples.EXAMPLES["resistor_3d"](), dict(engine="direct")),
+    "models_toggled": (lambda: examples.EXAMPLES["diode_1d"](),
+                       dict(models=_models_without("auger"))),
+    "devsim_1d": (lambda: examples.EXAMPLES["diode_1d"](), dict(backend="devsim", engine="direct")),
 }
 
 
+def _rpc_kwargs(kwargs):
+    return {k: (v.to_dict() if hasattr(v, "to_dict") else v) for k, v in kwargs.items()}
+
+
 @pytest.mark.parametrize("case", sorted(ACCEPTED))
-def test_an_accepted_run_is_the_spec_qml_hands_its_runner(case):
-    example, arm = ACCEPTED[case]
+def test_an_accepted_run_matches_a_direct_call(case):
+    make_spec, kwargs = ACCEPTED[case]
     if case == "devsim_1d" and not HAVE_DEVSIM:
         pytest.skip("devsim not installed")
-    q = _Qml()
-    q.ctl.loadExample(example)
-    arm(q)
-    q.errors.clear()
-    spec, run = q.run()
-    assert not q.errors and len(q.started) == 1, q.errors
-    resp = _call("spec.configure_run", {"spec": spec, "run": run})
+    spec = make_spec()
+    started = run_config.configure_run(spec, **kwargs)
+    resp = _run_via_rpc(spec, **_rpc_kwargs(kwargs))
     assert "error" not in resp, resp
-    assert resp["result"] == _json(q.started[0])
+    assert resp["result"] == _json(started.to_dict())
 
 
 @pytest.mark.parametrize("case", sorted(ACCEPTED))
-def test_the_native_job_file_is_byte_identical_to_qmls(case):
+def test_the_native_job_file_matches_the_direct_specs_json(case):
     """Section 17.4's contract: the native runner writes spec.job_text's
-    string verbatim (UTF-8), and those bytes equal the job file QML's
-    runner writes for the same inputs."""
-    example, arm = ACCEPTED[case]
+    string verbatim (UTF-8), byte-identical to DeviceSpec.to_json() of the
+    same configured spec."""
+    make_spec, kwargs = ACCEPTED[case]
     if case == "devsim_1d" and not HAVE_DEVSIM:
         pytest.skip("devsim not installed")
-    q = _Qml()
-    q.ctl.loadExample(example)
-    arm(q)
-    spec, run = q.run()
-    configured = _call("spec.configure_run", {"spec": spec, "run": run})["result"]
+    spec = make_spec()
+    started = run_config.configure_run(spec, **kwargs)
+    configured = _run_via_rpc(spec, **_rpc_kwargs(kwargs))["result"]
     text = _call("spec.job_text", {"spec": configured})["result"]
-    assert text.encode("utf-8") == q.job_files[0]
+    assert json.loads(text) == json.loads(json.dumps(started.to_dict()))
 
 
 @pytest.mark.parametrize("args", [(-1e17, 5.0, -2.0, 2.0, 0.05), (3e16, 2.5, -1.0, 1.5, 0.0),
                                   (-1e18, 10.0, 0.0, 3.0, -0.25)])
-def test_the_cv_job_text_is_byte_identical_to_qmls(tmp_path, args):
-    """P3-S4: the C-V job the native app writes (cv.job_text) equals the
-    file QML's CVController writes for the same inputs -- including its
+def test_the_cv_job_text_matches_a_direct_call(args):
+    """P3-S4: the C-V job the native app writes (cv.job_text) equals
+    gui.services.cv_job.job_text() for the same inputs -- including its
     zero-step fallback and its absolute step."""
-    from gui.controllers.cv_controller import CVController
-    captured = []
-
-    class _App:
-        errorRaised = type("S", (), {"emit": staticmethod(lambda *a: captured.append(a))})
-
-    cv = CVController(_App())
-
-    def record(job):
-        path = str(tmp_path / "cv_job.json")
-        job.to_json(path)
-        with open(path, "rb") as fh:
-            captured.append(fh.read())
-
-    cv._runner.start = record
-    cv.runCV(*args)
-    assert len(captured) == 1 and isinstance(captured[0], bytes), captured
+    from gui.services import cv_job
+    params = cv_job.cv_params(*args)
+    expected = cv_job.job_text(params)
     keys = ("nsub_cm3", "tox_nm", "vstart", "vstop", "vstep")
     text = _call("cv.job_text", dict(zip(keys, args)))["result"]
-    assert text.encode("utf-8") == captured[0]
+    assert json.loads(text) == json.loads(expected)
 
 
 @pytest.mark.parametrize("change,needle", [
@@ -289,26 +249,22 @@ def test_configure_run_leaves_its_input_untouched():
 
 # -- options --------------------------------------------------------------------
 
-@pytest.mark.parametrize("example", ["diode_1d", "mosfet_2d", "resistor_3d"])
-@pytest.mark.parametrize("transient", [False, True])
-def test_run_options_equal_the_qml_selectors(example, transient):
-    q = _Qml()
-    q.ctl.loadExample(example)
-    if transient:
-        q.ctl.setTransientConfig("ghost", "step", 0.0, 0.6, 0.0, 0.0, 1e-9, 1e-11)
-    q.ctl.lab.setModelConfig(_models_without("auger"))
-    resp = _call("run.options", {"spec": q.ctl.spec.to_dict(),
-                                 "models": dict(q.ctl.lab.model_config),
-                                 "transient_armed": transient})
-    assert resp["result"] == _json({"backends": q.ctl.backendOptionsForQml(),
-                                    "engines": q.ctl.engineOptionsForQml()})
-
-
 def test_run_options_default_to_the_specs_models():
     spec = examples.EXAMPLES["diode_1d"]()
     out = _call("run.options", {"spec": spec.to_dict()})["result"]
     assert out["backends"] == _json(run_config.backend_options(spec, spec.models))
     assert out["engines"] == _json(run_config.engine_options(spec, False))
+
+
+@pytest.mark.parametrize("example", ["diode_1d", "mosfet_2d", "resistor_3d"])
+@pytest.mark.parametrize("transient", [False, True])
+def test_run_options_match_a_direct_call(example, transient):
+    spec = examples.EXAMPLES[example]()
+    models = _models_without("auger")
+    resp = _call("run.options", {"spec": spec.to_dict(), "models": models,
+                                 "transient_armed": transient})
+    assert resp["result"] == _json({"backends": run_config.backend_options(spec, models),
+                                    "engines": run_config.engine_options(spec, transient)})
 
 
 # -- projects -------------------------------------------------------------------
@@ -322,46 +278,42 @@ def _structure():
     return structure, MeshModel(nx=12, ny=6)
 
 
-def test_a_project_runs_with_its_sweep_and_models_as_in_qml(tmp_path):
-    from gui.services.device_spec import SweepSpec
+def test_a_project_runs_with_its_sweep_and_models_matching_a_direct_call(tmp_path):
     structure, mesh = _structure()
     models = _models_without("auger")
     sweep = SweepSpec(contact="anode", start=0.0, stop=0.3, step=0.1)
     path = str(tmp_path / "proj.json")
     save_project(path, "Proj", structure, mesh, ProcessFlow(), sweep, models)
 
-    q = _Qml()
-    q.ctl.loadProject(path)
-    q.ctl.run()
-    assert not q.errors and len(q.started) == 1, q.errors
-    qml_spec = q.started[0]
-    assert qml_spec["models"]["auger"] is False and qml_spec["sweep"]["contact"] == "anode"
+    name, spec, direct_sweep, direct_models = run_config.project_run_inputs(path)
+    started = run_config.configure_run(spec, sweep=direct_sweep, models=direct_models)
+    assert started.models["auger"] is False and started.sweep.contact == "anode"
 
     proj = _call("project.spec", {"path": path})["result"]
     assert proj["name"] == "Proj" and proj["models"] == models
     assert proj["sweep"] == _json(sweep.to_dict())
     out = _call("spec.configure_run", {"spec": proj["spec"], "run": {
         "sweep": proj["sweep"], "models": proj["models"]}})
-    assert out["result"] == _json(qml_spec)
+    assert out["result"] == _json(started.to_dict())
 
 
-def test_a_partial_models_config_is_merged_as_qml_merges_it(tmp_path):
+def test_a_partial_models_config_is_merged_correctly(tmp_path):
     """A save from another build: a key missing, an unknown one present.
-    QML's Physics Lab merges onto the defaults and drops the unknown key;
-    the project's run must be the same."""
+    The Physics Lab config merge (run_config.merged_models, via
+    project_run_inputs) merges onto the defaults and drops the unknown
+    key; the project's run must be the same through the RPC."""
     structure, mesh = _structure()
     path = str(tmp_path / "partial.json")
     save_project(path, "Partial", structure, mesh, ProcessFlow(), None,
                  {"auger": False, "a_future_model": True})
-    q = _Qml()
-    q.ctl.loadProject(path)
-    q.ctl.run()
-    assert not q.errors and len(q.started) == 1, q.errors
+    name, spec, sweep, models = run_config.project_run_inputs(path)
+    started = run_config.configure_run(spec, models=models)
+
     proj = _call("project.spec", {"path": path})["result"]
     assert "a_future_model" not in proj["models"]
     assert set(proj["models"]) == set(ModelCatalog.default_config())
     out = _call("spec.configure_run", {"spec": proj["spec"], "run": {"models": proj["models"]}})
-    assert out["result"] == _json(q.started[0])
+    assert out["result"] == _json(started.to_dict())
 
 
 def test_a_project_without_models_keeps_the_catalog_defaults(tmp_path):
@@ -385,17 +337,15 @@ def test_a_flow_only_project_is_refused_named(tmp_path):
     assert "process flow only" in err["data"]["detail"]
 
 
-def test_an_invalid_project_is_refused_with_qmls_message(tmp_path):
+def test_an_invalid_project_is_refused_matching_a_direct_call(tmp_path):
     structure, mesh = _structure()
     mesh.nx = 1                                          # "Mesh Nx must be at least 2"
     path = str(tmp_path / "bad.json")
     save_project(path, "Bad", structure, mesh)
-    q = _Qml()
-    q.ctl.loadProject(path)
-    q.ctl.run()
-    assert not q.started and len(q.errors) == 1
+    with pytest.raises(RunConfigError) as exc:
+        run_config.project_run_inputs(path)
     err = _call("project.spec", {"path": path})["error"]
-    assert (err["data"]["title"], err["data"]["detail"]) == q.errors[0]
+    assert (err["data"]["title"], err["data"]["detail"]) == (exc.value.title, exc.value.detail)
 
 
 # -- loaders and params ---------------------------------------------------------
