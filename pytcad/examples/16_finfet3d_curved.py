@@ -221,7 +221,8 @@ def _export_structured_view(nodes, psi_s, n_s, p_s, C_phys, scale, T, out_path,
     nearest-neighbor rather than left NaN, so field__doping still shows
     a clean source/gate/drain split at the grid's edges.
     """
-    from scipy.interpolate import griddata
+    from scipy.interpolate import LinearNDInterpolator
+    from scipy.spatial import Delaunay, cKDTree
 
     VT, Ns = scale["VT"], scale["Ns"]
     psi_V = psi_s * VT
@@ -237,12 +238,20 @@ def _export_structured_view(nodes, psi_s, n_s, p_s, C_phys, scale, T, out_path,
     Zg, Yg, Xg = np.meshgrid(z, y, x, indexing="ij")  # shape (Nz, Ny, Nx)
     grid_pts = np.column_stack([Xg.ravel(), Yg.ravel(), Zg.ravel()])
 
+    # Built ONCE and reused across the 4 fields below: the ~1300-node
+    # Delaunay triangulation (griddata's own dominant cost) and the
+    # convex-hull-outside mask + nearest-neighbor indices it needs for
+    # the NaN fallback both depend only on `nodes`/`grid_pts`, never on
+    # the field values being resampled -- rebuilding them per field was
+    # pure waste, confirmed by /code-review.
+    tri = Delaunay(nodes)
+    outside = tri.find_simplex(grid_pts) < 0  # griddata's own NaN criterion
+    nearest_idx = cKDTree(nodes).query(grid_pts[outside])[1] if outside.any() else None
+
     def resample(values):
-        lin = griddata(nodes, values, grid_pts, method="linear")
-        missing = np.isnan(lin)
-        if missing.any():
-            near = griddata(nodes, values, grid_pts[missing], method="nearest")
-            lin[missing] = near
+        lin = LinearNDInterpolator(tri, values)(grid_pts)
+        if outside.any():
+            lin[outside] = values[nearest_idx]
         return lin.reshape(Zg.shape)
 
     fields = {

@@ -1,5 +1,7 @@
 #include "run_panel.hpp"
 
+#include "shell/field_form.hpp"
+
 #include <QApplication>
 #include <QComboBox>
 #include <QFileDialog>
@@ -22,13 +24,6 @@ namespace tcad::desktop {
 namespace {
 
 // QML's defaults (SweepPanel.qml, TransientPanel.qml, ACPanel.qml).
-struct FieldDef {
-    const char* name;
-    const char* label;
-    const char* value;
-    const char* tip;
-};
-
 constexpr FieldDef kSweep[] = {{"SweepStart", "Start [V]", "0.0", ""},
                                {"SweepStop", "Stop [V]", "1.0", ""},
                                {"SweepStep", "Step [V]", "0.1", ""}};
@@ -49,15 +44,6 @@ constexpr FieldDef kCv[] = {{"CvNsub", "Nsub [cm^-3]", "-1e17", "Substrate dopin
                             {"CvVStart", "Vg start [V]", "-2.0", ""},
                             {"CvVStop", "Vg stop [V]", "2.0", ""},
                             {"CvVStep", "Vg step [V]", "0.05", ""}};
-
-QLineEdit* addField(QFormLayout* form, const FieldDef& f, QWidget* parent) {
-    auto* e = new QLineEdit(QString::fromLatin1(f.value), parent);
-    e->setObjectName(QString::fromLatin1(f.name));
-    if (*f.tip) e->setToolTip(QString::fromLatin1(f.tip));
-    e->setAccessibleName(QString::fromLatin1(f.label));
-    form->addRow(QString::fromLatin1(f.label), e);
-    return e;
-}
 
 QComboBox* addCombo(QFormLayout* form, const char* name, const QString& label, QWidget* parent) {
     auto* c = new QComboBox(parent);
@@ -234,18 +220,15 @@ QWidget* RunPanel::buildBatchGroup() {
 }
 
 bool RunPanel::requestFamily() {
-    double v[3];
-    const char* names[] = {"FamilyStart", "FamilyStop", "FamilyStep"};
-    for (int i = 0; i < 3; ++i) {
-        QLineEdit* e = field(QString::fromLatin1(names[i]));
-        bool ok = false;
-        v[i] = QLocale::c().toDouble(e->text().trimmed(), &ok);
-        if (!ok || !std::isfinite(v[i])) {
-            emit inputRejected(tr("Invalid family configuration"), tr("%1 must be a finite number.").arg(e->accessibleName()));
-            return false;
-        }
+    std::optional<QString> bad;
+    const double start = numberField(this, "FamilyStart", bad);
+    const double stop = numberField(this, "FamilyStop", bad);
+    const double step = numberField(this, "FamilyStep", bad);
+    if (bad) {
+        emit inputRejected(tr("Invalid family configuration"), tr("%1 must be a finite number.").arg(*bad));
+        return false;
     }
-    emit familyRequested(combo("FamilyContact")->currentText(), v[0], v[1], v[2]);
+    emit familyRequested(combo("FamilyContact")->currentText(), start, stop, step);
     return true;
 }
 
@@ -403,13 +386,7 @@ void RunPanel::setBusy(bool) { updateEnabled(); }
 bool RunPanel::requestRun() {
     if (ctl_->busy()) return false;
     std::optional<QString> bad;
-    auto number = [&](const char* name) -> double {
-        QLineEdit* e = field(QString::fromLatin1(name));
-        bool ok = false;
-        const double v = QLocale::c().toDouble(e->text().trimmed(), &ok);
-        if ((!ok || !std::isfinite(v)) && !bad) bad = e->accessibleName();
-        return v;
-    };
+    auto number = [&](const char* name) -> double { return numberField(this, name, bad); };
     RunSettings s;
     s.kind = kind();
     s.backend = backend_->currentData().toString();

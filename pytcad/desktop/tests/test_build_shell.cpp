@@ -41,6 +41,7 @@
 #include <QTimer>
 #include <QtTest/QtTest>
 
+#include <cmath>
 #include <functional>
 #include <memory>
 
@@ -432,6 +433,36 @@ private slots:
         QTest::mouseClick(buildButton, Qt::LeftButton);
         QVERIFY(waitFor([&] { return project->structure().region_count() == std::size_t(1); }, 15000));
         QCOMPARE(project->structure().region(0).net_doping_cm3, -5e17);
+    }
+
+    void theMeshNxFieldRejectsAFractionalValue() {
+        // Resistor's params are length_cm, height_cm, doping_cm3, v_left,
+        // v_right, nx, ny (templates.cpp's PLHI("nx", ...) call) -- nx is
+        // integer=true, so CatalogPanel::rebuildParamForm must give its
+        // spin box decimals(0), which makes typing a "." rejected by the
+        // widget's own validator instead of reaching templates.build and
+        // failing there with a message this field can't be traced to.
+        auto w = shown(ini("template_build_nx.ini"));
+        QVERIFY(w != nullptr);
+        w->newBuildProject();
+
+        auto* panel = w->buildPanel();
+        panel->findChild<QTabWidget*>("buildTabs")->setCurrentIndex(2);
+        auto* catalog = panel->catalogPanel();
+        auto* templateBox = catalog->findChild<QComboBox*>("catalogTemplateBox");
+        QVERIFY(waitFor([&] { return templateBox->count() > 0; }, 15000));
+        templateBox->setCurrentIndex(templateBox->findText("Resistor"));
+        auto boxes = catalog->findChildren<QDoubleSpinBox*>();
+        QVERIFY(boxes.size() >= 6);
+        QDoubleSpinBox* nx = boxes[5];
+        QCOMPARE(nx->decimals(), 0);
+
+        nx->setFocus();
+        nx->selectAll();
+        QTest::keyClicks(nx, "40.5");
+        nx->interpretText();  // commits the typed text the way losing focus/Enter would
+        QVERIFY2(nx->value() != 40.5, qPrintable(nx->text()));
+        QCOMPARE(nx->value(), std::floor(nx->value()));
     }
 
     void togglingAModelMarksTheProjectDirty() {

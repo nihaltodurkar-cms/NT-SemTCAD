@@ -30,15 +30,15 @@ dependencies = [
 ]
 
 # Optional dependencies stay optional, matching requirements.txt's
-# existing soft-import policy: the code imports gmsh/devsim/mpmath/pyamg
-# at the call site, not at module load, so their absence skips a feature
+# existing soft-import policy: the code imports gmsh/mpmath/pyamg at the
+# call site, not at module load, so their absence skips a feature
 # rather than failing the install.  cupy and mpi4py are deliberately
 # absent even here -- cupy's package name is pinned to the local CUDA
 # major version, and mpi4py's wheel BUILD needs real MPI headers, so
 # either one would break `pip install` on a machine without the hardware.
 [project.optional-dependencies]
 mesh    = ["gmsh>=4.15"]
-solvers = ["pyamg>=5.0", "devsim>=2.11"]
+solvers = ["pyamg>=5.0"]
 gui     = ["PySide6>=6.11", "matplotlib>=3.9", "pyvista>=0.48", "pyvistaqt>=0.12"]
 test    = ["pytest>=9.0", "pytest-xdist>=3.8", "pytest-timeout>=2.4", "mpmath>=1.4"]
 

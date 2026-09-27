@@ -1,6 +1,7 @@
 #include "compact_model_panel.hpp"
 
 #include "run/compact_model_controller.hpp"
+#include "shell/field_form.hpp"
 #include "theme/theme.hpp"
 #include "views/plot/plot_view.hpp"
 
@@ -20,12 +21,6 @@
 
 namespace tcad::desktop {
 namespace {
-
-struct FieldDef {
-    const char* name;
-    const char* label;
-    const char* value;
-};
 
 // M38 Phase 4's own defaults (compact_runner.py's job dict; the removed
 // QML app's DiodeExtractForm/MosfetExtractForm used the same numbers).
@@ -51,14 +46,6 @@ constexpr FieldDef kMosfet[] = {
     {"MosVdStep", "Vd step [V]", "0.2"},    {"MosVgsSat", "Vgs (Id-Vd) [V]", "1.5"},
     {"MosScale", "Scale [cm]", "1e-4"},
 };
-
-QLineEdit* addField(QFormLayout* form, const FieldDef& f, QWidget* parent) {
-    auto* e = new QLineEdit(QString::fromLatin1(f.value), parent);
-    e->setObjectName(QString::fromLatin1(f.name));
-    e->setAccessibleName(QString::fromLatin1(f.label));
-    form->addRow(QString::fromLatin1(f.label), e);
-    return e;
-}
 
 }  // namespace
 
@@ -143,13 +130,7 @@ void CompactModelPanel::updateEnabled() {
 bool CompactModelPanel::requestExtract() {
     if (busy_) return false;
     std::optional<QString> bad;
-    auto number = [&](const char* name) -> double {
-        QLineEdit* e = field(QString::fromLatin1(name));
-        bool ok = false;
-        const double v = QLocale::c().toDouble(e->text().trimmed(), &ok);
-        if ((!ok || !std::isfinite(v)) && !bad) bad = e->accessibleName();
-        return v;
-    };
+    auto number = [&](const char* name) -> double { return numberField(this, name, bad); };
     const QString kind = kind_->currentData().toString();
     nlohmann::json job = {{"kind", kind.toStdString()}};
     if (kind == "diode") {
@@ -199,26 +180,46 @@ void CompactModelPanel::onFinished(const nlohmann::json& manifest) {
     status_->setText(converged ? tr("Extraction converged.") : tr("Extraction did NOT converge -- inspect the fit."));
     netlist_->setPlainText(QString::fromStdString(manifest.value("netlist", std::string())));
 
+    // manifest["curve"] and its sub-keys come from a subprocess-written
+    // result file, not a value this process controls: a raw operator[]
+    // on a missing key is undefined behaviour in a release build (it
+    // skips nlohmann::json's own JSON_ASSERT and dereferences end()),
+    // not a catchable exception -- so every access here goes through
+    // .contains()/.at() first, and any shape mismatch (missing key,
+    // wrong type) is reported through the same status label onFailed()
+    // uses, never left to crash the process.
+    if (!manifest.contains("curve") || !manifest.at("curve").is_object()) {
+        status_->setText(tr("Extraction result has no curve data to plot."));
+        return;
+    }
+    const auto& curve = manifest.at("curve");
+    const bool diode = manifest.value("kind", std::string()) == "diode";
+    const char* xKey = diode ? "v" : "vg";
+    const char* tcadKey = diode ? "i_tcad" : "ig_tcad";
+    const char* fitKey = diode ? "i_fit" : "ig_fit";
+    if (!curve.contains(xKey) || !curve.contains(tcadKey) || !curve.contains(fitKey)) {
+        status_->setText(tr("Extraction result's curve data is incomplete."));
+        return;
+    }
     plot::PlotModel model;
-    const auto& curve = manifest["curve"];
-    if (manifest.value("kind", std::string()) == "diode") {
-        model.title = tr("Diode I-V");
-        model.x = {tr("V [V]")};
-        model.y = {tr("I [A]")};
-        const auto v = curve["v"].get<std::vector<double>>();
-        plot::Series tcad{tr("TCAD"), v, curve["i_tcad"].get<std::vector<double>>(), theme::seriesColour(0)};
-        plot::Series fit{tr("Fit"), v, curve["i_fit"].get<std::vector<double>>(), theme::seriesColour(1)};
+    try {
+        const auto x = curve.at(xKey).get<std::vector<double>>();
+        plot::Series tcad{tr("TCAD"), x, curve.at(tcadKey).get<std::vector<double>>(), theme::seriesColour(0)};
+        plot::Series fit{tr("Fit"), x, curve.at(fitKey).get<std::vector<double>>(), theme::seriesColour(1)};
         fit.line = plot::LineStyle::Dashed;
+        if (diode) {
+            model.title = tr("Diode I-V");
+            model.x = {tr("V [V]")};
+            model.y = {tr("I [A]")};
+        } else {
+            model.title = tr("Id-Vg (fit)");
+            model.x = {tr("Vg [V]")};
+            model.y = {tr("Id [A]")};
+        }
         model.series = {std::move(tcad), std::move(fit)};
-    } else {
-        model.title = tr("Id-Vg (fit)");
-        model.x = {tr("Vg [V]")};
-        model.y = {tr("Id [A]")};
-        const auto vg = curve["vg"].get<std::vector<double>>();
-        plot::Series tcad{tr("TCAD"), vg, curve["ig_tcad"].get<std::vector<double>>(), theme::seriesColour(0)};
-        plot::Series fit{tr("Fit"), vg, curve["ig_fit"].get<std::vector<double>>(), theme::seriesColour(1)};
-        fit.line = plot::LineStyle::Dashed;
-        model.series = {std::move(tcad), std::move(fit)};
+    } catch (const nlohmann::json::exception&) {
+        status_->setText(tr("Extraction result's curve data has the wrong shape."));
+        return;
     }
     plot_->setModel(std::move(model));
 }

@@ -116,7 +116,16 @@ void CatalogPanel::rebuildParamForm() {
     description_->setText(QString::fromStdString(t.value("description", std::string())));
     for (const auto& p : t.value("params", nlohmann::json::array())) {
         auto* box = new QDoubleSpinBox(param_container_);
-        box->setDecimals(9);
+        // templates.cpp's own TemplateParam::integer (core/include/tcad/
+        // uicore/templates.hpp) rejects a non-whole value for such a
+        // param at build time (e.g. mesh nx/ny) -- decimals(0) makes the
+        // widget's own input validator refuse a fractional value up
+        // front, instead of accepting it and only failing later inside
+        // templates.build with a message the user can't trace back to
+        // this field.
+        const bool isInteger = p.value("integer", false);
+        box->setDecimals(isInteger ? 0 : 9);
+        if (isInteger) box->setSingleStep(1.0);
         box->setRange(numberOr(p, "lo", -1e30), numberOr(p, "hi", 1e30));
         box->setValue(p.value("default", 0.0));
         box->setProperty("paramName", QString::fromStdString(p.value("name", std::string())));

@@ -90,6 +90,16 @@ def configure_run(spec, *, sweep=None, transient=None, ac=None, equilibrium_only
         run.bias = None
     if models is not None:
         run.models = dict(models)
+    # Refuse an unregistered backend here, not only in the RPC layer
+    # (backend_service/server.py's own check): a direct caller of this
+    # function must get the same "refuse before it starts" guarantee,
+    # rather than a KeyError surfacing later from get_backend() inside
+    # a spawned subprocess.
+    from workbench.solvers.base import backend_ids
+    ids = backend_ids()
+    if backend not in ids:
+        raise RunConfigError(f"Cannot run with backend '{backend}'",
+                             f"unknown backend '{backend}' (available: {', '.join(ids)})")
     run.backend = backend
     run.engine = engine
     return run

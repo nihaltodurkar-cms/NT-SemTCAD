@@ -1,14 +1,37 @@
+<div align="center">
+
 # PyTCAD — numerical core
 
-This is the numerical-core package: process simulation and self-
-consistent drift-diffusion device simulation in 1D, 2D and 3D. The
-project-level README one directory up covers the Semiconductor
-Workbench layer, the desktop GUI, the full validation philosophy, and
-the illustrated user guide in `docs/user-guide/`.
+**The numerical-core package** — self-consistent drift-diffusion device simulation in 1D/2D/3D and process simulation, structured the way commercial TCAD is structured (Sentaurus Process → Sentaurus Device, Silvaco Athena → Atlas).
 
-A compact, readable, **validated** TCAD toolkit in Python — process simulation and self-consistent drift-diffusion device simulation in 1D, 2D (with a real MOSFET), and 3D — structured the way commercial TCAD is structured (Sentaurus Process → Sentaurus Device, Silvaco Athena → Atlas).
+[![Python](https://img.shields.io/badge/python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](requirements.txt)
+[![C++ core](https://img.shields.io/badge/core-C%2B%2B20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](core)
+[![License: MIT](https://img.shields.io/badge/license-MIT-8A2BE2?style=for-the-badge)](../LICENSE)
 
-Roughly 3,000 lines for the numerical core below (1D + 2D + 3D, including heterojunction materials and trap-assisted tunneling). No black boxes: every model states its equation, its provenance (theory / measurement / empirical fit), and where it breaks.
+<sub>No black boxes — every model states its equation, its provenance (theory / measurement / empirical fit), and where it breaks.</sub>
+
+</div>
+
+<br>
+
+<details open>
+<summary><strong>Contents</strong></summary>
+
+- [0 · The C++ engine (M31)](#p-sec0)
+- [1 · The device equations](#p-sec1)
+- [2 · Numerics — why it's built this way](#p-sec2)
+- [3 · Physical models](#p-sec3)
+- [4 · Validation](#p-sec4)
+- [5 · Usage](#p-sec5)
+- [6 · Honest limits of this code](#p-sec6)
+- [7 · Where to read more](#p-sec7)
+
+</details>
+
+The project-level README one directory up covers the Semiconductor Workbench layer, the desktop GUI, the full validation philosophy, and the illustrated user guide in `docs/user-guide/`. Roughly 3,000 lines for the numerical core below (1D + 2D + 3D, including heterojunction materials and trap-assisted tunneling).
+
+<details>
+<summary><strong>Repository layout</strong></summary>
 
 ```
 pytcad/ (this package)
@@ -152,9 +175,12 @@ tests/           analytic-limit validation + published-value physics
 ../gui/          PySide6/QML desktop app
 ```
 
+</details>
+
 ---
 
-## 0. The C++ engine (M31) -- REQUIRED as of M43 phase 4 (2026-09-16)
+<a name="p-sec0"></a>
+## 0 · The C++ engine (M31) -- REQUIRED as of M43 phase 4 (2026-09-16)
 
 The numerically intensive layer was extracted into a C++ engine under
 `pytcad/core/`, exposed as the single extension module `pytcad._core`.
@@ -233,7 +259,8 @@ Roadmap beyond it: `ARCHITECTURE.md` sections 4c (M31-M40), 4d (the
 dimensional debt and the road to full 3D) and 4e (how this is meant to
 beat Sentaurus/Atlas, and where it deliberately concedes).
 
-## 1. The device equations
+<a name="p-sec1"></a>
+## 1 · The device equations
 
 We solve the steady-state van Roosbroeck system self-consistently:
 
@@ -269,7 +296,8 @@ $$J_n = q\mu_n n E + qD_n \frac{dn}{dx}, \qquad J_p = q\mu_p p E - qD_p \frac{dp
 
 ---
 
-## 2. Numerics — why it's built this way
+<a name="p-sec2"></a>
+## 2 · Numerics — why it's built this way
 
 **Scharfetter–Gummel currents.** The interface current is
 
@@ -289,7 +317,8 @@ $$\psi \to \psi/V_T,\quad n,p \to n/N_{peak},\quad x \to x/L_D,\quad L_D = \sqrt
 
 ---
 
-## 3. Physical models
+<a name="p-sec3"></a>
+## 3 · Physical models
 
 | Model | Form | Provenance |
 |---|---|---|
@@ -311,7 +340,8 @@ $$\psi \to \psi/V_T,\quad n,p \to n/N_{peak},\quad x \to x/L_D,\quad L_D = \sqrt
 
 ---
 
-## 4. Validation
+<a name="p-sec4"></a>
+## 4 · Validation
 
 All tests pass as part of the project-wide fast suite (1028 passed,
 1 xfailed, 0 known failures -- the once-flaky M20 eigensolver test is
@@ -340,7 +370,8 @@ The reverse-leakage test is worth reading: the current does **not** saturate. It
 
 ---
 
-## 5. Usage
+<a name="p-sec5"></a>
+## 5 · Usage
 
 ```python
 import numpy as np
@@ -398,7 +429,8 @@ section for why.
 
 ---
 
-## 6. Honest limits of *this* code
+<a name="p-sec6"></a>
+## 6 · Honest limits of *this* code
 
 - **The 1D core** has no short-channel-effect modeling beyond drift-diffusion, no LOCOS/STI. A real $I_d$–$V_g$ MOSFET sweep with a gate-controlled channel *is* now available — see the "2D MOSFET (new)" subsection below. Unstructured (gmsh triangle) 2D meshing now exists (M21 phase 3, `Device2D(unstructured=True)`) but is homojunction-only (no Caughey-Thomas mobility, no FD statistics, no heterojunctions) and library-only -- no GUI path to build or edit an unstructured mesh.
 - **Implant tables are approximate** LSS moments for *amorphous* Si, good to ~5–10%. They contain **no channelling**, which in crystalline Si can put a tail 1–2 decades deeper. Pass `Rp`/`dRp` from SRIM for anything real.
@@ -409,9 +441,17 @@ section for why.
 
 ### 2D MOSFET (new)
 
+<details>
+<summary><strong>Expand: 2D MOSFET</strong></summary>
+
 There is now a 2D extension (`mesh2d.py`'s `Mesh2D`, `device2d.py`'s `Device2D`, and `mosfet.py`'s `build_mosfet`/`id_vg_sweep`) that solves full drift-diffusion on a tensor-product mesh and produces a real $I_d$–$V_g$ transfer curve with gate-controlled subthreshold switching — see `examples/04_mosfet_idvg.py`. It reuses the same Scharfetter–Gummel/Newton/scaling machinery described above, extended to a 2D box-integration Poisson/continuity assembly. For exactly what's in scope versus deferred (no $I_d$–$V_d$ family sweep, no 2D process simulation, structured rectangular mesh only — no unstructured/triangular mesh, no Canali velocity-saturation mobility in 2D), the original internal design notes for this sub-project are not included in this repository checkout.
 
+
+</details>
 ### 3D Solver (new)
+
+<details>
+<summary><strong>Expand: 3D Solver</strong></summary>
 
 There is now a true 3D extension (`mesh3d.py`'s `Mesh3D`, `device3d.py`'s `Device3D`) that solves full 3D drift-diffusion on a tensor-product Cartesian mesh (independent, non-uniform spacing per axis). It generalizes the same box-integration/edge-scatter assembly used in 1D and 2D: each mesh edge (now three families — x, y, z) scatters a Scharfetter–Gummel flux to its two endpoint nodes, giving a 7-point stencil per equation (block-heptadiagonal Jacobian for the coupled $\psi$/$n$/$p$ Newton system) and implicit zero-flux Neumann boundaries wherever an edge is simply absent. Boundary conditions are geometry-agnostic: `add_contact`/`add_gate` take arbitrary node-index arrays, not device-specific shapes. `GateBC` carries a `normal_axis` (`'x'`/`'y'`/`'z'`) so a gate face can sit on any of the three axes — this is what a wrapped/tri-gate device needs, and `finfet3d.py`'s `build_finfet3d` now exercises `'y'` (top gate) and `'z'` (both sidewalls) together on a single device.
 
@@ -421,7 +461,12 @@ There is now a true 3D extension (`mesh3d.py`'s `Mesh3D`, `device3d.py`'s `Devic
 
 Historical benchmark (unchanged, still accurate for the `"direct"` path this whole limitations paragraph is otherwise about): a uniformly-doped cubic resistor's solve time grew from 3.0s at N=8,000 nodes to 51.8s at N=27,000 (an 18x jump for 3.4x more nodes), and N=64,000 did not complete a single solve within 30 minutes, with the unattended sweep's memory reaching ~19 GB before being killed. **In practice `"direct"` alone is only usable up to roughly N≈27,000 nodes (≈81,000 DOF) on 30 GB-class hardware; larger meshes need one of the alternatives above (or, for the GUI's own examples, its automatic gating already picks one).** No claim of parity with commercial 3D TCAD tools is made or intended. GAA nanowire/nanosheet templates remain future sub-project work; the full design rationale and explicit out-of-scope list otherwise live in this sub-project's internal design notes, not included in this repository checkout.
 
+
+</details>
 ### Transient simulation (new)
+
+<details>
+<summary><strong>Expand: Transient simulation</strong></summary>
 
 M17 adds time-dependent drift-diffusion for both `Device1D`
 (`transient.py`) and `Device2D` (`transient2d.py`): backward-Euler/
@@ -438,7 +483,12 @@ snapshots; one quantitative diode-turn-off charge estimate was
 investigated and left an honest partial result. See
 `M17-TRANSIENT-PLAN.md`.
 
+
+</details>
 ### Small-signal AC analysis (new)
+
+<details>
+<summary><strong>Expand: Small-signal AC analysis</strong></summary>
 
 M18 adds frequency-domain small-signal analysis for `Device1D`
 (`ac.py`): the complex admittance `Y(f) = J_ac(w)^-1` reuses the
@@ -452,7 +502,12 @@ check. One-port only (drive one contact, the other AC-grounded) --
 no general multi-terminal Y-parameter matrix. 1D only; library-only,
 no GUI exposure. See `M18-AC-PLAN.md`.
 
+
+</details>
 ### Self-heating (new)
+
+<details>
+<summary><strong>Expand: Self-heating</strong></summary>
 
 M19 adds steady-state 1D self-heating (`thermal.py`): an isothermal
 Device1D electrical solve coupled to a nonlinear steady lattice-
@@ -472,7 +527,12 @@ above a measured bias/thermal-resistance threshold and raises
 no 2D, no transient coupling, no Seebeck/Peltier. See
 `M19-SELFHEATING-PLAN.md`.
 
+
+</details>
 ### Unstructured (gmsh) 2D meshing (new)
+
+<details>
+<summary><strong>Expand: Unstructured (gmsh) 2D meshing</strong></summary>
 
 M21 phase 3 adds general unstructured 2D meshing on top of `Device2D`:
 `Device2D(mesh, doping, unstructured=True)` accepts a `gmsh_mesh.
@@ -492,7 +552,12 @@ incomplete-ionization/surface-mobility) -- any incompatible
 silently wrong. No 3D, no adaptive refinement, no heterojunctions, no
 GUI path to build or edit a mesh. See `M21-PHASE3-MESHING-PLAN.md`.
 
+
+</details>
 ### Mixed-mode device + circuit (M27, new)
+
+<details>
+<summary><strong>Expand: Mixed-mode device + circuit (M27, new)</strong></summary>
 
 `circuit.py` adds a Modified Nodal Analysis (MNA) SPICE-style circuit
 solver: `VSource`/`ISource`/`Resistor`/`Capacitor`/`Diode`/`MOSFET1`
@@ -516,7 +581,12 @@ standalone at the circuit-computed terminal voltage, and a genuine
 the milestone's own acceptance criteria) — see `examples/
 14_mixed_mode_circuit.py`.
 
+
+</details>
 ### Hydrodynamic / energy-balance carrier temperature (M29, new)
+
+<details>
+<summary><strong>Expand: Hydrodynamic / energy-balance carrier temperature (M29, new)</strong></summary>
 
 `hydrodynamic.py` adds a standalone, LOCAL (no spatial energy-flux
 term) steady energy-balance closure — carrier temperature from a
@@ -545,7 +615,12 @@ isotropic thermal-speed-vs-v_sat comparison was tried and rejected as
 a meaningless ratio (Si electrons' equilibrium thermal speed is
 already ~2× v_sat).
 
+
+</details>
 ### Process expansion, Schottky contacts, and 3D FinFET (M23-M26, M28, new)
+
+<details>
+<summary><strong>Expand: Process expansion, Schottky contacts, and 3D FinFET (M23-M26, M28, new)</strong></summary>
 
 Four milestones landed 2026-09-06, each a disclosed-simplification
 slice rather than the milestone's full literal spec -- see each
@@ -622,7 +697,12 @@ module's own honesty-clause docstring and `ARCHITECTURE.md` section
   new physics benchmark (doping is uniform per region, the same
   disclosed simplification the M26 examples above already carry).
 
+
+</details>
 ### Level-set 2D process geometry (M35 S1-S4, new)
+
+<details>
+<summary><strong>Expand: Level-set 2D process geometry (M35 S1-S4, new)</strong></summary>
 
 `process2d.py`'s fixed-lateral-grid "string model" represents the
 wafer surface as one height per column, so it cannot express a
@@ -686,7 +766,12 @@ see the "Current limitations, stated honestly" paragraph above.
   physics module — not wired into a live `Device1D`/`Device2D`
   Jacobian as a boundary condition. See `examples/11_schottky_diode.py`.
 
+
+</details>
 ### Desktop GUI (new)
+
+<details>
+<summary><strong>Expand: Desktop GUI</strong></summary>
 
 There is a PySide6 / Qt Quick desktop frontend in `../gui/` that solves
 devices in a background process and visualizes the result, without the
@@ -701,7 +786,10 @@ backend (DEVSIM, optional), and a Transient tab (M17 phase 3) that arms
 a per-contact waveform and plots current vs. time. See
 `../gui/README.md` and `../docs/user-guide/` for details.
 
-## 7. Where to read more
+
+</details>
+<a name="p-sec7"></a>
+## 7 · Where to read more
 
 - **Selberherr, *Analysis and Simulation of Semiconductor Devices* (1984)** — still the reference for the discretised equations, scaling, and Scharfetter–Gummel. Computational.
 - **Scharfetter & Gummel, *IEEE Trans. Electron Devices* 16, 64 (1969)** — the original exponential-fitting scheme, ~10 pages. Computational.

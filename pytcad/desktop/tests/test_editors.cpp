@@ -276,6 +276,37 @@ private slots:
         view.endDrag();
     }
 
+    void structureEditorViewResizesFromTheLeftAndTopEdgesToo() {
+        // The visible handles (paintEvent) sit at all 4 corners plus the
+        // top/bottom mid-edges; beginDragAt's hit-test used to recognize
+        // only near-right/near-bottom, so a click on the left or top
+        // handle fell through to DragMode::Move instead of resizing --
+        // this is the regression gate for that fix.
+        auto structure = make_structure();  // r1: x_min = 0.0025, y_min = 0.0025
+        auto mesh = make_mesh();
+        StructureEditorView view;
+        view.resize(248, 248);
+        view.setDocuments(&structure, &mesh);
+
+        const QPointF left_edge = view.toPixel(0.0025, 0.005);
+        view.beginDragAt(left_edge);
+        const RegionData before_left = structure.region(0);
+        view.dragTo(view.toPixel(0.0005, 0.005));  // drag the left edge further left
+        const RegionData resized_left = structure.region(0);
+        QVERIFY(resized_left.x_min < before_left.x_min);
+        QCOMPARE(resized_left.x_max, before_left.x_max);  // the opposite edge does not move
+        view.endDrag();
+
+        const QPointF top_edge = view.toPixel(0.005, 0.0025);
+        view.beginDragAt(top_edge);
+        const RegionData before_top = structure.region(0);
+        view.dragTo(view.toPixel(0.005, 0.0005));  // drag the top edge further up
+        const RegionData resized_top = structure.region(0);
+        QVERIFY(resized_top.y_min < before_top.y_min);
+        QCOMPARE(resized_top.y_max, before_top.y_max);  // the opposite edge does not move
+        view.endDrag();
+    }
+
     void structureEditorViewSelectingEmptySpaceClearsSelection() {
         auto structure = make_structure();
         auto mesh = make_mesh();

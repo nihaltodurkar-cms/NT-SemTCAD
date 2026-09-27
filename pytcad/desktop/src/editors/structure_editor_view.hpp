@@ -82,7 +82,7 @@ protected:
     void leaveEvent(QEvent*) override;
 
 private:
-    enum class DragMode { None, Move, ResizeRight, ResizeBottom };
+    enum class DragMode { None, Move, ResizeRight, ResizeBottom, ResizeLeft, ResizeTop };
 
     std::optional<std::size_t> regionIndexById(const QString& id) const;
 

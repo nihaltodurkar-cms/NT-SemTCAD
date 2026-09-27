@@ -131,9 +131,21 @@ void StructureEditorView::beginDragAt(QPointF logical_pos) {
     const QRectF pr = QRectF(toPixel(drag_orig_.x_min, drag_orig_.y_min),
                              toPixel(drag_orig_.x_max, drag_orig_.y_max))
                           .normalized();
+    // The visible handles (paintEvent below) sit at all 4 corners plus the
+    // top/bottom mid-edges, so the hit-test must recognize all 4 sides,
+    // not just right/bottom -- a click on the left or top mid-edge handle
+    // used to fall through to Move (silently translating the whole
+    // region instead of resizing it), contradicting the affordance drawn
+    // there.
     const bool near_right = std::abs(logical_pos.x() - pr.right()) <= kEdgeTolerancePx;
     const bool near_bottom = std::abs(logical_pos.y() - pr.bottom()) <= kEdgeTolerancePx;
-    drag_mode_ = near_right ? DragMode::ResizeRight : (near_bottom ? DragMode::ResizeBottom : DragMode::Move);
+    const bool near_left = std::abs(logical_pos.x() - pr.left()) <= kEdgeTolerancePx;
+    const bool near_top = std::abs(logical_pos.y() - pr.top()) <= kEdgeTolerancePx;
+    if (near_right) drag_mode_ = DragMode::ResizeRight;
+    else if (near_left) drag_mode_ = DragMode::ResizeLeft;
+    else if (near_bottom) drag_mode_ = DragMode::ResizeBottom;
+    else if (near_top) drag_mode_ = DragMode::ResizeTop;
+    else drag_mode_ = DragMode::Move;
     drag_start_mesh_ = toMeshSpace(logical_pos);
     dragging_ = true;
     update();
@@ -156,6 +168,10 @@ void StructureEditorView::dragTo(QPointF logical_pos) {
         r.x_max = snapX(std::max(drag_orig_.x_min + kMinExtent, drag_orig_.x_max + dx));
     } else if (drag_mode_ == DragMode::ResizeBottom) {
         r.y_max = snapY(std::max(drag_orig_.y_min + kMinExtent, drag_orig_.y_max + dy));
+    } else if (drag_mode_ == DragMode::ResizeLeft) {
+        r.x_min = snapX(std::min(drag_orig_.x_max - kMinExtent, drag_orig_.x_min + dx));
+    } else if (drag_mode_ == DragMode::ResizeTop) {
+        r.y_min = snapY(std::min(drag_orig_.y_max - kMinExtent, drag_orig_.y_min + dy));
     }
     structure_->set_region(drag_region_id_.toStdString(), r);
     update();
@@ -209,9 +225,11 @@ void StructureEditorView::paintEvent(QPaintEvent*) {
     // Regions: fill by net doping sign (donor/n-type vs acceptor/p-type),
     // a data colour, not a theme token (tokens.hpp's own convention for
     // data that "keeps its colours" -- theme::StructureColour here).
-    QColor donorFill = theme::structureColour(theme::StructureColour::NType);
+    const QColor donorBorder = theme::structureColour(theme::StructureColour::NType);
+    const QColor acceptorBorder = theme::structureColour(theme::StructureColour::PType);
+    QColor donorFill = donorBorder;
     donorFill.setAlpha(70);
-    QColor acceptorFill = theme::structureColour(theme::StructureColour::PType);
+    QColor acceptorFill = acceptorBorder;
     acceptorFill.setAlpha(70);
     for (std::size_t i = 0; i < structure_->region_count(); ++i) {
         const RegionData r = structure_->region(i);
@@ -223,8 +241,7 @@ void StructureEditorView::paintEvent(QPaintEvent*) {
         const bool is_selected = (QString::fromStdString(r.id) == selected_);
         QPen pen(theme::qcolor(theme::T::Accent));
         if (!is_selected)
-            pen = QPen(theme::structureColour(donor ? theme::StructureColour::NType
-                                                     : theme::StructureColour::PType));
+            pen = QPen(donor ? donorBorder : acceptorBorder);
         pen.setWidthF(is_selected ? 2.0 : 1.5);
         p.setPen(pen);
         p.drawRect(pr);

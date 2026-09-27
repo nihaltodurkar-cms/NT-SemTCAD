@@ -85,6 +85,25 @@ REFUSALS = {
                                          equilibrium_only=True)),
 }
 
+# configure_run()'s own unknown-backend refusal (restored so a DIRECT call,
+# not just the RPC layer's earlier known_backends check, is guarded -- see
+# CLAUDE.md's code-review addendum). The RPC layer refuses an unknown
+# backend one step earlier as a plain ValueError, never reaching
+# configure_run, so this can't join REFUSALS' RPC-parity check above; it
+# is still counted in test_the_refusals_cover_every_title_run_config_raises
+# below so this refusal stays gated.
+DIRECT_ONLY_REFUSALS = {
+    "unknown_backend": (lambda: examples.EXAMPLES["diode_1d"](), dict(backend="spice")),
+}
+
+
+def test_configure_run_refuses_an_unknown_backend_directly():
+    make_spec, kwargs = DIRECT_ONLY_REFUSALS["unknown_backend"]
+    with pytest.raises(RunConfigError) as exc:
+        run_config.configure_run(make_spec(), **kwargs)
+    assert exc.value.title == "Cannot run with backend 'spice'"
+    assert "unknown backend 'spice'" in exc.value.detail
+
 
 @pytest.mark.parametrize("case", sorted(REFUSALS))
 def test_every_run_refusal_is_the_same_through_the_rpc(case):
@@ -114,6 +133,11 @@ def test_the_refusals_cover_every_title_run_config_raises():
         with pytest.raises(RunConfigError) as exc:
             run_config.configure_run(make_spec(), **kwargs)
         seen.add(exc.value.title)
+    for case in DIRECT_ONLY_REFUSALS:
+        make_spec, kwargs = DIRECT_ONLY_REFUSALS[case]
+        with pytest.raises(RunConfigError) as exc:
+            run_config.configure_run(make_spec(), **kwargs)
+        seen.add(exc.value.title.replace("spice", "{backend}"))
     assert raised == seen
 
 
