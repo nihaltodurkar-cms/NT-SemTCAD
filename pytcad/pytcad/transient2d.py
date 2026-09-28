@@ -38,6 +38,7 @@ Phase 1 leaves Device1D's two boundary rows untouched.
 import numpy as np
 import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
+from . import linsolve
 
 from .constants import Q
 from .device import NewtonOptions
@@ -138,11 +139,16 @@ def _newton_step(device, psi0, n0, p0, voltages_new, F_old_n, F_old_p, dV,
                   dt_s, theta, k_free, opts):
     psi, n, p = psi0.copy(), n0.copy(), p0.copy()
     Ny, Nx = device.Ny, device.Nx
+    # device-port Phase 3.1: opt-in symbolic-reuse LU (None = old call)
+    session = linsolve.device_session(device)
     for it in range(opts.max_iter):
         F, J, F_n_raw, F_p_raw = _step_residual_jacobian(
             device, psi, n, p, voltages_new, n0, p0, F_old_n, F_old_p, dV,
             dt_s, theta, k_free)
-        du = spsolve(J.tocsc(), -F)
+        if session is not None:
+            du = session.solve(J, -F, fallback=lambda: spsolve(J.tocsc(), -F))
+        else:
+            du = spsolve(J.tocsc(), -F)
         dpsi = du[0::3].reshape(Ny, Nx)
         dn = du[1::3].reshape(Ny, Nx)
         dp = du[2::3].reshape(Ny, Nx)

@@ -983,3 +983,124 @@ def solve_linear(A, b, *, method="direct", rtol=1e-10, atol=0.0,
 
     return x, {"method": method, "iterations": iters[0],
                "converged": True, "residual": resid}
+
+
+def device_session(owner):
+    """A DirectSession cached on `owner` (a device) for Newton loops that
+    live OUTSIDE the device's own solve methods -- transient2d/3d step
+    solves, whose Jacobian pattern is identical across every iteration of
+    every time step. None when the opt-in is off."""
+    if not native_direct_enabled():
+        return None
+    s = getattr(owner, "_linsolve_session", None)
+    if s is None:
+        s = DirectSession()
+        owner._linsolve_session = s
+    return s
+
+
+def native_direct_enabled():
+    """Phase 3.1 of the device port (~/.claude/plans/eager-purring-fairy.md):
+    opt-in via PYTCAD_NATIVE_LINSOLVE=1, and only where pytcad._core is
+    built. Off by default for the same reason PYTCAD_NATIVE_DEVICE1D is:
+    a different LU (Eigen SparseLU, COLAMD) matches spsolve to
+    factorization precision, not bit-for-bit, and several suites pin
+    spsolve's exact output as a golden."""
+    import os
+    return (os.environ.get("PYTCAD_NATIVE_LINSOLVE", "") == "1"
+            and _accel.HAVE_ACCEL)
+
+
+class DirectSession:
+    """A direct solver for ONE Newton solve (Device2D/Device3D solve_bias
+    and solve_equilibrium): pytcad._core.ReusableLU keeps the symbolic
+    analysis (ordering + elimination structure) while the Jacobian's
+    sparsity pattern is unchanged and redoes only the numeric
+    factorization per iteration. The pattern is re-checked on every call,
+    so a pattern that moves (nonlocal blocks) re-analyzes and stays
+    correct. Same failure contract as solve_linear(method="direct"): a
+    singular or non-finite system raises LinearSolveError."""
+
+    # Measured 2026-09-28 on this repo's Windows dev machine (B3's 2D
+    # MOSFET swept nx=41..161, captured Newton systems, best of 2):
+    # spsolve/native = 0.70x at 11,640 unknowns, 1.25x at 18,252, 1.54x
+    # at 26,304, 1.86x at 46,728, 2.05x at 72,912 (B11's 3D MOSFET bias:
+    # 2.13x at 30,240). Below the crossover SuperLU's numeric
+    # factorization is simply faster than Eigen's, so smaller systems
+    # keep the caller's own call. Re-measure before quoting elsewhere.
+    MIN_UNKNOWNS = 15000
+    # A pattern that keeps moving (B10's nonlocal BTBT: 8 analyses in 14
+    # solves even with the union-pattern scatter) makes every call pay a
+    # fresh analysis, which is SLOWER than spsolve (0.67x measured); after
+    # this many analyses the session hands the rest of the solve back.
+    MAX_ANALYSES = 2
+
+    def __init__(self):
+        _accel.require_accel()
+        # COLAMD, not AMD(A^T+A): measured 2026-09-28, Eigen SparseLU with
+        # AMDOrdering took >15 s on B3-quick's 11,640-unknown coupled
+        # Jacobian that COLAMD factors in ~45 ms, and COLAMD+reuse already
+        # matched scipy's best ordering (MMD_AT_PLUS_A) on M21's Poisson.
+        self._lu = _accel.core.ReusableLU(False)
+        self._disabled = False
+        self.native_solves = 0
+        self.fallback_solves = 0
+
+    @property
+    def analyses(self):
+        return self._lu.analyses
+
+    @property
+    def factorizations(self):
+        return self._lu.factorizations
+
+    def solve(self, A, b, fallback=None):
+        """x for A x = b. `fallback`, when given, is the caller's own
+        zero-argument direct call (e.g. ``lambda: spsolve(Jd.tocsc(),
+        rhs)``) and is used, UNCHANGED, below MIN_UNKNOWNS and once the
+        pattern has proven unstable -- so those systems stay bit-identical
+        to the path without a session."""
+        if fallback is not None and (self._disabled
+                                     or A.shape[0] < self.MIN_UNKNOWNS):
+            self.fallback_solves += 1
+            return fallback()
+        if fallback is not None and self._lu.analyses >= self.MAX_ANALYSES \
+                and not self._pattern_matches(A):
+            self._disabled = True
+            self.fallback_solves += 1
+            return fallback()
+        self.native_solves += 1
+        return self._solve_native(A, b)
+
+    def _pattern_matches(self, A):
+        # cheap pre-check so the session never pays a third analysis
+        A = A.tocsc()
+        A.sum_duplicates()
+        last = getattr(self, "_last_pattern", None)
+        return (last is not None and last[0].shape == A.indptr.shape
+                and last[1].shape == A.indices.shape
+                and np.array_equal(last[0], A.indptr)
+                and np.array_equal(last[1], A.indices))
+
+    def _solve_native(self, A, b):
+        b = np.asarray(b, dtype=float)
+        if not sp.issparse(A):
+            A = sp.csr_matrix(A)
+        _check_finite(A, b, "native_direct")
+        A = A.tocsc()
+        A.sum_duplicates()          # canonical: sorted, no duplicates
+        self._last_pattern = (A.indptr.copy(), A.indices.copy())
+        try:
+            x = self._lu.solve_csc(
+                np.ascontiguousarray(A.indptr, dtype=np.int64),
+                np.ascontiguousarray(A.indices, dtype=np.int64),
+                np.ascontiguousarray(A.data, dtype=np.float64),
+                int(A.shape[0]), np.ascontiguousarray(b))
+        except Exception as exc:
+            raise LinearSolveError(f"native direct solve failed: {exc}") from exc
+        x = np.asarray(x)
+        if not np.all(np.isfinite(x)):
+            raise LinearSolveError(
+                "native direct solve returned a non-finite result "
+                "(A is likely singular)")
+        return x

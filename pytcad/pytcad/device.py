@@ -557,10 +557,13 @@ class Models:
 # incomplete ionization) to the native set; slice 2 added tat (M12-S2
 # trap-assisted tunneling) and its trap_et_rel parameter; slice 3 added
 # impact/btbt (M15 local impact ionization, M16 local Kane BTBT, and the
-# stiff-generation ladder + line search they drive).
+# stiff-generation ladder + line search they drive); slice 4 added their
+# M34 nonlocal variants (impact_nonlocal + its relaxation lengths, and
+# btbt_nonlocal with its per-solve path refresh).
 _NATIVE_DEVICE1D_MODEL_FIELDS = frozenset({
     "doping_mobility", "srh", "auger", "bgn", "fd", "incomplete_ion",
-    "tat", "trap_et_rel", "impact", "btbt"})
+    "tat", "trap_et_rel", "impact", "btbt", "impact_nonlocal",
+    "impact_lambda_n", "impact_lambda_p", "btbt_nonlocal"})
 
 
 def _model_flags_beyond_baseline(models: "Models"):
@@ -1090,6 +1093,25 @@ class Device1D:
             native_models.tat = self.models.tat
             native_models.impact = self.models.impact
             native_models.btbt = self.models.btbt
+            native_models.impact_nonlocal = self.models.impact_nonlocal
+            native_models.btbt_nonlocal = self.models.btbt_nonlocal
+            # Phase 2 slice 4: nonlocal-model parameters (materials /
+            # published constants, evaluated here as for every other
+            # material input; _kane_u keeps its loud refusal in Python).
+            nl_params = None
+            if self.models.impact_nonlocal or self.models.btbt_nonlocal:
+                nl_params = _accel.core.Device1DNonlocalParams()
+                nl_params.lambda_n_cm = self.models.impact_lambda_n
+                nl_params.lambda_p_cm = self.models.impact_lambda_p
+                if self.models.btbt_nonlocal:
+                    from .btbt import _kane_u, HBAR_SI
+                    Eg_J, mr, mc, mv = self._btbt_nl_params()
+                    nl_params.Eg_eV = self.mats[0].Eg(self.T)
+                    nl_params.Eg_J = Eg_J
+                    nl_params.mr_kg, nl_params.mc_kg, nl_params.mv_kg = mr, mc, mv
+                    nl_params.u = _kane_u(mr)
+                    nl_params.hbar = HBAR_SI
+                    nl_params.q = _NL_Q
             # Phase 2 slice 2: TAT's psi-independent exponent numerators
             # (materials evaluation, stays Python like everything above).
             tat_kn, tat_kp = (self._tat_exponent_coeffs()
@@ -1121,7 +1143,8 @@ class Device1D:
                 self.mu_n0, self.mu_p0, self.tau_n, self.tau_p, self.nie,
                 self.mat.Cn_auger, self.mat.Cp_auger, native_models,
                 nc_s, nv_s, ln_gn, ln_gp, eg_kt, nd_arr, na_arr, ded_kt,
-                fe, fg, fgp, fq, fqp, tat_kn=tat_kn, tat_kp=tat_kp)
+                fe, fg, fgp, fq, fqp, tat_kn=tat_kn, tat_kp=tat_kp,
+                nl=nl_params)
             # Snapshot of the Models() the native object was BUILT with:
             # callers (test_m12_tat's fixture among them) mutate
             # dev.models after construction, which the compiled object
@@ -2716,6 +2739,14 @@ class Device1D:
                              if self.models.impact else None)
         self._btbt_gs_cache = (np.asarray(self._native.btbt_gs_cache)
                                if self.models.btbt else None)
+        # M34-S1: the frozen path set as the same TunnelPaths build_1d
+        # would produce, plus the refresh outcome.
+        self.last_btbt_nl_refreshes = self._native.last_btbt_nl_refreshes
+        self.last_btbt_nl_stable = self._native.last_btbt_nl_stable
+        if self.models.btbt_nonlocal:
+            self._btbt_nl_paths = _nl_build_1d(
+                self.x * 1e-2, np.asarray(self._native.btbt_nl_starts, dtype=int),
+                np.asarray(self._native.btbt_nl_ends, dtype=int))
         if not self.last_converged:
             warnings.warn(f"Newton did not converge at V={V}; "
                           f"last update {self.last_newton_err:.2e}")

@@ -1351,6 +1351,11 @@ class Device3D:
         self.last_auto_reason = auto_reason
 
         psi = self._bulk_psi_guess() if psi_guess is None else np.array(psi_guess, dtype=float)
+        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): symbolic-reuse LU
+        # for large DIRECT systems; None keeps the exact pre-existing call.
+        session = (linsolve.DirectSession()
+                   if linsolve.native_direct_enabled()
+                   and resolved_linsolve == "direct" else None)
         for it in range(opts.max_iter):
             F, J = self._residual_jacobian_poisson(psi)
             # linsolve.solve_linear(method="direct") no longer
@@ -1392,9 +1397,13 @@ class Device3D:
             Jd, rhs = eliminate_csr(J, -F.ravel(),
                                     self._dirichlet_rows_poisson)
             try:
-                d, _ = linsolve.solve_linear(Jd.tocsc(), rhs,
-                                             method=resolved_linsolve,
-                                             rtol=opts.linsolve_rtol)
+                if session is not None:
+                    d = session.solve(Jd, rhs, fallback=lambda: linsolve.solve_linear(
+                        Jd.tocsc(), rhs, method="direct")[0])
+                else:
+                    d, _ = linsolve.solve_linear(Jd.tocsc(), rhs,
+                                                 method=resolved_linsolve,
+                                                 rtol=opts.linsolve_rtol)
             except linsolve.LinearSolveError:
                 if resolved_linsolve == "direct":
                     raise
@@ -2071,6 +2080,12 @@ class Device3D:
         # the plain path keeps M11-S5's 1e-10, bit-identical
         dens_floor = _STIFF_DENSITY_FLOOR if stiff_on else 1e-10
         self._ii_strength = 1.0
+        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): one symbolic-reuse
+        # LU session for this whole bias solve (every stage and refresh).
+        session = (linsolve.DirectSession()
+                   if linsolve.native_direct_enabled()
+                   and resolved_linsolve == "direct" else None)
+        self.last_linsolve_session = session
         while True:
             for stage in stages:
                 self._ii_strength = stage
@@ -2109,7 +2124,10 @@ class Device3D:
                         F, J, *_ = self._residual_jacobian(psi, n, p, cur_voltages)
                     # Symmetric Dirichlet elimination -- see pytcad/dirichlet.py.
                     Jd, rhs = eliminate_csr(J, -F, self._dirichlet_rows)
-                    if resolved_linsolve == "direct":
+                    if session is not None:
+                        du = session.solve(Jd, rhs, fallback=lambda: linsolve.solve_linear(
+                            Jd, rhs, method="direct")[0])
+                    elif resolved_linsolve == "direct":
                         # linsolve.solve_linear(method="direct") is documented
                         # bit-identical to a raw spsolve call (see its own
                         # docstring) -- routing through it here, rather than

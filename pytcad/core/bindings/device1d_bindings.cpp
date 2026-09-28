@@ -41,7 +41,23 @@ void register_device1d(nb::module_& m) {
         .def_rw("incomplete_ion", &tcad::device1d::Models::incomplete_ion)
         .def_rw("tat", &tcad::device1d::Models::tat)
         .def_rw("impact", &tcad::device1d::Models::impact)
-        .def_rw("btbt", &tcad::device1d::Models::btbt);
+        .def_rw("btbt", &tcad::device1d::Models::btbt)
+        .def_rw("impact_nonlocal", &tcad::device1d::Models::impact_nonlocal)
+        .def_rw("btbt_nonlocal", &tcad::device1d::Models::btbt_nonlocal);
+
+    using NLP = tcad::device1d::NonlocalParams;
+    nb::class_<NLP>(m, "Device1DNonlocalParams")
+        .def(nb::init<>())
+        .def_rw("lambda_n_cm", &NLP::lambda_n_cm)
+        .def_rw("lambda_p_cm", &NLP::lambda_p_cm)
+        .def_rw("Eg_eV", &NLP::Eg_eV)
+        .def_rw("Eg_J", &NLP::Eg_J)
+        .def_rw("mr_kg", &NLP::mr_kg)
+        .def_rw("mc_kg", &NLP::mc_kg)
+        .def_rw("mv_kg", &NLP::mv_kg)
+        .def_rw("u", &NLP::u)
+        .def_rw("hbar", &NLP::hbar)
+        .def_rw("q", &NLP::q);
 
     nb::class_<tcad::device1d::NewtonOptions>(m, "Device1DNewtonOptions")
         .def(nb::init<>())
@@ -59,7 +75,7 @@ void register_device1d(nb::module_& m) {
                         F64 nd_arr, F64 na_arr, double ded_kt,
                         F64 fermi_e, F64 fermi_g, F64 fermi_gp, F64 fermi_q,
                         F64 fermi_qp, std::optional<F64> tat_kn,
-                        std::optional<F64> tat_kp) {
+                        std::optional<F64> tat_kp, std::optional<NLP> nl) {
                  return new tcad::device1d::Device1D(
                      to_vec(x), to_vec(doping), T, VT, eps, ni, to_vec(mu_n0),
                      to_vec(mu_p0), to_vec(tau_n), to_vec(tau_p), to_vec(nie),
@@ -68,7 +84,7 @@ void register_device1d(nb::module_& m) {
                      to_vec(eg_kt), to_vec(nd_arr), to_vec(na_arr), ded_kt,
                      to_vec(fermi_e), to_vec(fermi_g), to_vec(fermi_gp),
                      to_vec(fermi_q), to_vec(fermi_qp), to_vec(tat_kn),
-                     to_vec(tat_kp));
+                     to_vec(tat_kp), nl ? *nl : NLP{});
              }),
              nb::arg("x"), nb::arg("doping"), nb::arg("T"), nb::arg("VT"),
              nb::arg("eps"), nb::arg("ni"), nb::arg("mu_n0"), nb::arg("mu_p0"),
@@ -85,7 +101,8 @@ void register_device1d(nb::module_& m) {
              nb::arg("fermi_gp"), nb::arg("fermi_q"), nb::arg("fermi_qp"),
              // Phase 2 slice 2 (TAT): keyword-optional so pre-existing
              // callers (the Phase-1/slice-1 gate files) keep working.
-             nb::arg("tat_kn") = nb::none(), nb::arg("tat_kp") = nb::none())
+             nb::arg("tat_kn") = nb::none(), nb::arg("tat_kp") = nb::none(),
+             nb::arg("nl") = nb::none())
         .def("solve_equilibrium",
              [](tcad::device1d::Device1D& d, const tcad::device1d::NewtonOptions& o) {
                  d.solve_equilibrium(o);
@@ -116,6 +133,31 @@ void register_device1d(nb::module_& m) {
         .def_prop_ro("btbt_gs_cache",
                      [](const tcad::device1d::Device1D& d) { return d.btbt_gs_cache(); })
         .def_prop_ro("ii_strength", &tcad::device1d::Device1D::ii_strength)
+        .def_prop_ro("btbt_nl_starts",
+                     [](const tcad::device1d::Device1D& d) { return d.btbt_nl_paths().start; })
+        .def_prop_ro("btbt_nl_ends",
+                     [](const tcad::device1d::Device1D& d) { return d.btbt_nl_paths().end; })
+        .def_prop_ro("last_btbt_nl_refreshes",
+                     &tcad::device1d::Device1D::last_btbt_nl_refreshes)
+        .def_prop_ro("last_btbt_nl_stable",
+                     [](const tcad::device1d::Device1D& d) -> nb::object {
+                         const int s = d.last_btbt_nl_stable();
+                         if (s < 0) return nb::none();
+                         return nb::bool_(s == 1);
+                     })
+        .def("set_btbt_nl_paths",
+             [](tcad::device1d::Device1D& d, const std::vector<std::int64_t>& starts,
+                const std::vector<std::int64_t>& ends) {
+                 d.set_btbt_nl_paths(starts, ends);
+             }, nb::arg("starts"), nb::arg("ends"))
+        .def("locate_btbt_nl_paths",
+             [](const tcad::device1d::Device1D& d, F64 psi) {
+                 return d.locate_btbt_nl_paths(to_vec(psi));
+             }, nb::arg("psi"))
+        .def("_effective_field_for_test",
+             [](const tcad::device1d::Device1D& d, F64 psi, int carrier) {
+                 return d.effective_field_for_test(to_vec(psi), carrier);
+             }, nb::arg("psi"), nb::arg("carrier"))
         .def("set_state",
              [](tcad::device1d::Device1D& d, F64 psi, F64 n, F64 p) {
                  d.set_state(to_vec(psi), to_vec(n), to_vec(p));

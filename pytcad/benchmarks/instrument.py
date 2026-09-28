@@ -214,6 +214,14 @@ def instrumented(device=None, memory=True):
           _timed(probe, "linsolve", _linsolve.solve_linear, sizes=True))
     patch(_linsolve, "_build_preconditioner",
           _timed(probe, "precond", _linsolve._build_preconditioner))
+    # Device-port Phase 3.1: the opt-in DirectSession's native LU never
+    # goes through spsolve/solve_linear (its size/instability FALLBACK
+    # does, and is counted by the patches above/below), so its own solve
+    # is timed here or PYTCAD_NATIVE_LINSOLVE=1 runs report linsolve = 0.
+    # Patched on the class: sessions are created inside the solve.
+    if hasattr(_linsolve, "DirectSession"):
+        patch(_linsolve.DirectSession, "_solve_native",
+              _timed(probe, "linsolve", _linsolve.DirectSession._solve_native))
 
     # NOT pytcad.linsolve's own spsolve: solve_linear is already wrapped
     # above, and wrapping the function it calls internally would count

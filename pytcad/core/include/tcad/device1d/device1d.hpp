@@ -6,8 +6,9 @@
 // comments for exactly which Python branches each addition mirrors.
 // Phase 2 slice 2 adds M12-S2 trap-assisted tunneling (Models.tat);
 // slice 3 adds M15 local impact ionization (Models.impact) and M16
-// local Kane BTBT (Models.btbt) with the stiff-generation ladder.
-// Every OTHER Models() flag (impact/btbt nonlocal, dg, S_n/S_p,
+// local Kane BTBT (Models.btbt) with the stiff-generation ladder; slice
+// 4 adds their M34 nonlocal variants (impact_nonlocal, btbt_nonlocal).
+// Every OTHER Models() flag (dg, S_n/S_p,
 // thermionic, heterojunction, energy_balance) is still Phase 2+ and
 // refused by the Python wrapper before construction, not by this
 // class -- see device.py's own thin-wrapper dispatch
@@ -50,6 +51,32 @@ struct Models {
     // + backtracking line search in solve_bias.
     bool impact = false;
     bool btbt = false;
+    // Phase 2 slice 4: M34-S2 nonlocal (effective-field) impact
+    // ionization (requires impact) and M34-S1 nonlocal path Kane BTBT.
+    bool impact_nonlocal = false;
+    bool btbt_nonlocal = false;
+};
+
+/// Physical parameters of the nonlocal models, evaluated in Python (the
+/// materials stay Python) and fixed for the device's lifetime.
+struct NonlocalParams {
+    double lambda_n_cm = 0.0;  // Models.impact_lambda_n
+    double lambda_p_cm = 0.0;  // Models.impact_lambda_p
+    double Eg_eV = 0.0;        // mats[0].Eg(T): path-locator threshold
+    double Eg_J = 0.0;         // _btbt_nl_params()
+    double mr_kg = 0.0, mc_kg = 0.0, mv_kg = 0.0;
+    double u = 0.0;            // btbt._kane_u(mr_kg) (refusal stays Python)
+    double hbar = 1.054571817e-34;  // btbt.HBAR_SI
+    double q = 1.602176634e-19;     // btbt.Q_SI
+};
+
+/// Frozen 1D tunnel-path geometry: nonlocal_path.build_1d's flat arrays
+/// (K = 1 unit stencils, Kg = 2 start-gradient stencil).
+struct NlPaths {
+    std::vector<std::int64_t> start, end;  // nodes start[p]..end[p]
+    std::vector<std::int64_t> offset, sidx, gidx;
+    std::vector<double> swts, seg_len, gwts;
+    std::int64_t n_paths() const { return static_cast<std::int64_t>(start.size()); }
 };
 
 // device.py's stiff-path constants (see their long comments there).
@@ -111,7 +138,9 @@ public:
              // _update_tat_probabilities, everything there that does
              // not depend on psi). Empty unless models.tat.
              std::span<const double> tat_kn = {},
-             std::span<const double> tat_kp = {});
+             std::span<const double> tat_kp = {},
+             // Phase 2 slice 4 (impact_nonlocal / btbt_nonlocal).
+             NonlocalParams nl = {});
 
     void solve_equilibrium(const NewtonOptions& opts);
     /// Returns true if converged. V = {V_left, V_right} [volts].
@@ -145,6 +174,23 @@ public:
     /// The ladder stage the last solve_bias ended on (device.py's
     /// `_ii_strength`): 1.0 on a converged or non-stiff solve.
     double ii_strength() const { return ii_strength_; }
+    /// M34-S1 frozen paths of the last solve (device.py's
+    /// `_btbt_nl_paths`, as build_1d's starts/ends) and the outcome of
+    /// the post-convergence refresh (`last_btbt_nl_refreshes`/`_stable`;
+    /// stable: -1 = None, 0 = False, 1 = True).
+    const NlPaths& btbt_nl_paths() const { return nl_paths_; }
+    int last_btbt_nl_refreshes() const { return nl_refreshes_; }
+    int last_btbt_nl_stable() const { return nl_stable_; }
+    /// Replace the frozen path set (test hook / wrapper round-trip).
+    void set_btbt_nl_paths(std::span<const std::int64_t> starts,
+                           std::span<const std::int64_t> ends);
+    /// device.py's _btbt_nl_build_paths at `psi` (starts, ends).
+    std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>>
+    locate_btbt_nl_paths(std::span<const double> psi) const;
+    /// ii_nonlocal.effective_field for this mesh: (E_eff, dense dE/dpsi
+    /// row-major N x N). carrier 0 = electrons, 1 = holes.
+    std::pair<std::vector<double>, std::vector<double>>
+    effective_field_for_test(std::span<const double> psi, int carrier) const;
     /// Overwrite the solution state (scaled psi/n/p, length N) -- the
     /// Python wrapper's attributes are the source of truth for the warm
     /// start (continuation.py restores dev.psi/n/p after a failed step
@@ -209,15 +255,17 @@ private:
                                        const std::array<ContactBC, 2>& bc,
                                        const std::vector<double>& Pn,
                                        const std::vector<double>& Pp,
-                                       double strength) const;
+                                       double strength,
+                                       const NlPaths& paths) const;
     /// One Newton solve at the given contact BCs (in place on psi/n/p),
-    /// with the frozen TAT probabilities Pn_/Pp_ (ignored unless tat) and
-    /// generation strength `strength`. `stiff` selects device.py's
-    /// stiff-path update test (density floor) and backtracking line
-    /// search. Returns (converged, final err).
+    /// with the frozen TAT probabilities Pn_/Pp_ (ignored unless tat),
+    /// frozen tunnel paths nl_paths_, and generation strength `strength`.
+    /// `line_search` = device.py's `stiff_gen` (backtracking), `floored`
+    /// = its `floored` (density-floor update test). Returns (converged,
+    /// final err).
     std::pair<bool, double> newton(const std::array<ContactBC, 2>& bc,
                                    const NewtonOptions& opts, double strength,
-                                   bool stiff,
+                                   bool line_search, bool floored,
                                    std::vector<double>& psi,
                                    std::vector<double>& n,
                                    std::vector<double>& p) const;
@@ -245,6 +293,18 @@ private:
     // Phase 2 slice 3 (impact/btbt): last solve's ladder stage + sources.
     double ii_strength_ = 1.0;
     std::vector<double> ii_gs_cache_, btbt_gs_cache_;
+
+    // Phase 2 slice 4.
+    NonlocalParams nl_;
+    NlPaths nl_paths_;
+    bool nl_paths_valid_ = false;  // false == device.py's `_btbt_nl_paths is None`
+    int nl_refreshes_ = 0;
+    int nl_stable_ = -1;
+    NlPaths build_nl_paths(const std::vector<std::int64_t>& starts,
+                           const std::vector<std::int64_t>& ends) const;
+    /// ii_nonlocal.effective_field (x in cm). D is row-major N x N.
+    void effective_field(const std::vector<double>& psi, int carrier,
+                         std::vector<double>& E, std::vector<double>* D) const;
 
     std::vector<double> psi_, n_, p_;
     std::vector<double> Jn_scaled_, Jp_scaled_;  // last solve's per-edge currents

@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "tcad/base/errors.hpp"
+#include "tcad/solver/direct_lu.hpp"
 #include "tcad/solver/petsc_ksp.hpp"
 
 namespace nb = nanobind;
@@ -43,6 +44,22 @@ nb::ndarray<nb::numpy, double> publish(std::vector<double>&& v) {
 }  // namespace
 
 void register_solver(nb::module_& m) {
+    nb::class_<tcad::solver::ReusableLU>(m, "ReusableLU",
+        "Direct sparse LU (Eigen SparseLU) that keeps its symbolic analysis "
+        "while the CSC pattern is unchanged -- Phase 3.1 of the device port.")
+        .def(nb::init<bool>(), nb::arg("amd_ordering") = false)
+        .def("solve_csc",
+             [](tcad::solver::ReusableLU& lu, I64 indptr, I64 indices, F64 data,
+                std::int64_t n, F64 b) {
+                 std::vector<double> x = lu.solve_csc(
+                     {indptr.data(), indptr.shape(0)}, {indices.data(), indices.shape(0)},
+                     {data.data(), data.shape(0)}, n, {b.data(), b.shape(0)});
+                 return publish(std::move(x));
+             }, nb::arg("indptr"), nb::arg("indices"), nb::arg("data"), nb::arg("n"),
+             nb::arg("b"))
+        .def_prop_ro("analyses", &tcad::solver::ReusableLU::analyses)
+        .def_prop_ro("factorizations", &tcad::solver::ReusableLU::factorizations);
+
     m.def("petsc_available", &tcad::solver::have_petsc,
           "True when this extension was compiled against PETSc. False is a "
           "SUPPORTED configuration -- linsolve.solve_linear(method='petsc') "

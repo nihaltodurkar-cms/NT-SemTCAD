@@ -33,4 +33,36 @@ std::vector<double> solve_direct_lu(std::span<const std::int64_t> rows,
                                     std::int64_t n,
                                     std::span<const double> b);
 
+/// Phase 3.1 of the device port: a direct solver that keeps its SYMBOLIC
+/// analysis (fill-reducing COLAMD ordering + elimination structure)
+/// across calls whose CSC sparsity pattern is unchanged -- a Newton
+/// solve's Jacobian pattern is fixed, so only the numeric factorization
+/// is redone per iteration. The pattern is compared on every call
+/// (indptr/indices equality, O(nnz)); any change re-analyzes, so a
+/// caller whose pattern moves (nonlocal/dense blocks) is still correct.
+/// This is NOT a modified Newton: the Jacobian itself is refactored
+/// every time.
+class ReusableLU {
+public:
+    /// amd_ordering: AMD on A^T + A instead of COLAMD (see direct_lu.cpp).
+    explicit ReusableLU(bool amd_ordering = false);
+    ~ReusableLU();
+    ReusableLU(const ReusableLU&) = delete;
+    ReusableLU& operator=(const ReusableLU&) = delete;
+
+    /// Solve A x = b, A given in CSC (indptr length n+1, sorted indices).
+    std::vector<double> solve_csc(std::span<const std::int64_t> indptr,
+                                  std::span<const std::int64_t> indices,
+                                  std::span<const double> data, std::int64_t n,
+                                  std::span<const double> b);
+    int analyses() const { return analyses_; }
+    int factorizations() const { return factorizations_; }
+
+private:
+    struct Impl;
+    Impl* impl_;
+    int analyses_ = 0;
+    int factorizations_ = 0;
+};
+
 }  // namespace tcad::solver

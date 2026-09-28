@@ -57,8 +57,7 @@ def test_baseline_config_dispatches_to_native():
 
 
 @pytest.mark.parametrize("models", [
-    Models(impact=True, impact_nonlocal=True),
-    Models(btbt_nonlocal=True),
+    Models(field_mobility=True),
     Models(dg=True),
     Models(surface_mobility=True),  # Device1D doesn't implement it either
                                      # way (2D-only feature), but the flag
@@ -158,6 +157,29 @@ def test_generation_configs_dispatch_and_sync(flag):
     off = dev._btbt_gs_cache if flag == "impact" else dev._ii_gs_cache
     assert on is not None and on.shape == (dev.N,) and np.all(np.isfinite(on))
     assert off is None
+
+
+def test_nonlocal_configs_dispatch_and_sync():
+    """M34 nonlocal flags are native: dispatch triggers; btbt_nonlocal's
+    frozen paths come back as the same TunnelPaths build_1d produces,
+    with the refresh outcome; impact_nonlocal leaves the path attributes
+    at their pure-Python off values."""
+    x = graded_mesh(1.0e-5, [5.0e-6], h_min=1e-8, h_max=2e-7)
+    with pytest.warns(UserWarning, match="Doping exceeds"):
+        dev = Device1D(x, np.where(x < 5.0e-6, -5e19, 5e19), T=300.0,
+                       models=Models(bgn=False, btbt_nonlocal=True))
+    assert dev._native is not None
+    dev.solve_bias([-1.0, 0.0])
+    assert dev.last_converged and dev.last_btbt_nl_stable is True
+    assert dev._btbt_nl_paths.n_paths > 0
+    ref = dev._btbt_nl_build_paths(dev.psi)
+    assert np.array_equal(dev._btbt_nl_paths.start, ref.start)
+
+    dev2, _, _ = _diode(Models(impact=True, impact_nonlocal=True))
+    assert dev2._native is not None
+    dev2.solve_bias([-2.0, 0.0])
+    assert dev2.last_converged and dev2._ii_gs_cache is not None
+    assert dev2.last_btbt_nl_stable is None and dev2.last_btbt_nl_refreshes == 0
 
 
 def test_wrapper_state_is_the_warm_start():

@@ -15,6 +15,7 @@
 #include "tcad/physics/fermi.hpp"
 #include "tcad/physics/generation.hpp"
 #include "tcad/physics/kernels.hpp"
+#include "tcad/nonlocal/evaluate.hpp"
 #include "tcad/solver/direct_lu.hpp"
 
 namespace tcad::device1d {
@@ -91,7 +92,8 @@ Device1D::Device1D(std::span<const double> x, std::span<const double> doping,
                    std::span<const double> fermi_e, std::span<const double> fermi_g,
                    std::span<const double> fermi_gp, std::span<const double> fermi_q,
                    std::span<const double> fermi_qp,
-                   std::span<const double> tat_kn, std::span<const double> tat_kp)
+                   std::span<const double> tat_kn, std::span<const double> tat_kp,
+                   NonlocalParams nl)
     : N_(static_cast<int>(x.size())),
       T_(T), VT_(VT), eps_(eps), ni_(ni),
       x_(x.begin(), x.end()), doping_(doping.begin(), doping.end()),
@@ -110,7 +112,16 @@ Device1D::Device1D(std::span<const double> x, std::span<const double> doping,
                    std::vector<double>(fermi_gp.begin(), fermi_gp.end()),
                    std::vector<double>(fermi_q.begin(), fermi_q.end()),
                    std::vector<double>(fermi_qp.begin(), fermi_qp.end())},
-      tat_kn_(tat_kn.begin(), tat_kn.end()), tat_kp_(tat_kp.begin(), tat_kp.end()) {
+      tat_kn_(tat_kn.begin(), tat_kn.end()), tat_kp_(tat_kp.begin(), tat_kp.end()),
+      nl_(nl) {
+    if (models_.impact_nonlocal &&
+        (!models_.impact || !(nl_.lambda_n_cm > 0.0) || !(nl_.lambda_p_cm > 0.0)))
+        throw tcad::InvalidArgument(
+            "Device1D: impact_nonlocal requires impact and lambda_n/lambda_p > 0");
+    if (models_.btbt_nonlocal &&
+        (!(nl_.Eg_J > 0.0) || !(nl_.mr_kg > 0.0) || !(nl_.u > 1.0) || !(nl_.Eg_eV > 0.0)))
+        throw tcad::InvalidArgument(
+            "Device1D: btbt_nonlocal requires Eg/mass parameters (u > 1)");
     if (models_.tat && (tat_kn_.size() != static_cast<std::size_t>(N_) ||
                         tat_kp_.size() != static_cast<std::size_t>(N_)))
         throw tcad::InvalidArgument(
@@ -203,6 +214,185 @@ double Device1D::fd_neutral_eta(int node) const {
     return tcad::physics::fd_neutral_eta_node(
         fermi_table_, nc_s_[node], nv_s_[node], eg_kt_[node], C_[node], ded_kt_,
         nd_arr_[node], na_arr_[node], models_.incomplete_ion);
+}
+
+void Device1D::effective_field(const std::vector<double>& psi, int carrier,
+                               std::vector<double>& E, std::vector<double>* D) const {
+    // ii_nonlocal.effective_field, line for line: exact per-edge
+    // relaxation recursion E_down = a E_up + (1-a)|E_edge|, a =
+    // exp(-h/lambda), along each edge's transport direction (strong
+    // edges: drift direction; weak edges inherit the nearest strong
+    // edge's), visited in Kahn topological order. E = W |E_edge|, so the
+    // Jacobian is W times d|E_edge|/dpsi (direction pattern piecewise
+    // constant -> no contribution).
+    constexpr double kStrong = 1.0e2;  // ii_nonlocal.E_STRONG_VCM
+    const int N = N_, Ne = N_ - 1;
+    const double lam = carrier == 0 ? nl_.lambda_n_cm : nl_.lambda_p_cm;
+    std::vector<double> h(Ne), dpsi(Ne), Emag(Ne), s(Ne), xm(Ne);
+    std::vector<bool> strong(Ne);
+    int n_strong = 0;
+    for (int k = 0; k < Ne; ++k) {
+        h[k] = x_[k + 1] - x_[k];
+        dpsi[k] = psi[k + 1] - psi[k];
+        Emag[k] = std::abs(dpsi[k]) * VT_ / h[k];
+        const double sg = dpsi[k] > 0.0 ? 1.0 : (dpsi[k] < 0.0 ? -1.0 : 0.0);
+        s[k] = carrier == 0 ? sg : -sg;
+        strong[k] = Emag[k] >= kStrong;
+        n_strong += strong[k] ? 1 : 0;
+        xm[k] = 0.5 * (x_[k + 1] + x_[k]);
+    }
+    if (n_strong == 0) {
+        std::fill(s.begin(), s.end(), 0.0);
+    } else if (n_strong < Ne) {
+        std::vector<int> si;
+        std::vector<double> xs;
+        for (int k = 0; k < Ne; ++k)
+            if (strong[k]) { si.push_back(k); xs.push_back(xm[k]); }
+        const std::vector<double> s0 = s;
+        for (int k = 0; k < Ne; ++k) {
+            if (strong[k]) continue;
+            int near;
+            if (si.size() > 1) {
+                // np.searchsorted(side='left'), clipped to [1, len-1]
+                int j = static_cast<int>(std::lower_bound(xs.begin(), xs.end(), xm[k]) - xs.begin());
+                j = std::clamp(j, 1, static_cast<int>(si.size()) - 1);
+                const int left = si[j - 1], right = si[j];
+                near = std::abs(xm[k] - xm[left]) <= std::abs(xm[right] - xm[k]) ? left : right;
+            } else {
+                near = si[0];
+            }
+            s[k] = s0[near];
+        }
+    }
+    std::vector<bool> fwd(Ne), bwd(Ne);
+    std::vector<double> a(Ne);
+    for (int k = 0; k < Ne; ++k) {
+        fwd[k] = s[k] > 0.0;
+        bwd[k] = s[k] < 0.0;
+        a[k] = std::exp(-h[k] / lam);
+    }
+    // Kahn topological order (stack seeded in descending index order,
+    // popped from the back -- same visiting order as the Python)
+    std::vector<int> indeg(N, 0);
+    for (int k = 0; k < Ne; ++k) {
+        if (fwd[k]) indeg[k + 1] += 1;
+        if (bwd[k]) indeg[k] += 1;
+    }
+    std::vector<int> stack, order;
+    for (int v = N - 1; v >= 0; --v)
+        if (indeg[v] == 0) stack.push_back(v);
+    while (!stack.empty()) {
+        const int v = stack.back();
+        stack.pop_back();
+        order.push_back(v);
+        if (v < N - 1 && fwd[v] && --indeg[v + 1] == 0) stack.push_back(v + 1);
+        if (v > 0 && bwd[v - 1] && --indeg[v - 1] == 0) stack.push_back(v - 1);
+    }
+    E.assign(N, 0.0);
+    std::vector<double> W;
+    if (D) W.assign(static_cast<std::size_t>(N) * Ne, 0.0);
+    for (int v : order) {
+        int ne = 0, ie[2], iu[2];
+        if (v > 0 && fwd[v - 1]) { ie[ne] = v - 1; iu[ne] = v - 1; ++ne; }
+        if (v < N - 1 && bwd[v]) { ie[ne] = v; iu[ne] = v + 1; ++ne; }
+        if (ne == 0) continue;  // cold: E_eff = 0
+        const double w = 1.0 / ne;
+        for (int t = 0; t < ne; ++t) {
+            const int e = ie[t], u = iu[t];
+            E[v] += w * (a[e] * E[u] + (1.0 - a[e]) * Emag[e]);
+            if (D) {
+                double* Wv = &W[static_cast<std::size_t>(v) * Ne];
+                const double* Wu = &W[static_cast<std::size_t>(u) * Ne];
+                const double f = w * a[e];
+                for (int c = 0; c < Ne; ++c) Wv[c] += f * Wu[c];
+                Wv[e] += w * (1.0 - a[e]);
+            }
+        }
+    }
+    if (!D) return;
+    D->assign(static_cast<std::size_t>(N) * N, 0.0);
+    std::vector<double> g(Ne);
+    for (int k = 0; k < Ne; ++k) {
+        const double sg = dpsi[k] > 0.0 ? 1.0 : (dpsi[k] < 0.0 ? -1.0 : 0.0);
+        g[k] = sg * VT_ / h[k];
+    }
+    for (int v = 0; v < N; ++v) {
+        const double* Wv = &W[static_cast<std::size_t>(v) * Ne];
+        double* Dv = &(*D)[static_cast<std::size_t>(v) * N];
+        for (int e = 0; e < Ne; ++e) Dv[e + 1] += Wv[e] * g[e];
+        for (int e = 0; e < Ne; ++e) Dv[e] -= Wv[e] * g[e];
+    }
+}
+
+std::pair<std::vector<double>, std::vector<double>>
+Device1D::effective_field_for_test(std::span<const double> psi, int carrier) const {
+    if (!(nl_.lambda_n_cm > 0.0) || !(nl_.lambda_p_cm > 0.0))
+        throw tcad::InvalidArgument("Device1D: effective field needs lambda_n/lambda_p > 0");
+    if (psi.size() != static_cast<std::size_t>(N_))
+        throw tcad::InvalidArgument("Device1D: psi must have length N");
+    std::vector<double> E, D;
+    effective_field(std::vector<double>(psi.begin(), psi.end()), carrier, E, &D);
+    return {std::move(E), std::move(D)};
+}
+
+std::pair<std::vector<std::int64_t>, std::vector<std::int64_t>>
+Device1D::locate_btbt_nl_paths(std::span<const double> psi) const {
+    // device.py's _btbt_nl_build_paths (path location only; build_1d is
+    // build_nl_paths below). Interior starts/crossings only -- the
+    // Dirichlet stamping overwrites contact rows.
+    const int N = N_;
+    const double thr = nl_.Eg_eV / VT_;
+    double psi_max = psi[0];
+    for (int i = 1; i < N; ++i) psi_max = std::max(psi_max, psi[i]);
+    std::vector<std::int64_t> starts, ends;
+    for (int i0 = 1; i0 < N - 2; ++i0) {
+        const double dpsi0 = psi[i0 + 1] - psi[i0];
+        const double c_edge = VT_ / (LD_ * h_[i0]);
+        if (dpsi0 <= 0.0 || dpsi0 * c_edge < 1.0e3) continue;
+        if (psi_max - psi[i0] < thr) continue;
+        int j = i0 + 1;
+        while (j < N && psi[j] - psi[i0] < thr) ++j;
+        if (j > N - 2) continue;
+        int k = j;
+        while (k < N - 2 && psi[k] - psi[i0] < 1.5 * thr) ++k;
+        starts.push_back(i0);
+        ends.push_back(k);
+    }
+    return {std::move(starts), std::move(ends)};
+}
+
+NlPaths Device1D::build_nl_paths(const std::vector<std::int64_t>& starts,
+                                 const std::vector<std::int64_t>& ends) const {
+    // nonlocal_path.build_1d with x_m = x * 1e-2 (cm -> m).
+    NlPaths P;
+    P.start = starts;
+    P.end = ends;
+    P.offset.push_back(0);
+    for (std::size_t p = 0; p < starts.size(); ++p) {
+        if (ends[p] <= starts[p] || starts[p] < 0 || ends[p] >= N_)
+            throw tcad::InvalidArgument("Device1D: every 1D path needs at least one edge");
+        for (std::int64_t v = starts[p]; v <= ends[p]; ++v) {
+            P.sidx.push_back(v);
+            P.swts.push_back(1.0);
+            P.seg_len.push_back(v < ends[p] ? x_[v + 1] * 1e-2 - x_[v] * 1e-2 : 0.0);
+        }
+        P.offset.push_back(static_cast<std::int64_t>(P.sidx.size()));
+        const double h0 = x_[starts[p] + 1] * 1e-2 - x_[starts[p]] * 1e-2;
+        P.gidx.push_back(starts[p]);
+        P.gidx.push_back(starts[p] + 1);
+        P.gwts.push_back(-1.0 / h0);
+        P.gwts.push_back(1.0 / h0);
+    }
+    return P;
+}
+
+void Device1D::set_btbt_nl_paths(std::span<const std::int64_t> starts,
+                                 std::span<const std::int64_t> ends) {
+    if (starts.size() != ends.size())
+        throw tcad::InvalidArgument("Device1D: starts/ends length mismatch");
+    nl_paths_ = build_nl_paths(std::vector<std::int64_t>(starts.begin(), starts.end()),
+                               std::vector<std::int64_t>(ends.begin(), ends.end()));
+    nl_paths_valid_ = true;
 }
 
 void Device1D::tat_probabilities(const std::vector<double>& psi,
@@ -403,7 +593,7 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
     const std::vector<double>& psi, const std::vector<double>& n,
     const std::vector<double>& p, const std::array<ContactBC, 2>& bc,
     const std::vector<double>& Pn, const std::vector<double>& Pp,
-    double strength) const {
+    double strength, const NlPaths& paths) const {
     namespace ph = tcad::physics;
     const int N = N_;
     const int Ne = N - 1;
@@ -644,6 +834,19 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
                 sgn_p[k] = Jp[k] / rp;
             }
             const double Kgen = 0.5 / (ph::kIiQ * R0_);
+            // M34-S2: with impact_nonlocal alpha sees a per-carrier
+            // EFFECTIVE field; its psi-dependence is dense and stamped
+            // separately below (the local tridiagonal alpha chain is
+            // zeroed, exactly as device.py does).
+            const bool ii_nl = models_.impact_nonlocal;
+            std::vector<double> En_ii, Ep_ii, Dn_ii, Dp_ii;
+            if (ii_nl) {
+                effective_field(psi, 0, En_ii, &Dn_ii);
+                effective_field(psi, 1, Ep_ii, &Dp_ii);
+            } else {
+                En_ii = E_node;
+                Ep_ii = E_node;
+            }
             out.ii_gs.assign(N, 0.0);
             std::vector<double> gs_full(N);
             for (int j = 0; j < N; ++j) {
@@ -651,10 +854,13 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
                 if (j == 0) { Snj = aJn[0]; Spj = aJp[0]; }
                 else if (j == N - 1) { Snj = aJn[Ne - 1]; Spj = aJp[Ne - 1]; }
                 else { Snj = aJn[j - 1] + aJn[j]; Spj = aJp[j - 1] + aJp[j]; }
-                gs_full[j] = Kgen * (ph::ii_alpha(ph::kAlphaN, E_node[j]) * Snj +
-                                     ph::ii_alpha(ph::kAlphaP, E_node[j]) * Spj);
+                gs_full[j] = Kgen * (ph::ii_alpha(ph::kAlphaN, En_ii[j]) * Snj +
+                                     ph::ii_alpha(ph::kAlphaP, Ep_ii[j]) * Spj);
                 out.ii_gs[j] = gs_full[j] * strength;
             }
+            // dense block coefficients, filled in the node loop below
+            std::vector<double> cn_nl, cp_nl;
+            if (ii_nl) { cn_nl.assign(N, 0.0); cp_nl.assign(N, 0.0); }
             // per-edge current partials (the continuity Jacobian's own)
             std::vector<double> dJn_dn_L(Ne), dJn_dn_R(Ne), dJp_dp_L(Ne), dJp_dp_R(Ne);
             for (int k = 0; k < Ne; ++k) {
@@ -674,14 +880,18 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
                 out.F[3 * i + 1] += strength * gs_full[i] * dV_[i];
                 out.F[3 * i + 2] -= strength * gs_full[i] * dV_[i];
 
-                const double an_i = ph::ii_alpha(ph::kAlphaN, E_node[i]);
-                const double ap_i = ph::ii_alpha(ph::kAlphaP, E_node[i]);
-                const double dan_i = ph::ii_dalpha_dE(ph::kAlphaN, E_node[i]);
-                const double dap_i = ph::ii_dalpha_dE(ph::kAlphaP, E_node[i]);
-                double dEL, dEM, dER;
-                dEi(i, dEL, dEM, dER);
+                const double an_i = ph::ii_alpha(ph::kAlphaN, En_ii[i]);
+                const double ap_i = ph::ii_alpha(ph::kAlphaP, Ep_ii[i]);
+                const double dan_i = ph::ii_dalpha_dE(ph::kAlphaN, En_ii[i]);
+                const double dap_i = ph::ii_dalpha_dE(ph::kAlphaP, Ep_ii[i]);
+                double dEL = 0.0, dEM = 0.0, dER = 0.0;
+                if (!ii_nl) dEi(i, dEL, dEM, dER);
                 const double Sn_i = aJn[eL] + aJn[eR];
                 const double Sp_i = aJp[eL] + aJp[eR];
+                if (ii_nl) {
+                    cn_nl[i] = strength * Kgen * dV_[i] * dan_i * Sn_i;
+                    cp_nl[i] = strength * Kgen * dV_[i] * dap_i * Sp_i;
+                }
 
                 const double dSn_psi_L = sgn_n[eL] * (-dJn_dpsiR[eL]) * J0_;
                 const double dSn_psi_M = (sgn_n[eL] * dJn_dpsiR[eL] +
@@ -730,6 +940,31 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
                     J.add(row, 3 * (i + 1) + 2, s * g_p_R);
                 }
             }
+            if (ii_nl) {
+                // M34-S2: dG_i/dpsi_k through alpha(E_eff) for every k
+                // upstream of i. Entries below 1e-15 of the block's
+                // largest are dropped (device.py's own sparsification).
+                double amax = 0.0;
+                std::vector<double> dense(static_cast<std::size_t>(N - 2) * N);
+                for (int i = 1; i < N - 1; ++i) {
+                    const double* Dn = &Dn_ii[static_cast<std::size_t>(i) * N];
+                    const double* Dp = &Dp_ii[static_cast<std::size_t>(i) * N];
+                    double* row = &dense[static_cast<std::size_t>(i - 1) * N];
+                    for (int k = 0; k < N; ++k) {
+                        row[k] = cn_nl[i] * Dn[k] + cp_nl[i] * Dp[k];
+                        amax = std::max(amax, std::abs(row[k]));
+                    }
+                }
+                const double cut = 1e-15 * amax;
+                for (int i = 1; i < N - 1; ++i) {
+                    const double* row = &dense[static_cast<std::size_t>(i - 1) * N];
+                    for (int k = 0; k < N; ++k) {
+                        if (!(std::abs(row[k]) > cut)) continue;
+                        J.add(3 * i + 1, 3 * k, row[k]);
+                        J.add(3 * i + 2, 3 * k, -row[k]);
+                    }
+                }
+            }
         }
 
         if (models_.btbt) {
@@ -755,6 +990,51 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
         }
     }
 
+    // --- M34-S1: nonlocal path BTBT (Esseni 2017 eq 11). Only the path
+    // GEOMETRY is frozen; psi along every path is live. Holes are
+    // deposited at each path's start node, electrons spread around the
+    // delta = 1 crossing (dep weights, which move with psi -> ddep).
+    // Strength 0 contributes exactly nothing and is skipped, as in
+    // device.py (it also keeps 0 * inf out of the residual).
+    if (models_.btbt_nonlocal && paths.n_paths() > 0 && strength > 0.0) {
+        const std::int64_t P = paths.n_paths();
+        const tcad::nonlocal::EvalResult ev = tcad::nonlocal::evaluate_paths(
+            psi.data(), N, paths.start.data(), paths.offset.data(), P,
+            paths.sidx.data(), paths.swts.data(),
+            static_cast<std::int64_t>(paths.sidx.size()), 1, paths.seg_len.data(),
+            paths.gidx.data(), paths.gwts.data(), 2, VT_, nl_.Eg_J, nl_.mr_kg,
+            nl_.mc_kg, nl_.mv_kg, nl_.u, nl_.hbar, nl_.q);
+        std::vector<double> fac(P), cnt(P);
+        for (std::int64_t p = 0; p < P; ++p) {
+            const std::int64_t st = paths.start[p];
+            fac[p] = strength * 1e-6 / R0_ * dV_[st];   // SI -> scaled box count
+            cnt[p] = fac[p] * ev.G[p];
+            out.F[3 * st + 2] += -cnt[p];
+        }
+        // per-path groupings of the dep / dG COO entries
+        std::vector<std::vector<std::size_t>> dep_of(P), dG_of(P);
+        for (std::size_t t = 0; t < ev.dep_vals.size(); ++t) {
+            const std::int64_t p = ev.dep_rows[t];
+            out.F[3 * ev.dep_cols[t] + 1] += cnt[p] * ev.dep_vals[t];
+            dep_of[p].push_back(t);
+        }
+        for (std::size_t t = 0; t < ev.dG_vals.size(); ++t) {
+            const std::int64_t p = ev.dG_rows[t];
+            J.add(3 * paths.start[p] + 2, 3 * ev.dG_cols[t], -fac[p] * ev.dG_vals[t]);
+            dG_of[p].push_back(t);
+        }
+        // electron rows: w_pn * dG_p/dpsi ...
+        for (std::int64_t p = 0; p < P; ++p)
+            for (std::size_t td : dep_of[p])
+                for (std::size_t tg : dG_of[p])
+                    J.add(3 * ev.dep_cols[td] + 1, 3 * ev.dG_cols[tg],
+                          fac[p] * ev.dep_vals[td] * ev.dG_vals[tg]);
+        // ... plus G_p * d w_pn/dpsi (the crossing moves)
+        for (std::size_t t = 0; t < ev.ddep_val.size(); ++t)
+            J.add(3 * ev.ddep_node[t] + 1, 3 * ev.ddep_col[t],
+                  cnt[ev.ddep_p[t]] * ev.ddep_val[t]);
+    }
+
     // Dirichlet contacts, S_n = S_p = 0 (baseline: plain clamp, bit-
     // identical pre-M14 row, per device.py's own comment on that branch).
     for (int side = 0; side < 2; ++side) {
@@ -773,17 +1053,18 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
 
 std::pair<bool, double> Device1D::newton(const std::array<ContactBC, 2>& bc,
                                          const NewtonOptions& opts, double strength,
-                                         bool stiff,
+                                         bool line_search, bool floored,
                                          std::vector<double>& psi,
                                          std::vector<double>& n,
                                          std::vector<double>& p) const {
-    // device.py's solve_bias._newton. `stiff` == stiff_gen == floored
-    // for the ported flags (the M34 nonlocal flags that make `floored`
-    // differ from `stiff_gen` are not ported).
+    // device.py's solve_bias._newton. `line_search` is its `stiff_gen`
+    // (turned off for the btbt_nonlocal refresh re-solves), `floored` its
+    // `floored` (stiff_gen or an M34 nonlocal flag).
     const int N = N_;
     double err = std::numeric_limits<double>::infinity();
     for (int it = 0; it < opts.max_iter; ++it) {
-        ResidualJacobian rj = residual_jacobian(psi, n, p, bc, Pn_, Pp_, strength);
+        ResidualJacobian rj =
+            residual_jacobian(psi, n, p, bc, Pn_, Pp_, strength, nl_paths_);
         std::vector<double> rhs(3 * N);
         for (int k = 0; k < 3 * N; ++k) rhs[k] = -rj.F[k];
         eliminate_dirichlet(rj.J, rhs, dirichlet_rows_);
@@ -799,7 +1080,7 @@ std::pair<bool, double> Device1D::newton(const std::array<ContactBC, 2>& bc,
             n_new[i] = clip(n[i] + dn[i], 0.1 * n[i], 10.0 * n[i]);
             p_new[i] = clip(p[i] + dp[i], 0.1 * p[i], 10.0 * p[i]);
             max_dpsi = std::max(max_dpsi, std::abs(dpsi[i]));
-            if (stiff) {
+            if (floored) {
                 // M34-S7: full correction against the stiff density floor
                 rel_n = std::max(rel_n, std::abs(n_new[i] - n[i]) /
                                             std::max(n[i], kStiffDensityFloor));
@@ -812,7 +1093,7 @@ std::pair<bool, double> Device1D::newton(const std::array<ContactBC, 2>& bc,
         }
         err = std::max({max_dpsi, rel_n, rel_p});
 
-        if (stiff && err >= kLsNewtonRegion) {
+        if (line_search && err >= kLsNewtonRegion) {
             // M15 backtracking on the 2-norm merit of the FULL residual
             // (contact rows included, as device.py's F is).
             double base = 0.0;
@@ -828,7 +1109,7 @@ std::pair<bool, double> Device1D::newton(const std::array<ContactBC, 2>& bc,
                     p_t[i] = clip(p[i] + lam * dp[i], 0.1 * p[i], 10.0 * p[i]);
                 }
                 const ResidualJacobian rt =
-                    residual_jacobian(psi_t, n_t, p_t, bc, Pn_, Pp_, strength);
+                    residual_jacobian(psi_t, n_t, p_t, bc, Pn_, Pp_, strength, nl_paths_);
                 double ft = 0.0;
                 for (double f : rt.F) ft += f * f;
                 ft *= 0.5;
@@ -883,25 +1164,72 @@ bool Device1D::solve_bias(std::array<double, 2> V, const NewtonOptions& opts) {
     // stage a full Newton solve warm-started from the previous one,
     // stopping at the first stage that fails to converge. Non-stiff
     // configurations run the single stage 1.0.
-    const bool stiff = models_.impact || models_.btbt;
+    const bool btbt_nl = models_.btbt_nonlocal;
+    const bool stiff = models_.impact || models_.btbt || btbt_nl;
+    const bool floored = stiff || btbt_nl || models_.impact_nonlocal;
+    // M34-S1: tunnel paths frozen for this call, located from the same
+    // contact-stamped warm start device.py's first residual evaluation
+    // sees (it resets _btbt_nl_paths = None at the top of solve_bias).
+    if (btbt_nl) {
+        const auto [s0, e0] = locate_btbt_nl_paths(psi);
+        nl_paths_ = build_nl_paths(s0, e0);
+        nl_paths_valid_ = true;
+    }
     bool converged = false;
     double err = std::numeric_limits<double>::infinity();
     if (stiff) {
         for (double stage : kIiStages) {
             ii_strength_ = stage;
-            std::tie(converged, err) = newton({bc0, bc1}, opts, stage, true, psi, n, p);
+            std::tie(converged, err) =
+                newton({bc0, bc1}, opts, stage, true, floored, psi, n, p);
             if (!converged) break;
         }
     } else {
         ii_strength_ = 1.0;
-        std::tie(converged, err) = newton({bc0, bc1}, opts, 1.0, false, psi, n, p);
+        std::tie(converged, err) =
+            newton({bc0, bc1}, opts, 1.0, false, floored, psi, n, p);
+    }
+
+    // M34-S1: make the converged state consistent with its own paths --
+    // re-locate at the converged psi; if the start set changed or a path
+    // is truncated, re-solve (plain full-step Newton, still floored) with
+    // the new ones. Bounded at 4 refreshes, outcome reported.
+    nl_refreshes_ = 0;
+    nl_stable_ = -1;
+    if (btbt_nl && converged) {
+        nl_stable_ = 0;
+        while (true) {
+            const auto [s_new, e_new] = locate_btbt_nl_paths(psi);
+            bool all_reached = true;
+            if (nl_paths_.n_paths() > 0) {
+                const tcad::nonlocal::EvalResult ev = tcad::nonlocal::evaluate_paths(
+                    psi.data(), N_, nl_paths_.start.data(), nl_paths_.offset.data(),
+                    nl_paths_.n_paths(), nl_paths_.sidx.data(), nl_paths_.swts.data(),
+                    static_cast<std::int64_t>(nl_paths_.sidx.size()), 1,
+                    nl_paths_.seg_len.data(), nl_paths_.gidx.data(),
+                    nl_paths_.gwts.data(), 2, VT_, nl_.Eg_J, nl_.mr_kg, nl_.mc_kg,
+                    nl_.mv_kg, nl_.u, nl_.hbar, nl_.q);
+                for (auto r : ev.reached) all_reached = all_reached && (r != 0);
+            }
+            if (s_new == nl_paths_.start && all_reached) {
+                nl_stable_ = 1;
+                break;
+            }
+            if (nl_refreshes_ == 4) break;
+            nl_paths_ = build_nl_paths(s_new, e_new);
+            nl_refreshes_ += 1;
+            // device.py sets stiff_gen = False here: no line search
+            std::tie(converged, err) =
+                newton({bc0, bc1}, opts, ii_strength_, false, floored, psi, n, p);
+            if (!converged) break;
+        }
     }
 
     psi_ = psi;
     n_ = n;
     p_ = p;
-    ResidualJacobian rj =
-        residual_jacobian(psi_, n_, p_, {bc0, bc1}, Pn_, Pp_, ii_strength_);
+    ResidualJacobian rj = residual_jacobian(psi_, n_, p_, {bc0, bc1}, Pn_, Pp_,
+                                            ii_strength_, nl_paths_);
     Jn_scaled_ = rj.Jn;
     Jp_scaled_ = rj.Jp;
     ii_gs_cache_ = std::move(rj.ii_gs);
@@ -944,7 +1272,13 @@ Device1D::residual_jacobian_for_test(std::span<const double> psi,
     }
     ResidualJacobian rj = residual_jacobian(
         psi_v, std::vector<double>(n.begin(), n.end()),
-        std::vector<double>(p.begin(), p.end()), {bc0, bc1}, Pn, Pp, strength);
+        std::vector<double>(p.begin(), p.end()), {bc0, bc1}, Pn, Pp, strength,
+        // frozen paths when set (device.py reads self._btbt_nl_paths),
+        // else located at this psi -- its own lazy None fill
+        (models_.btbt_nonlocal && !nl_paths_valid_)
+            ? build_nl_paths(locate_btbt_nl_paths(psi_v).first,
+                             locate_btbt_nl_paths(psi_v).second)
+            : nl_paths_);
     return {std::move(rj.F), std::move(rj.J.rows), std::move(rj.J.cols),
            std::move(rj.J.vals)};
 }

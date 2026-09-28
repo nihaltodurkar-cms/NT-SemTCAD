@@ -409,16 +409,27 @@ def _gen_fixture(kind):
     from pytcad.device import Device1D as _PyDevice1D, Models as PyModels, NewtonOptions
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        if kind.startswith("impact"):
+        kw = dict(bgn=False, srh=True)
+        if kind == "impact_nl":             # M34-S2's own fixture
+            x = graded_mesh(6.0e-4, [3.0e-4], h_min=2e-8, h_max=4e-6)
+            doping = np.where(x < 3.0e-4, -1e16, 1e19)
+            ramp = [2.0, 6.0, 10.0, 16.0, 20.0]
+            kw.update(impact=True, impact_nonlocal=True)
+        elif kind == "btbt_nl":             # M34-S1's own fixture
+            x = graded_mesh(1.0e-5, [5.0e-6], h_min=1e-8, h_max=2e-7)
+            doping = np.where(x < 5.0e-6, -5e19, 5e19)
+            ramp = [0.5, 1.0, 2.0]
+            kw.update(btbt_nonlocal=True)
+        elif kind.startswith("impact"):
             x = graded_mesh(6.0e-4, [3.0e-4], h_min=1e-8, h_max=1e-6)
             doping = np.where(x < 3.0e-4, -1e16, 1e19)
             ramp = [2.0, 5.0, 10.0, 15.0, 20.0]
+            kw.update(impact=True)
         else:
             x = graded_mesh(1.0e-5, [5.0e-6], h_min=1e-8, h_max=2e-7)
             doping = np.where(x < 5.0e-6, -5e19, 5e19)
             ramp = [0.1, 0.2, 0.3, 0.5]
-        kw = dict(bgn=False, srh=True)
-        kw["impact" if kind.startswith("impact") else "btbt"] = True
+            kw.update(btbt=True)
         if kind.endswith("+fd"):
             kw["fd"] = True
         native = _build_fd(x, doping, PyModels(**kw))
@@ -441,7 +452,7 @@ def _perturbed(py, seed, amp=0.01):
             py.p * (1 + amp * rng.standard_normal(N)))
 
 
-_GEN_KINDS = ["impact", "btbt", "impact+fd"]
+_GEN_KINDS = ["impact", "btbt", "impact+fd", "impact_nl", "btbt_nl"]
 
 
 @pytest.mark.parametrize("kind", _GEN_KINDS)
@@ -458,12 +469,21 @@ def test_g_gen_jacobian_matches_finite_differences(kind):
     dev, py, V = _gen_fixture(kind)
     N = dev.N
     psi, n, p = _perturbed(py, 4, amp=1e-3)
+    if kind == "btbt_nl":
+        # path GEOMETRY is frozen within a Newton solve (only psi along
+        # the paths is live), so freeze it for the whole FD probe too
+        dev.set_btbt_nl_paths(*dev.locate_btbt_nl_paths(psi))
     a1 = dev._residual_jacobian_for_test(psi, n, p, V, 0.0, strength=1.0)
     a0 = dev._residual_jacobian_for_test(psi, n, p, V, 0.0, strength=0.0)
     g1 = np.abs(np.asarray(a1[0]) - np.asarray(a0[0])).max()
     assert g1 > 0.0, "generation term is not live at this state"
     s = 1e8 * max(np.abs(np.asarray(a0[0])).max(), 1.0) / g1
-    if kind.startswith("impact"):
+    if kind == "impact_nl":
+        # alpha is evaluated at the per-carrier EFFECTIVE field here
+        En = np.asarray(dev._effective_field_for_test(psi, 0)[0]) / 1e5
+        Ep = np.asarray(dev._effective_field_for_test(psi, 1)[0]) / 1e5
+        assert np.abs(En - 5.0).min() > 0.10 and np.abs(Ep - 4.0).min() > 0.06
+    elif kind.startswith("impact"):
         # M15 G-B's own probe rule: stay off BOTH alpha(E) branch kinks
         # (BTBT's Kane law is C-infinity, no kink to avoid)
         E = np.abs(np.diff(psi)) * py.VT / (py.h * py.LD) / 1e5
@@ -522,6 +542,9 @@ def test_g_gen_residual_reconstructs_python(kind):
     N = dev.N
     psi, n, p = _perturbed(py, 6)
     bc = py._contact_values([V, 0.0])
+    # btbt_nl: both sides locate their paths lazily from THIS psi (the
+    # native device here has never solved, so it has none frozen)
+    py._btbt_nl_paths = None
     out = {}
     for s in (0.35, 0.0):
         py._ii_strength = s
@@ -543,7 +566,7 @@ def test_g_gen_residual_reconstructs_python(kind):
     assert np.abs(out[0.35][2] - out[0.35][0]).max() < 1e-9 * scale
 
 
-@pytest.mark.parametrize("kind", ["impact", "btbt"])
+@pytest.mark.parametrize("kind", ["impact", "btbt", "impact_nl", "btbt_nl"])
 def test_g_gen_ladder_solve_agrees_with_python(kind):
     """solve_bias through the full stiff ladder (stages 0 -> 1.0 with
     backtracking) from the SAME warm start the pure-Python path used,
@@ -573,7 +596,17 @@ def test_g_gen_ladder_solve_agrees_with_python(kind):
     for a, b in ((np.asarray(dev.n), py.n), (np.asarray(dev.p), py.p)):
         m = b > floor
         assert np.max(np.abs(a[m] - b[m]) / b[m]) < 1e-6
-    if kind == "btbt":
+    if kind == "btbt_nl":
+        # M34-S1: same frozen path set after the post-convergence
+        # refresh, same refresh outcome, and the tunnel current (a well-
+        # conditioned observable on this fixture) to round-off
+        assert list(dev.btbt_nl_starts) == list(py._btbt_nl_paths.start)
+        assert dev.last_btbt_nl_refreshes == py.last_btbt_nl_refreshes
+        assert dev.last_btbt_nl_stable is True and py.last_btbt_nl_stable is True
+        j_nat, _ = dev.current_density()
+        j_py, _ = py.current_density()
+        assert abs(j_nat - j_py) < 1e-10 * abs(j_py)
+    elif kind == "btbt":
         # G depends on psi alone -> as well conditioned as psi itself
         cache_nat = np.asarray(dev.btbt_gs_cache)
         cache_py = py._btbt_gs_cache
@@ -594,6 +627,37 @@ def test_g_gen_ladder_solve_agrees_with_python(kind):
         G_e = (np.asarray(a[0]) - np.asarray(b[0]))[1::3][1:-1]
         np.testing.assert_allclose(G_e, cache_nat[1:-1] * py.dV[1:-1],
                                    rtol=1e-9, atol=1e-12 * np.abs(G_e).max())
+
+
+def test_g_nl_effective_field_is_bit_identical():
+    """M34-S2: the native effective field and its dense Jacobian against
+    pytcad.ii_nonlocal.effective_field on a solved reverse-biased state
+    (strong and weak edges both present). Measured bit-identical: the
+    recursion is pure + * / and one exp per edge, in the same order."""
+    from pytcad.ii_nonlocal import effective_field
+    dev, py, V = _gen_fixture("impact_nl")
+    for c, name, lam in ((0, "n", py.models.impact_lambda_n),
+                         (1, "p", py.models.impact_lambda_p)):
+        E_nat, D_nat = dev._effective_field_for_test(py.psi, c)
+        E_py, D_py = effective_field(py.x, py.psi, py.VT, lam, name, jacobian=True)
+        assert E_py.max() > 1e5
+        assert np.array_equal(np.asarray(E_nat), E_py)
+        assert np.array_equal(np.asarray(D_nat).reshape(py.N, py.N), D_py)
+
+
+def test_g_nl_path_locator_matches_python():
+    """M34-S1: the native path locator + build_1d against device.py's
+    _btbt_nl_build_paths on the same solved state -- identical start
+    set and identical flat geometry."""
+    dev, py, V = _gen_fixture("btbt_nl")
+    ref = py._btbt_nl_build_paths(py.psi)
+    starts, ends = dev.locate_btbt_nl_paths(py.psi)
+    assert ref.n_paths > 0
+    assert np.array_equal(np.asarray(starts), ref.start)
+    from pytcad.nonlocal_path import build_1d
+    got = build_1d(py.x * 1e-2, np.asarray(starts), np.asarray(ends))
+    for f in ("offset", "sidx", "swts", "seg_len", "gidx", "gwts"):
+        assert np.array_equal(getattr(got, f), getattr(ref, f)), f
 
 
 def test_g_gen_off_leaves_no_source():

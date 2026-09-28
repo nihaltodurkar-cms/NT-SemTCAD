@@ -1314,6 +1314,10 @@ class Device2D:
         Ny, Nx = self.Ny, self.Nx
 
         psi = self._bulk_psi_guess()
+        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): symbolic-reuse LU
+        # for large systems; None keeps the exact pre-existing call.
+        session = (linsolve.DirectSession()
+                   if linsolve.native_direct_enabled() else None)
         for it in range(opts.max_iter):
             F, J = self._residual_jacobian_poisson(psi)
             # linsolve.solve_linear(method="direct") no longer
@@ -1323,7 +1327,11 @@ class Device2D:
             # Newton loop in this file already goes through.
             Jd, rhs = eliminate_csr(J, -F.ravel(),
                                     self._dirichlet_rows_poisson)
-            d, _ = linsolve.solve_linear(Jd.tocsc(), rhs, method="direct")
+            if session is not None:
+                d = session.solve(Jd, rhs, fallback=lambda: linsolve.solve_linear(
+                    Jd.tocsc(), rhs, method="direct")[0])
+            else:
+                d, _ = linsolve.solve_linear(Jd.tocsc(), rhs, method="direct")
             d = d.reshape(Ny, Nx)
             d = np.clip(d, -opts.max_dpsi, opts.max_dpsi)
             psi = psi + d
@@ -1998,6 +2006,13 @@ class Device2D:
         # the plain path keeps M11-S5's 1e-10, bit-identical
         dens_floor = _STIFF_DENSITY_FLOOR if stiff_on else 1e-10
         self._ii_strength = 1.0
+        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): one symbolic-reuse
+        # LU session for this whole bias solve (every stage and refresh).
+        session = (linsolve.DirectSession()
+                   if linsolve.native_direct_enabled()
+                   and resolved_linsolve == "direct"
+                   and opts.direct_ordering is None else None)
+        self.last_linsolve_session = session
         while True:
             for stage in stages:
                 self._ii_strength = stage
@@ -2039,7 +2054,10 @@ class Device2D:
                     # because the convergence test (and the merit) read
                     # it. See pytcad/dirichlet.py.
                     Jd, rhs = eliminate_csr(J, -F, self._dirichlet_rows)
-                    if resolved_linsolve == "direct":
+                    if session is not None:
+                        du = session.solve(Jd, rhs,
+                                           fallback=lambda: spsolve(Jd.tocsc(), rhs))
+                    elif resolved_linsolve == "direct":
                         # opts.direct_ordering: opt-in, see NewtonOptions.
                         # None passes no permc_spec -- the exact old call.
                         if opts.direct_ordering is None:
