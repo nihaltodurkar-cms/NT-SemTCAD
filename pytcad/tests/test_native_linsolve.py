@@ -160,6 +160,102 @@ def test_transient2d_step_solves_agree_with_default_path(monkeypatch):
         np.testing.assert_allclose(a, b, rtol=1e-6, atol=1e-6 * np.abs(b).max())
 
 
+def _spy_sessions(monkeypatch):
+    """Record every DirectSession created (the unstructured cores keep
+    theirs local to the solve)."""
+    made = []
+    real = linsolve.DirectSession.__init__
+
+    def init(self, *a, **k):
+        real(self, *a, **k)
+        made.append(self)
+    monkeypatch.setattr(linsolve.DirectSession, "__init__", init)
+    return made
+
+
+@pytest.mark.parametrize("dim", [2, 3])
+def test_unstructured_bias_solve_agrees_with_default_path(monkeypatch, dim):
+    """unstructured_dd / unstructured_dd3d (and their Poisson equilibrium
+    solves) through the session agree with the default direct path --
+    B8/B9's own quick geometry."""
+    pytest.importorskip("gmsh")
+    import os
+    os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+    from benchmarks import cases  # noqa: F401  (import check only)
+    if dim == 2:
+        from pytcad.gmsh_mesh import build_diode_mesh
+        from pytcad.region_resolver import resolve_regions, resolve_contacts
+        from pytcad.unstructured_assembly import (
+            build_unstructured_stencil, build_edge_flux_geometry)
+        from pytcad.unstructured_poisson import evaluate_doping_at_nodes
+        from pytcad.unstructured_dd import solve_bias
+        mesh = build_diode_mesh(Lx=4.0e-4, Ly=1.0e-4, Xj=2.0e-4)
+        regions = resolve_regions(mesh)
+        contacts = resolve_contacts(mesh)
+        el, areas = build_unstructured_stencil(mesh.nodes, mesh.triangles)
+        ie, tg = build_edge_flux_geometry(mesh.nodes, mesh.triangles, el)
+        rot = np.empty(mesh.n_triangles(), dtype=object)
+        for name, idx in regions.items():
+            rot[idx] = name
+        C = evaluate_doping_at_nodes(mesh.nodes, mesh.triangles, rot,
+                                     {"p_region": -1e17, "n_region": 1e17})
+        run = lambda: solve_bias(mesh.nodes, mesh.triangles, el, areas, ie, tg,
+                                 C, contacts, {"left_contact": 0.5, "right_contact": 0.0})
+    else:
+        from pytcad.gmsh_mesh3d import build_diode_mesh3d
+        from pytcad.unstructured_assembly3d import (
+            build_unstructured_stencil3d, build_edge_flux_geometry3d)
+        from pytcad.unstructured_dd3d import evaluate_doping_at_nodes3d, solve_bias3d
+        mesh = build_diode_mesh3d(Lx=1.0e-4, Ly=2.5e-5, Lz=1.5e-5, Xj=0.5e-4,
+                                  Nd_scale=1e17)
+        el, vols = build_unstructured_stencil3d(mesh.nodes, mesh.tets)
+        edges, trans = build_edge_flux_geometry3d(mesh.nodes, mesh.tets, el)
+        rot = np.empty(mesh.n_tets(), dtype=object)
+        for name, idx in mesh.volume_tags.items():
+            rot[idx] = name
+        C = evaluate_doping_at_nodes3d(mesh.nodes, mesh.tets, rot,
+                                       {"p_region": -1e17, "n_region": 1e17})
+        contacts = {"left_contact": mesh.face_tags["left_contact"],
+                    "right_contact": mesh.face_tags["right_contact"]}
+        # "auto" resolves to an iterative method for unstructured 3D (the
+        # session correctly stays out of that path); ask for direct
+        from pytcad import NewtonOptions
+        run = lambda: solve_bias3d(mesh.nodes, mesh.tets, edges, vols, trans, C,
+                                   contacts, {"left_contact": 0.5, "right_contact": 0.0},
+                                   opts=NewtonOptions(linsolve="direct"))
+
+    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    psi_r, n_r, p_r, _, cur_r = run()
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
+    monkeypatch.setattr(linsolve.DirectSession, "MIN_UNKNOWNS", 0)
+    made = _spy_sessions(monkeypatch)
+    psi, n, p, _, cur = run()
+    assert made and all(s.native_solves > 0 for s in made)
+    assert all(s.analyses == 1 for s in made)
+    np.testing.assert_allclose(psi, psi_r, rtol=0, atol=1e-9)
+    for k in cur_r:
+        assert abs(cur[k] - cur_r[k]) <= 1e-6 * abs(cur_r[k]) + 1e-30, (k, cur[k], cur_r[k])
+
+
+def test_thermal_grid_agrees_with_default_path(monkeypatch):
+    from pytcad.materials import SILICON
+    from pytcad.thermal import ThermalBC
+    from pytcad.thermal_grid import solve_lattice_temperature_grid
+    x = np.linspace(0, 1e-3, 30); y = np.linspace(0, 5e-4, 20)
+    H = np.zeros((y.size, x.size)); H[8:12, 10:20] = 1e5
+    # y: isothermal sink at the bottom, adiabatic top; x: adiabatic sides
+    bcs = [(ThermalBC("adiabatic"), ThermalBC("isothermal")),
+           (ThermalBC("adiabatic"), ThermalBC("adiabatic"))]
+    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    ref = solve_lattice_temperature_grid((y, x), H, SILICON, 300.0, bcs)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
+    monkeypatch.setattr(linsolve.DirectSession, "MIN_UNKNOWNS", 0)
+    made = _spy_sessions(monkeypatch)
+    T = solve_lattice_temperature_grid((y, x), H, SILICON, 300.0, bcs)
+    assert made and made[0].native_solves > 0
+    np.testing.assert_allclose(T, ref, rtol=1e-10)
+
+
 def test_device3d_bias_solve_agrees_with_default_path(monkeypatch):
     import warnings
     from pytcad import NewtonOptions

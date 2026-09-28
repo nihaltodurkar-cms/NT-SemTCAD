@@ -662,8 +662,8 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
     // M12-S2 TAT (device.py's `if tat and (Pn.any() or Pp.any())`): the
     // all-zero case leaves the SRH/Auger arrays UNTOUCHED (traps-off
     // bit-identity), otherwise R is REPLACED -- SRH with tunneling-
-    // assisted capture, no Auger, and applied after the srh=False
-    // zeroing exactly as the Python orders it.
+    // assisted capture plus the unchanged Auger term, applied after the
+    // srh=False zeroing exactly as the Python orders it.
     bool tat_active = false;
     if (models_.tat) {
         for (int j = 0; j < N && !tat_active; ++j)
@@ -701,6 +701,14 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
             R = excess / den;
             dRdn = ((p_phys - dqdn) * den - excess * tau_p_[j]) / (den * den);
             dRdp = ((n_phys - dqdp) * den - excess * tau_n_[j]) / (den * den);
+            // TAT modifies the SRH channel only; Auger stays (device.py's
+            // 2026-09-28 fix, same form/order as recombination()).
+            if (models_.auger && models_.srh) {
+                const double Caug = Cn_auger_ * n_phys + Cp_auger_ * p_phys;
+                R = R + Caug * excess;
+                dRdn = dRdn + Cn_auger_ * excess + Caug * (p_phys - dqdn);
+                dRdp = dRdp + Cp_auger_ * excess + Caug * (n_phys - dqdp);
+            }
         }
         Rs[j] = R / R0_;
         dRs_dn[j] = dRdn * Ns_ / R0_;

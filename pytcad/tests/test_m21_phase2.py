@@ -327,6 +327,15 @@ def test_qoi_3d_converges_monotonically():
     is satisfied within a couple of passes and the remaining refinement
     is driven by the (much gentler) curvature/log-density indicator;
     measured to converge cleanly at 65,648 nodes on pass 6.
+
+    Budget 150,000 (was 100,000), 2026-09-28: on the Windows dev
+    machine (numpy 2.5.3 / scipy 1.18.1) pass 6 lands at 107,797 nodes,
+    not 65,648, so the 100k budget stopped the driver ONE pass short
+    while the QoI was still converging monotonically (relative changes
+    0.49, 0.32, 0.13, 0.052, 0.015, then 4.3e-3 < tol at pass 6). The
+    physics and the gate are unchanged; only the budget the refinement
+    path needs on that platform. Still well under the ~240k-node direct-
+    solve memory wall above.
     """
     L, W, D = 6.0e-4, 1.0e-5, 1.0e-5
     x0 = uniform_mesh(L, 10)
@@ -336,7 +345,7 @@ def test_qoi_3d_converges_monotonically():
 
     dev, mesh, hist = adapt.adapt_solve_3d(
         _build_3d(), mesh0, solve=_solve_eq, qoi=_qoi_3d,
-        tol=1e-2, max_passes=8, max_nodes=100000)
+        tol=1e-2, max_passes=8, max_nodes=150000)
 
     assert hist[-1]["cause"] == "converged", \
         f"G4 FAIL (3D): did not converge ({hist[-1]['cause']})"

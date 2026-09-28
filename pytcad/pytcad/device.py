@@ -1774,8 +1774,14 @@ class Device1D:
         # hole-side barrier uses Eg(T) -- build per-node Eg(T) here
         eg_t = np.array([m.Eg(self.T) for m in self.mats])
         phi_p = eg_t * et_rel
-        m_n = np.array([m.m_n_star for m in self.mats])
-        m_p = np.array([m.m_p_star for m in self.mats])
+        # m_n_star/m_p_star are RELATIVE effective masses (units of m0,
+        # as btbt/dg/nonlocal_path use them); the SI-calibrated WKB
+        # coefficient needs kg. Before 2026-09-28 the m0 factor was
+        # missing, making B ~sqrt(1/m0) ~ 1e15x too large (kn = 1.6e24
+        # V/m for Si instead of 1.6e9), so P underflowed to exactly 0 at
+        # every realizable field and TAT was always plain SRH.
+        m_n = np.array([m.m_n_star for m in self.mats]) * _NL_M0
+        m_p = np.array([m.m_p_star for m in self.mats]) * _NL_M0
         B_n = 4.0 * np.sqrt(2.0 * m_n * Q_E_CONST) / (3.0 * HBAR_CONST)
         B_p = 4.0 * np.sqrt(2.0 * m_p * Q_E_CONST) / (3.0 * HBAR_CONST)
         return B_n * phi_n ** 1.5, B_p * phi_p ** 1.5
@@ -2079,6 +2085,20 @@ class Device1D:
                 / (den * den)
             dRdp = ((n_phys - dqdp) * den - excess * self.tau_n) \
                 / (den * den)
+            # TAT modifies the SRH channel ONLY; Auger is a separate band-
+            # to-band process and stays (it was silently dropped here
+            # before 2026-09-28, invisible while P always underflowed).
+            # Same form and operation order as materials.recombination's
+            # Auger term, so at P ~ 0 (1 + P == 1) this branch reproduces
+            # recombination() bit-for-bit. srh=False keeps its existing
+            # meaning (no recombination at all), so Auger follows it.
+            if self.models.auger and self.models.srh:
+                Cn = np.array([m.Cn_auger for m in self.mats])
+                Cp = np.array([m.Cp_auger for m in self.mats])
+                Caug = Cn * n_phys + Cp * p_phys
+                R = R + Caug * excess
+                dRdn = dRdn + Cn * excess + Caug * (p_phys - dqdn)
+                dRdp = dRdp + Cp * excess + Caug * (n_phys - dqdp)
         Rs = R / self.R0
         dRs_dn = dRdn * self.Ns / self.R0      # d(R/R0)/d(n/Ns)
         dRs_dp = dRdp * self.Ns / self.R0

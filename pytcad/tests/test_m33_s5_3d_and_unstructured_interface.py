@@ -387,14 +387,19 @@ def test_g2_u_isotype_terminal_current_is_analytically_gauge_invariant(u_geom):
     the value of every printed digit).
 
     This is the CORRECT gate for this module's actual mathematics, not
-    a workaround -- bit-identity (not merely "close") is exactly what
-    the derivation above predicts."""
+    a workaround. The derivation is exact in REAL arithmetic; in floating
+    point psi and band_shift enter as separate chi-dependent terms, so
+    the three currents agree to round-off, not necessarily bit-for-bit
+    (measured 2026-09-28 on Windows / numpy 2.5.3: 0.6932640403736199 vs
+    ...201, 2 ULP; bit-equal on the machine that first recorded this).
+    1e-13 relative is still ~10 orders below a genuine gauge effect (a
+    chi step moves the pn-junction current by >= 1e-3, gated above)."""
     Js = []
     for chi in (3.85, 4.05, 4.25):
         _, _, _, _, I = _hetero_u(u_geom, chi, band_offset="affinity",
                                   junction="isotype", bias={"left_contact": 0.1})
         Js.append(I["left_contact"])
-    assert Js[0] == Js[1] == Js[2], Js
+    assert max(Js) - min(Js) <= 1e-13 * abs(Js[1]), Js
 
 
 def test_g3_u_fd_jacobian_on_interface_edges(u_geom):

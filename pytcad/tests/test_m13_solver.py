@@ -395,8 +395,15 @@ TAT_FW_DIGEST = ("029c2637d792a4b48c2d05a08088fd76"
 # digest skips (there is nothing to compare against) rather than failing
 # on summation order alone. The two TAT digests above reproduced on both
 # machines when captured.
+# Windows re-captured 2026-09-28 after the conda env moved to numpy 2.5.3 /
+# scipy 1.18.1: the commit that recorded the previous Windows value
+# (92aca72, digest 9639d6d3...) reproduces the NEW digest in this env
+# (checked in a worktree of 92aca72), and HEAD gives the same bytes -- an
+# environment change, not a code change. Checked before trusting it:
+# converged (err 1.1e-13), all fields finite, n and p > 0, forward
+# current conserved along the device to 4.3e-4 (same as the 09-25 capture).
 HETERO_FW_DIGESTS = {
-    "Windows": "9639d6d32b229909a59c54f7e75847625bde297072be6312e7465c58856ea97c",
+    "Windows": "50ab3e0a3c8079b0b33b21427b20e44008d5a0c4f970c7c34673536c1fdc6638",
     "Linux": "5828f729ec2eb91358e1b84cad07ad0924b23df69e0f5f5352794eb4c53d2788",
 }
 # Re-captured 2026-09-04 on THIS machine's own numpy/scipy/BLAS build --

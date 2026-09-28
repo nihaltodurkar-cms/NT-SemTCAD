@@ -62,7 +62,7 @@ from scipy.sparse.linalg import spsolve
 # M31 P4b: symmetric Dirichlet elimination (row AND column), so the
 # assembled Jacobian is transposable -- see pytcad/dirichlet.py.
 from .dirichlet import eliminate_csr, stamp_dirichlet_rows
-from .linsolve import solve_linear, LinearSolveError, select_auto
+from .linsolve import solve_linear, LinearSolveError, select_auto, session_for
 
 from .constants import Q, EPS0
 from .device import (
@@ -378,6 +378,9 @@ def solve_bias(nodes, triangles, edge_list, node_areas, interior_edges,
     if opts.verbose and auto_reason:
         print(f"    unstructured-dd  auto -> {resolved_linsolve} "
               f"({auto_reason})")
+    # device-port Phase 3.1: opt-in symbolic-reuse LU for the direct
+    # method (None = the exact solve_linear call below)
+    session = session_for(resolved_linsolve)
     for it in range(opts.max_iter):
         F, J, Jn, Jp = _residual_jacobian(
             psi, n, p, C_s, nie_s, areas_s, interior_edges, eps_trans,
@@ -414,10 +417,14 @@ def solve_bias(nodes, triangles, edge_list, node_areas, interior_edges,
         # opts.linsolve="direct" (the default) never enters the except
         # branch, so this is bit-identical unless the caller opts in.
         try:
-            du, _ = solve_linear(Jc.tocsc(), rhs, method=resolved_linsolve,
-                                 rtol=opts.linsolve_rtol,
-                                 block_size=opts.block_size,
-                                 precond=opts.precond)
+            if session is not None:
+                du = session.solve(Jc, rhs, fallback=lambda: solve_linear(
+                    Jc.tocsc(), rhs, method="direct")[0])
+            else:
+                du, _ = solve_linear(Jc.tocsc(), rhs, method=resolved_linsolve,
+                                     rtol=opts.linsolve_rtol,
+                                     block_size=opts.block_size,
+                                     precond=opts.precond)
         except LinearSolveError:
             if resolved_linsolve == "direct":
                 raise

@@ -985,6 +985,15 @@ def solve_linear(A, b, *, method="direct", rtol=1e-10, atol=0.0,
                "converged": True, "residual": resid}
 
 
+def session_for(method):
+    """A fresh DirectSession for one Newton solve whose linear method
+    resolved to "direct", or None (opt-in off, or an iterative/petsc/
+    gpu method was requested -- those paths are untouched)."""
+    if method != "direct" or not native_direct_enabled():
+        return None
+    return DirectSession()
+
+
 def device_session(owner):
     """A DirectSession cached on `owner` (a device) for Newton loops that
     live OUTSIDE the device's own solve methods -- transient2d/3d step

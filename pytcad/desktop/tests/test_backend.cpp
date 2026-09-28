@@ -174,11 +174,20 @@ private slots:
         auto* r = c.call("debug.loaded_modules");
         QVERIFY(waitFor(r, 60000));
         QVERIFY2(r->ok(), qPrintable(r->errorMessage()));
-        // Allowed: the backend's own environment, Windows itself, and the
-        // project tree (pytcad/_core*.pyd is built in place, CLAUDE.md).
+        // Allowed: the backend's own environment, Windows itself, the
+        // project tree (pytcad/_core*.pyd is built in place, CLAUDE.md),
+        // and Windows Defender's platform directory: the OS injects its
+        // AMSI scan provider (MpOav.dll) into processes from
+        // %ProgramData%\Microsoft\Windows Defender\Platform\<version>\,
+        // outside %SystemRoot% -- measured 2026-09-28 as the ONLY
+        // outside module. It is part of the OS, not a conda env, so it is
+        // not the DLL-mixing risk this test exists for (from_gui below
+        // still pins that).
         const QString prefix = QDir::fromNativeSeparators(c.backendPrefix());
         const QString windir = QDir::fromNativeSeparators(env("SystemRoot"));
         const QString root = QDir::fromNativeSeparators(env("TCAD_TEST_ROOT"));
+        const QString defender =
+            QDir::fromNativeSeparators(env("ProgramData")) + "/Microsoft/Windows Defender/";
         const QString gui_env = QDir::fromNativeSeparators(env("TCAD_TEST_STRIP"));  // .../tcad-gui/Library/bin
         int outside = 0, from_gui = 0;
         QStringList examples;
@@ -186,7 +195,8 @@ private slots:
             const QString p = QDir::fromNativeSeparators(QString::fromStdString(m.get<std::string>()));
             if (p.startsWith(gui_env.section('/', 0, -3), Qt::CaseInsensitive)) ++from_gui;  // anything under tcad-gui
             if (p.startsWith(prefix, Qt::CaseInsensitive) || p.startsWith(windir, Qt::CaseInsensitive) ||
-                p.startsWith(root, Qt::CaseInsensitive))
+                p.startsWith(root, Qt::CaseInsensitive) ||
+                (!env("ProgramData").isEmpty() && p.startsWith(defender, Qt::CaseInsensitive)))
                 continue;
             ++outside;
             if (examples.size() < 5) examples << p;

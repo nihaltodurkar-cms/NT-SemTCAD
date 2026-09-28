@@ -21,6 +21,7 @@ import scipy.sparse as sp
 from scipy.sparse.linalg import spsolve
 
 from . import _accel
+from . import linsolve
 from .mesh2d import control_volume_widths
 from .thermal import ThermalOptions  # noqa: F401 (re-exported)
 
@@ -84,9 +85,15 @@ def solve_lattice_temperature_grid(coords, H, material, T_ambient, bcs,
     shape = H.shape
     T = np.full(shape, float(T_ambient))
 
+    # device-port Phase 3.1: opt-in symbolic-reuse LU (None = old call)
+    session = linsolve.session_for("direct")
     for _ in range(opts.max_iter):
         F, J = _residual_jacobian_grid(coords, T, H, material, T_ambient, bcs)
-        d = spsolve(J.tocsc(), -F.ravel()).reshape(shape)
+        if session is not None:
+            d = session.solve(J, -F.ravel(), fallback=lambda: spsolve(
+                J.tocsc(), -F.ravel())).reshape(shape)
+        else:
+            d = spsolve(J.tocsc(), -F.ravel()).reshape(shape)
         d = np.clip(d, -opts.max_dT, opts.max_dT)
         T = T + d
         if np.abs(d).max() < opts.tol:

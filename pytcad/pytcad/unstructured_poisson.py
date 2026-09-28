@@ -22,7 +22,7 @@ from scipy.sparse.linalg import spsolve
 # M31 P4b: symmetric Dirichlet elimination (row AND column), so the
 # assembled Jacobian is transposable -- see pytcad/dirichlet.py.
 from .dirichlet import eliminate_csr, stamp_dirichlet_rows
-from .linsolve import solve_linear, LinearSolveError, select_auto
+from .linsolve import solve_linear, LinearSolveError, select_auto, session_for
 
 from .constants import Q, EPS0
 from .device import NewtonOptions, thermal_voltage
@@ -146,6 +146,9 @@ def solve_poisson_equilibrium(nodes, triangles, edge_list, node_areas,
     if opts.verbose and auto_reason:
         print(f"    unstructured-eq  auto -> {resolved_linsolve} "
               f"({auto_reason})")
+    # device-port Phase 3.1: opt-in symbolic-reuse LU for the direct
+    # method (None = the exact solve_linear call below)
+    session = session_for(resolved_linsolve)
     for it in range(opts.max_iter):
         F, J = _residual_jacobian(psi, C_s, nie_s, areas_s,
                                   interior_edges, trans_s)
@@ -170,8 +173,12 @@ def solve_poisson_equilibrium(nodes, triangles, edge_list, node_areas,
         # opts.linsolve="direct" (the default) never enters the except
         # branch, so this is bit-identical unless the caller opts in.
         try:
-            d, _ = solve_linear(J.tocsc(), rhs, method=resolved_linsolve,
-                                rtol=opts.linsolve_rtol)
+            if session is not None:
+                d = session.solve(J, rhs, fallback=lambda: solve_linear(
+                    J.tocsc(), rhs, method="direct")[0])
+            else:
+                d, _ = solve_linear(J.tocsc(), rhs, method=resolved_linsolve,
+                                    rtol=opts.linsolve_rtol)
         except LinearSolveError:
             if resolved_linsolve == "direct":
                 raise

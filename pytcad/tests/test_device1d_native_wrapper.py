@@ -222,8 +222,10 @@ def test_current_density_reads_wrapper_attributes():
 
 def test_tat_frozen_probabilities_sync_to_wrapper():
     """test_m12_tat reads dev._Pn/_Pp after solve_bias; the native path
-    must expose the SAME frozen arrays the pure-Python path computes
-    (both underflow to exact 0.0 at realizable junction fields)."""
+    must expose the same frozen arrays the pure-Python path computes.
+    Tolerance: P = exp(-kn/F) with kn/F ~ 150 here amplifies the ~1e-15
+    difference between two independently converged states' psi into
+    ~1e-13 relative in P (measured 1.1e-13), so 1e-10, not round-off."""
     dev, x, doping = _diode(Models(bgn=True, srh=True, tat=True))
     assert dev._native is not None
     dev_py, _, _ = _diode(Models(bgn=True, srh=True, tat=True))
@@ -231,8 +233,9 @@ def test_tat_frozen_probabilities_sync_to_wrapper():
     for d in (dev, dev_py):
         d.solve_bias([0.0, -0.5])
     assert dev._Pn is not None and dev._Pp is not None
-    np.testing.assert_allclose(dev._Pn, dev_py._Pn, rtol=1e-13, atol=0.0)
-    np.testing.assert_allclose(dev._Pp, dev_py._Pp, rtol=1e-13, atol=0.0)
+    assert float(np.max(dev_py._Pn)) > 0.0      # TAT genuinely live
+    np.testing.assert_allclose(dev._Pn, dev_py._Pn, rtol=1e-10, atol=0.0)
+    np.testing.assert_allclose(dev._Pp, dev_py._Pp, rtol=1e-10, atol=0.0)
 
 
 def test_models_mutated_after_construction_falls_back_to_python():

@@ -268,12 +268,13 @@ def test_g_fd_forward_current_is_physically_sane(models_kwargs):
 # ----------------------------------------------------------------------
 #  Phase 2 slice 2: M12-S2 trap-assisted tunneling
 # ----------------------------------------------------------------------
-# device.py's WKB coefficient is so large that P underflows to exactly
-# 0.0 at every field a real solve reaches (test_m12_tat documents this as
-# the honest bulk-Si midgap result), so a real solve never enters the
-# TAT branch. These gates therefore drive the branch with SYNTHETIC
-# frozen probabilities through the test hook -- otherwise they would
-# only ever compare plain SRH against itself.
+# At realizable junction fields bulk-Si midgap P is ~1e-14 or smaller
+# (test_m12_tat), so a real solve's TAT branch is numerically plain
+# SRH+Auger. These gates therefore drive the branch with SYNTHETIC frozen
+# probabilities of O(1e-3..10) through the test hook, so the tunneling
+# terms themselves are exercised, not just the branch's P ~ 0 limit.
+# (Until 2026-09-28 device.py's WKB coefficient lacked the m0 factor and
+# P underflowed to exactly 0.0 everywhere -- see _tat_exponent_coeffs.)
 def _tat_pair(**models_kwargs):
     """(python wrapper forced onto the pure-Python path, native object)
     for the identical fixture, both solved to 0.3 V forward."""
@@ -357,12 +358,13 @@ def test_g_tat_residual_reconstructs_python(models_kwargs):
 
 def test_g_tat_probabilities_match_python():
     """The native field -> P law against device.py's
-    _update_tat_probabilities on a synthetic potential steep enough that
-    P does NOT underflow (so the comparison is not just zeros)."""
+    _update_tat_probabilities on a synthetic potential whose node fields
+    span the tunneling turn-on (P from underflow up to O(1)), so the
+    comparison is not just zeros."""
     py, dev = _tat_pair(bgn=True)
     N = dev.N
     rng = np.random.default_rng(11)
-    psi = np.cumsum(rng.uniform(1e16, 1e18, N)) * rng.choice([-1.0, 1.0])
+    psi = np.cumsum(10.0 ** rng.uniform(0.0, 4.0, N)) * rng.choice([-1.0, 1.0])
     py._update_tat_probabilities(psi)
     Pn, Pp = dev._tat_probabilities_for_test(psi)
     Pn, Pp = np.asarray(Pn), np.asarray(Pp)
@@ -681,13 +683,15 @@ def test_g_gen_off_leaves_no_source():
 def test_g_tat_coefficient_factoring_is_bit_identical():
     """_tat_exponent_coeffs was factored out of _update_tat_probabilities
     for the native constructor; the pure-Python probabilities must be
-    bit-identical to the pre-refactor inline expression."""
+    bit-identical to the inline expression (pre-refactor body, with the
+    2026-09-28 m0 unit fix applied: effective masses in kg)."""
     from pytcad.device import Q_E_CONST, HBAR_CONST
+    from pytcad.btbt import M0_SI
     py, _ = _tat_pair(bgn=True)
     rng = np.random.default_rng(13)
-    psi = np.cumsum(rng.uniform(1e16, 1e18, py.N))
+    psi = np.cumsum(10.0 ** rng.uniform(0.0, 4.0, py.N))
     py._update_tat_probabilities(psi)
-    # pre-refactor body, verbatim
+    # pre-refactor body, verbatim except the m0 factor
     edge_F = np.abs(np.diff(psi)) * py.VT / (py.LD * py.h) * 100.0
     F = np.empty(py.N)
     F[1:-1] = 0.5 * (edge_F[:-1] + edge_F[1:])
@@ -695,8 +699,8 @@ def test_g_tat_coefficient_factoring_is_bit_identical():
     et_rel = py.models.trap_et_rel
     phi_n = py.Eg0_arr * (1.0 - et_rel)
     phi_p = np.array([m.Eg(py.T) for m in py.mats]) * et_rel
-    m_n = np.array([m.m_n_star for m in py.mats])
-    m_p = np.array([m.m_p_star for m in py.mats])
+    m_n = np.array([m.m_n_star for m in py.mats]) * M0_SI
+    m_p = np.array([m.m_p_star for m in py.mats]) * M0_SI
     B_n = 4.0 * np.sqrt(2.0 * m_n * Q_E_CONST) / (3.0 * HBAR_CONST)
     B_p = 4.0 * np.sqrt(2.0 * m_p * Q_E_CONST) / (3.0 * HBAR_CONST)
     safe_F = np.maximum(F, 1.0)

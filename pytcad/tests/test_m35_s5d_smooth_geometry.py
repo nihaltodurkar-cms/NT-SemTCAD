@@ -12,6 +12,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pytest
 
+# scikit-image is an OPTIONAL dependency (requirements.txt: "absent, the
+# corresponding tests/features are skipped"); marching_cubes_surface
+# raises ImportError without it, so skip rather than fail.
+pytest.importorskip("skimage")
+
 from pytcad.levelset3d import LevelSet3D, project3d, marching_cubes_surface, etch_isotropic3d, deposit_conformal3d
 
 

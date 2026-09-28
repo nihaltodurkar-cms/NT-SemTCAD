@@ -76,6 +76,27 @@ def test_traps_off_bit_identical(diode):
     assert (J_srh != J_tat).nnz == 0
 
 
+def test_tat_branch_keeps_auger(diode):
+    """TAT modifies the SRH channel only. With a tiny NONZERO P the TAT
+    branch runs, but 1 + P == 1 in double precision, so its residual and
+    Jacobian must equal the plain SRH+Auger ones bit-for-bit. Before
+    2026-09-28 the branch replaced R with SRH-only and silently dropped
+    Auger -- invisible while P always underflowed to exactly 0."""
+    dev = diode
+    assert dev.models.auger and dev.models.srh
+    dev.solve_equilibrium()
+    dev.solve_bias([0.0, 0.3])
+    bc = [(dev.psi[0], dev.n[0], dev.p[0]),
+          (dev.psi[-1], dev.n[-1], dev.p[-1])]
+    F_srh, J_srh, _, _ = dev._residual_jacobian(dev.psi, dev.n, dev.p, bc)
+    dev.models.tat = True
+    dev._Pn = np.full(dev.N, 1e-30)
+    dev._Pp = np.full(dev.N, 1e-30)
+    F_tat, J_tat, _, _ = dev._residual_jacobian(dev.psi, dev.n, dev.p, bc)
+    assert np.array_equal(F_srh, F_tat)
+    assert (J_srh != J_tat).nnz == 0
+
+
 def test_charge_neutrality_with_traps(diode):
     """TAT moves carriers between bands, never creates net charge.
 
@@ -129,10 +150,27 @@ def test_silc_style_field_enhancement_monotone(diode):
     dev.solve_bias([0.0, -0.5])
     assert dev._Pn is not None
 
-    # device-level honesty: at realizable junction fields every
-    # probability has underflowed to exactly 0.0 -> pure SRH
-    assert float(np.max(dev._Pn)) == 0.0
-    assert float(np.max(dev._Pp)) == 0.0
+    # The WKB coefficient must be the SI Fowler-Nordheim form with the
+    # effective mass in KILOGRAMS, B = 4 sqrt(2 m* m0 q) / (3 hbar).
+    # Until 2026-09-28 device.py used the RELATIVE mass (no m0), which
+    # made B ~1e15x too large -- P underflowed to exactly 0.0 at every
+    # field and this test asserted that underflow as physics.
+    ME_ = 9.1093837015e-31
+    HB_ = 1.054571817e-34
+    Q_ = 1.602176634e-19
+    kn, kp = dev._tat_exponent_coeffs()
+    m_n_ = np.array([m.m_n_star for m in dev.mats])
+    phi_n_dev = dev.Eg0_arr * (1.0 - dev.models.trap_et_rel)
+    B_ref = 4.0 * np.sqrt(2.0 * m_n_ * ME_ * Q_) / (3.0 * HB_)
+    np.testing.assert_allclose(kn, B_ref * phi_n_dev ** 1.5, rtol=1e-12)
+    assert 1e8 < float(kn.max()) < 1e10          # V/m scale, not 1e24
+
+    # device-level honesty: at realizable junction fields (<1e6 V/cm)
+    # bulk-Si midgap tunneling is NEGLIGIBLE but no longer exactly zero
+    # (measured max ~2e-14 at -0.5 V on this diode), so TAT stays
+    # physically indistinguishable from SRH here
+    for P in (dev._Pn, dev._Pp):
+        assert 0.0 < float(np.max(P)) < 1e-10
 
     # factor-law gate across the tunneling turn-on regime.
     # First-principles triangular-barrier WKB exponent (no FN-form
