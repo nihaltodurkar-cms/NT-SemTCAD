@@ -69,6 +69,17 @@ execute_process(
 list(APPEND CMAKE_PREFIX_PATH "${NB_CMAKE_DIR}")
 find_package(nanobind CONFIG REQUIRED)
 
+# Eigen3 (header-only -- no compiled lib, so it's safe to source from a
+# DIFFERENT env than the compiler, exactly like the compiler itself is
+# sourced from a different env than Python; see this file's header
+# comment). REQUIRED as of the device1d native port
+# (~/.claude/plans/eager-purring-fairy.md): SparseLU is the native
+# direct solver behind Device1D's Newton loop. Point
+# -DCMAKE_PREFIX_PATH at any env/prefix that has eigen3 installed, e.g.
+# the tcad-gui env on this machine (`conda install -c conda-forge
+# eigen` into any env works too, since it installs no binary).
+find_package(Eigen3 CONFIG REQUIRED)
+
 # OpenMP is OPTIONAL by design: absent (e.g. clang-cl), unrecognized
 # `#pragma omp` is a silent no-op and the kernels stay serial -- which is
 # also the DEFAULT thread count (see include/tcad/runtime/threads.hpp for
@@ -98,6 +109,9 @@ endif()
 
 add_library(tcad_core OBJECT
   src/runtime/threads.cpp
+  src/physics/kernels.cpp
+  src/solver/direct_lu.cpp
+  src/device1d/device1d.cpp
   src/mesh/stencil.cpp
   src/solver/petsc_ksp.cpp
   src/process/indicators.cpp
@@ -114,6 +128,7 @@ add_library(tcad_core OBJECT
   src/uicore/templates.cpp
 )
 target_include_directories(tcad_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/include")
+target_link_libraries(tcad_core PUBLIC Eigen3::Eigen)
 # M34-S4 / M43 / M42-S3: the path tracer, thermal-grid, and
 # density-gradient Lambda-row assemblies are all gated bit-for-bit
 # against a pure-Python oracle, so no multiply-add may be fused in any
@@ -125,6 +140,8 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                               src/thermal/grid.cpp
                               src/dg/grid.cpp src/unstructured3d/kernels.cpp
                               src/device3d/kernels.cpp src/device3d/poisson_eq.cpp
+                              src/physics/kernels.cpp
+                              src/device1d/device1d.cpp
                               PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 endif()
@@ -163,6 +180,8 @@ if(MINGW)
 endif()
 nanobind_add_module(_core STABLE_ABI NB_STATIC ${_TCAD_NB_OPTS}
   bindings/module.cpp
+  bindings/physics_bindings.cpp
+  bindings/device1d_bindings.cpp
   bindings/mesh_bindings.cpp
   bindings/solver_bindings.cpp
   bindings/process_bindings.cpp

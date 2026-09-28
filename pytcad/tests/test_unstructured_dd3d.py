@@ -55,7 +55,7 @@ def diode_geom3d(diode_mesh3d):
     contacts = {"left_contact": mesh.face_tags["left_contact"],
                "right_contact": mesh.face_tags["right_contact"]}
     return dict(mesh=mesh, edges=edges, node_vols=node_vols, trans=trans,
-               C=C, contacts=contacts)
+               C=C, contacts=contacts, region_of_tet=region_of_tet)
 
 
 # ----------------------------------------------------------------------
@@ -163,22 +163,26 @@ def test_bias_terminal_currents_conserve_charge(diode_geom3d):
 #  makes the p-n case hard (see module docstring) does not apply.
 # ----------------------------------------------------------------------
 @pytest.mark.slow
-def test_ohmic_resistor_current_matches_structured_and_analytic():
-    mesh = build_diode_mesh3d(Lx=2.0e-4, Ly=5.0e-5, Lz=3.0e-5, Xj=1.0e-4,
-                              Nd_scale=1e17)
-    edge_list, node_vols = build_unstructured_stencil3d(mesh.nodes, mesh.tets)
-    edges, trans = build_edge_flux_geometry3d(mesh.nodes, mesh.tets, edge_list)
-    region_of_tet = np.empty(mesh.n_tets(), dtype=object)
-    for name, idx in mesh.volume_tags.items():
-        region_of_tet[idx] = name
-    C = evaluate_doping_at_nodes3d(mesh.nodes, mesh.tets, region_of_tet,
+def test_ohmic_resistor_current_matches_structured_and_analytic(diode_geom3d):
+    # Reuses the module-scoped diode_geom3d fixture's mesh/edges/
+    # node_vols/trans/contacts/region_of_tet -- identical
+    # build_diode_mesh3d(Lx=2.0e-4, Ly=5.0e-5, Lz=3.0e-5, Xj=1.0e-4,
+    # Nd_scale=1e17) geometry to what this test used to rebuild from
+    # scratch (gmsh call + stencil + edge-flux geometry, the expensive
+    # part; none of that depends on the DOPING VALUES, only the mesh
+    # geometry, which the fixture already computed for the other tests
+    # in this module). Only the doping VALUES differ here (uniform
+    # 1e17 both regions, for the Ohmic case) -- recomputed fresh below
+    # since evaluate_doping_at_nodes3d is cheap (no gmsh/geometry work).
+    d = diode_geom3d
+    mesh = d["mesh"]
+    C = evaluate_doping_at_nodes3d(mesh.nodes, mesh.tets, d["region_of_tet"],
                                    {"p_region": 1e17, "n_region": 1e17})
-    contacts = {"left_contact": mesh.face_tags["left_contact"],
-               "right_contact": mesh.face_tags["right_contact"]}
     V = 0.01
     psi, n, p, scale, I = solve_bias3d(
-        mesh.nodes, mesh.tets, edges, node_vols, trans, C, contacts,
-        bias={"left_contact": V, "right_contact": 0.0}, srh=False)
+        mesh.nodes, mesh.tets, d["edges"], d["node_vols"], d["trans"], C,
+        d["contacts"], bias={"left_contact": V, "right_contact": 0.0},
+        srh=False)
     assert scale["last_converged"]
 
     Lx, Ly, Lz = 2.0e-4, 5.0e-5, 3.0e-5
@@ -208,27 +212,25 @@ def test_ohmic_resistor_current_matches_structured_and_analytic():
 #  fixed).
 # ----------------------------------------------------------------------
 @pytest.mark.slow
-def test_forward_junction_matches_structured():
+def test_forward_junction_matches_structured(diode_geom3d):
     from pytcad.mesh import graded_mesh
     from pytcad.mesh3d import Mesh3D
     from pytcad.device3d import Device3D
     from pytcad.device import Models
 
-    mesh = build_diode_mesh3d(Lx=2.0e-4, Ly=5.0e-5, Lz=3.0e-5, Xj=1.0e-4,
-                              Nd_scale=1e17)
-    edge_list, node_vols = build_unstructured_stencil3d(mesh.nodes, mesh.tets)
-    edges, trans = build_edge_flux_geometry3d(mesh.nodes, mesh.tets, edge_list)
-    region_of_tet = np.empty(mesh.n_tets(), dtype=object)
-    for name, idx in mesh.volume_tags.items():
-        region_of_tet[idx] = name
-    C = evaluate_doping_at_nodes3d(mesh.nodes, mesh.tets, region_of_tet,
-                                   DOPING_BY_REGION)
-    contacts = {"left_contact": mesh.face_tags["left_contact"],
-               "right_contact": mesh.face_tags["right_contact"]}
+    # diode_geom3d's own C IS DOPING_BY_REGION on the SAME
+    # build_diode_mesh3d(Lx=2.0e-4, Ly=5.0e-5, Lz=3.0e-5, Xj=1.0e-4,
+    # Nd_scale=1e17) geometry this test used to rebuild from scratch --
+    # a byte-for-byte duplicate of the fixture already shared by
+    # test_bias_terminal_currents_conserve_charge above. Reuse it
+    # directly rather than repeating the gmsh + stencil + edge-flux-
+    # geometry + doping-evaluation work a second time.
+    d = diode_geom3d
+    mesh, C = d["mesh"], d["C"]
     V = 0.5
     psi, n, p, scale, I = solve_bias3d(
-        mesh.nodes, mesh.tets, edges, node_vols, trans, C, contacts,
-        bias={"left_contact": V, "right_contact": 0.0},
+        mesh.nodes, mesh.tets, d["edges"], d["node_vols"], d["trans"], C,
+        d["contacts"], bias={"left_contact": V, "right_contact": 0.0},
         srh=True, doping_mobility=False)
     assert scale["last_converged"]
     I_unstructured = I["left_contact"]

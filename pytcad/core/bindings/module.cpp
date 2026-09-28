@@ -21,6 +21,8 @@
 
 // Defined in mesh_bindings.cpp / solver_bindings.cpp -- one module,
 // several translation units.
+void register_physics(nanobind::module_& m);
+void register_device1d(nanobind::module_& m);
 void register_mesh(nanobind::module_& m);
 void register_solver(nanobind::module_& m);
 void register_process(nanobind::module_& m);
@@ -82,6 +84,8 @@ NB_MODULE(_core, m) {
     }, nb::arg("which"),
        "Raise one C++ exception of each mapped kind. Test hook only.");
 
+    register_physics(m);
+    register_device1d(m);
     register_mesh(m);
     register_solver(m);
     register_process(m);

@@ -314,8 +314,26 @@ def _ramp_with_arclength(dev, v_start, v_end, ds0=0.02):
     return results
 
 
+@pytest.fixture(scope="module")
+def _kane_reverse_ramp():
+    """The G-E gates below both analyze the SAME expensive reverse-bias
+    arc-length ramp (a fresh `_tunnel_diode(btbt=True)`, equilibrium,
+    then `_ramp_with_arclength(on, 0.0, -1.5, ds0=0.05)`) -- one gate
+    checks the onset slope, the other the high-bias plateau behavior,
+    but the ramp itself is identical between them. Computed once here
+    instead of twice. Ramp to -1.5V (not -1.2V as originally written):
+    measured directly, the V in [-0.5,-1.2] window only grows the
+    current ~260x, short of the >1e3 threshold the onset gate uses --
+    the physics is fine (see the high-bias gate's log-slope check), the
+    window was just too narrow. V in [-0.5,-1.5] gives ~1400x, verified
+    2026-08-31 when this gate was run for the first time."""
+    on = _tunnel_diode(btbt=True)
+    on.solve_equilibrium()
+    return _ramp_with_arclength(on, 0.0, -1.5, ds0=0.05)
+
+
 @pytest.mark.slow
-def test_g_e_zener_onset_has_kane_slope():
+def test_g_e_zener_onset_has_kane_slope(_kane_reverse_ramp):
     """G-E (onset slope): the published Kane-form behavior -- the
     tunneling current grows exponentially with field.  Regression of
     ln(J) against 1/E_peak over the reverse-bias ramp must be a
@@ -323,22 +341,11 @@ def test_g_e_zener_onset_has_kane_slope():
     signature; a thermionic/diffusive leakage would instead be linear
     in V).
     """
-    on = _tunnel_diode(btbt=True);   on.solve_equilibrium()
-
-    # Use arc-length continuation to trace past the fold in the I-V
-    # curve caused by the stiff BTBT source.  Ramp to -1.5V (not -1.2V
-    # as originally written): measured directly, the V in [-0.5,-1.2]
-    # window only grows the current ~260x, short of the >1e3 threshold
-    # below -- the physics is fine (see the high-bias gate's log-slope
-    # check), the window was just too narrow.  V in [-0.5,-1.5] gives
-    # ~1400x, verified 2026-08-31 when this gate was run for the first
-    # time.
-    results = _ramp_with_arclength(on, 0.0, -1.5, ds0=0.05)
-
     # Filter to high-bias region (V <= -0.5) where BTBT dominates and
     # current is strictly monotone -- the arc-length path has small
-    # numerical wiggles near the fold at low bias.
-    results = [r for r in results if r[0] <= -0.5]
+    # numerical wiggles near the fold at low bias. Filtering builds a
+    # NEW list (doesn't mutate the shared fixture's own results).
+    results = [r for r in _kane_reverse_ramp if r[0] <= -0.5]
     Js = np.array([r[1] for r in results])
     E_peaks = np.array([r[2] for r in results])
 
@@ -368,7 +375,7 @@ def test_g_e_zener_onset_has_kane_slope():
 
 
 @pytest.mark.slow
-def test_g_e_high_bias_does_not_plateau():
+def test_g_e_high_bias_does_not_plateau(_kane_reverse_ramp):
     """G-E (literature-note gate, MANDATORY per ARCHITECTURE.md M16):
     plain local Kane/Hurkx is known to UNDERESTIMATE leakage at large
     reverse bias relative to nonlocal BTBT.  What must NOT happen is a
@@ -381,26 +388,21 @@ def test_g_e_high_bias_does_not_plateau():
     factor of 25 of the onset growth (a true plateau collapses it by
     orders of magnitude).
     """
-    targets = np.arange(0.2, 1.51, 0.1)
-    on = _tunnel_diode(btbt=True)
-    on.solve_equilibrium()
-
-    # Use arc-length continuation to trace past the fold in the I-V
-    # curve caused by the stiff BTBT source.
-    results = _ramp_with_arclength(on, 0.0, -1.5, ds0=0.05)
-
     # Filter to high-bias region (V <= -0.5) where BTBT dominates and
     # current is strictly monotone -- the arc-length path has small
-    # numerical wiggles near the fold at low bias.
-    results = [r for r in results if r[0] <= -0.5]
+    # numerical wiggles near the fold at low bias. Filtering builds a
+    # NEW list (doesn't mutate the shared fixture's own results).
+    results = [r for r in _kane_reverse_ramp if r[0] <= -0.5]
     # Sort by INCREASING reverse-bias magnitude (V ascending toward 0,
     # i.e. descending numeric V: -0.5 -> -1.5) so Js is expected to
     # GROW down the list.  (A prior version sorted V ascending
     # numerically -- most-negative-V-first -- which put the largest
     # |V|/largest J entries first and made the "strictly increasing"
     # assertion below backwards; caught when this gate was run for the
-    # first time, 2026-08-31.)
-    results.sort(key=lambda r: r[0], reverse=True)
+    # first time, 2026-08-31.) `sorted()`, not `.sort()`: this list is
+    # already a fresh copy from the filter above, but stays non-
+    # destructive on principle since the source is a shared fixture.
+    results = sorted(results, key=lambda r: r[0], reverse=True)
     Js = np.array([r[1] for r in results])
     Vs = np.array([r[0] for r in results])
 

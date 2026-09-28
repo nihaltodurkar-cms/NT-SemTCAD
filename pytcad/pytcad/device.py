@@ -55,9 +55,11 @@ which brings every residual to order unity.
 import os
 import warnings
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields, replace
 
 import numpy as np
+
+from . import _accel
 
 # M12-S2 physical constants for the WKB escape factors
 Q_E_CONST = 1.602176634e-19       # C
@@ -547,6 +549,33 @@ class Models:
                 "update inside that path.")
 
 
+# Models() fields the native pytcad._core.Device1D (Phase 1 of
+# ~/.claude/plans/eager-purring-fairy.md) actually implements. Everything
+# else must sit at its Models() default for the native path to be a
+# faithful stand-in -- see _model_flags_beyond_baseline below.
+# Phase 2 slice 1 added fd/incomplete_ion (Fermi-Dirac statistics and
+# incomplete ionization) to the native set; slice 2 added tat (M12-S2
+# trap-assisted tunneling) and its trap_et_rel parameter; slice 3 added
+# impact/btbt (M15 local impact ionization, M16 local Kane BTBT, and the
+# stiff-generation ladder + line search they drive).
+_NATIVE_DEVICE1D_MODEL_FIELDS = frozenset({
+    "doping_mobility", "srh", "auger", "bgn", "fd", "incomplete_ion",
+    "tat", "trap_et_rel", "impact", "btbt"})
+
+
+def _model_flags_beyond_baseline(models: "Models"):
+    """Names of every Models() field NOT in the native Phase-1 set that
+    is set away from its Models() default -- i.e. what the native
+    Device1D cannot yet represent about this configuration. An empty
+    result means the native path is a faithful stand-in; a nonempty one
+    means the pure-Python solver must keep running this device (Phases
+    2-4 close these one at a time, per the plan)."""
+    defaults = Models()
+    return [f.name for f in fields(models)
+            if f.name not in _NATIVE_DEVICE1D_MODEL_FIELDS
+            and getattr(models, f.name) != getattr(defaults, f.name)]
+
+
 @dataclass
 class NewtonOptions:
     max_iter: int = 100
@@ -1013,6 +1042,94 @@ class Device1D:
         self.last_btbt_nl_stable = None
         self.last_newton_err = None
 
+        # Native dispatch (Phase 1 of ~/.claude/plans/eager-purring-fairy.md):
+        # a homojunction device (single Semiconductor, no Schottky contact)
+        # whose Models() sits entirely within the native Phase-1 set
+        # (_NATIVE_DEVICE1D_MODEL_FIELDS) can be solved by pytcad._core's
+        # compiled Device1D instead of the pure-Python Newton loop below.
+        #
+        # OPT-IN, not default-on: PYTCAD_NATIVE_DEVICE1D=1 must be set.
+        # Measured 2026-09-28: making this unconditional (whenever
+        # eligible) broke test_m12_tat/test_m20_dg/test_m22_continuation/
+        # test_m31_p51_phase_b/test_m31_p51_phase_d/test_m33_interface --
+        # none of those exercise anything Phase 1 doesn't implement; they
+        # construct a BASELINE-config Device1D as a bit-identical anchor
+        # (e.g. "dg=False reduces to the plain solver", "gauge X reduces
+        # to homojunction Y bit-for-bit") and assert exact equality
+        # against the pure-Python solver's own deterministic summation
+        # order. The native path is a genuinely independent
+        # implementation (direct Eigen::SparseLU vs scipy spsolve, a
+        # separate Newton loop) that agrees physically (see
+        # tests/test_device1d_native_wrapper.py's reconstruct-and-compare
+        # gate) but NOT bit-for-bit -- exactly the golden-fragility this
+        # repo already documents (CLAUDE.md's scipy spsolve/bit-identity
+        # gotcha). Flipping this default requires auditing and updating
+        # every such anchor test first, which is Phase 1's step 3
+        # (golden-baseline + full-suite verification), not done yet.
+        # This is purely an ADDITIVE fast path even when opted in:
+        # self._native is None (the existing behavior) whenever _core
+        # isn't built, the device is a heterostructure, a Schottky
+        # contact is attached, or any other Models() flag is set away
+        # from its default -- in every such case solve_equilibrium/
+        # solve_bias/current_density fall through to the unchanged
+        # pure-Python code exactly as before this dispatch existed.
+        # Materials evaluation (mu_n0/mu_p0/tau_n/tau_p/nie above) is
+        # reused as-is; the native class receives the same per-node
+        # physical arrays the pure-Python Newton loop already computed.
+        self._native = None
+        if (_accel.HAVE_ACCEL
+                and os.environ.get("PYTCAD_NATIVE_DEVICE1D", "") == "1"
+                and isinstance(material, Semiconductor)
+                and schottky_left is None and schottky_right is None
+                and not _model_flags_beyond_baseline(self.models)):
+            native_models = _accel.core.Device1DModels()
+            native_models.srh = self.models.srh
+            native_models.auger = self.models.auger
+            native_models.fd = self.models.fd
+            native_models.incomplete_ion = self.models.incomplete_ion
+            native_models.tat = self.models.tat
+            native_models.impact = self.models.impact
+            native_models.btbt = self.models.btbt
+            # Phase 2 slice 2: TAT's psi-independent exponent numerators
+            # (materials evaluation, stays Python like everything above).
+            tat_kn, tat_kp = (self._tat_exponent_coeffs()
+                              if self.models.tat else (None, None))
+            # Phase 2 slice 1: FD/incomplete_ion need nc_s/nv_s/ln_gn/
+            # ln_gp/eg_kt/nd_arr/na_arr (already computed above, exactly
+            # like mu_n0/tau_n/nie), ded_kt (a scalar), and the FD
+            # quadrature table pytcad.fermi._table() builds once and
+            # caches at module scope -- built HERE, in Python, the same
+            # "materials evaluation stays Python" pattern Phase 1
+            # established, not reimplemented in C++. Empty arrays when
+            # neither flag is set: the native constructor accepts them
+            # unconditionally but never reads them off that path.
+            needs_fd = self.models.fd or self.models.incomplete_ion
+            empty = np.empty(0)
+            if needs_fd:
+                from . import fermi as _fermi
+                fe, fg, fgp, fq, fqp = _fermi._table()
+                ded_kt = ionized_dE_kt(self.T)
+                nc_s, nv_s = self.nc_s, self.nv_s
+                ln_gn, ln_gp, eg_kt = self.ln_gn, self.ln_gp, self.eg_kt
+                nd_arr, na_arr = self.nd_arr, self.na_arr
+            else:
+                fe = fg = fgp = fq = fqp = empty
+                ded_kt = 0.0
+                nc_s = nv_s = ln_gn = ln_gp = eg_kt = nd_arr = na_arr = empty
+            self._native = _accel.core.Device1D(
+                self.x, self.doping, self.T, self.VT, self.eps, self.ni,
+                self.mu_n0, self.mu_p0, self.tau_n, self.tau_p, self.nie,
+                self.mat.Cn_auger, self.mat.Cp_auger, native_models,
+                nc_s, nv_s, ln_gn, ln_gp, eg_kt, nd_arr, na_arr, ded_kt,
+                fe, fg, fgp, fq, fqp, tat_kn=tat_kn, tat_kp=tat_kp)
+            # Snapshot of the Models() the native object was BUILT with:
+            # callers (test_m12_tat's fixture among them) mutate
+            # dev.models after construction, which the compiled object
+            # cannot see -- _native_current() falls back to the pure-
+            # Python path (whose state __init__ fully computed above)
+            # rather than silently solving the stale configuration.
+            self._native_models = replace(self.models)
+
     # ------------------------------------------------------------------
     def _eps_tilde_edge(self):
         """Harmonic-mean scaled permittivity on edges, normalized by the
@@ -1207,6 +1324,8 @@ class Device1D:
     # ------------------------------------------------------------------
     def solve_equilibrium(self, opts: NewtonOptions = None):
         opts = opts or NewtonOptions()
+        if self._native_current() is not None:
+            return self._solve_equilibrium_native(opts)
         h, dV, C, nie = self.h, self.dV, self.C, self.nie_s
         et = self._eps_tilde_edge()
         fd = getattr(self.models, "fd", False)
@@ -1616,9 +1735,19 @@ class Device1D:
         F = np.empty(self.N)
         F[1:-1] = 0.5 * (edge_F[:-1] + edge_F[1:])
         F[0], F[-1] = edge_F[0], edge_F[-1]
+        kn, kp = self._tat_exponent_coeffs()
+        safe_F = np.maximum(F, 1.0)
+        # -kn/F == (-B_n * phi_n**1.5)/F exactly (negation is exact), so
+        # factoring the coefficients out left this bit-identical.
+        self._Pn = np.exp(-kn / safe_F)
+        self._Pp = np.exp(-kp / safe_F)
+
+    def _tat_exponent_coeffs(self):
+        """psi-independent WKB exponent numerators B_n phi_n^1.5 and
+        B_p phi_p^1.5 (SI, V/m) of _update_tat_probabilities -- shared
+        with the native Device1D, which receives them at construction."""
         et_rel = getattr(self.models, "trap_et_rel", 0.5)
         phi_n = self.Eg0_arr * (1.0 - et_rel)     # eV, electron side
-        phi_p = self.Eg_arr if False else None    # placeholder replaced below
         # hole-side barrier uses Eg(T) -- build per-node Eg(T) here
         eg_t = np.array([m.Eg(self.T) for m in self.mats])
         phi_p = eg_t * et_rel
@@ -1626,9 +1755,7 @@ class Device1D:
         m_p = np.array([m.m_p_star for m in self.mats])
         B_n = 4.0 * np.sqrt(2.0 * m_n * Q_E_CONST) / (3.0 * HBAR_CONST)
         B_p = 4.0 * np.sqrt(2.0 * m_p * Q_E_CONST) / (3.0 * HBAR_CONST)
-        safe_F = np.maximum(F, 1.0)
-        self._Pn = np.exp(-B_n * phi_n ** 1.5 / safe_F)
-        self._Pp = np.exp(-B_p * phi_p ** 1.5 / safe_F)
+        return B_n * phi_n ** 1.5, B_p * phi_p ** 1.5
 
     def _ii_compute_E_from_state(self, psi):
         """Compute node-centered electric field magnitudes from psi.
@@ -2512,7 +2639,98 @@ class Device1D:
         return F, J, Jn, Jp
 
     # ------------------------------------------------------------------
+    def _native_newton_options(self, opts: NewtonOptions):
+        """Translate the Python NewtonOptions fields the native solver
+        actually reads (max_iter/tol_update/max_dpsi/verbose) into
+        _core.Device1DNewtonOptions. linsolve/precond/block_size/
+        direct_ordering have no native counterpart -- the compiled path
+        always uses its own direct Eigen::SparseLU (see
+        core/src/solver/direct_lu.cpp), so those fields are silently
+        unused here exactly as opts.tol_residual already is on the
+        pure-Python path for this same NewtonOptions class."""
+        native_opts = _accel.core.Device1DNewtonOptions()
+        native_opts.max_iter = opts.max_iter
+        native_opts.tol_update = opts.tol_update
+        native_opts.max_dpsi = opts.max_dpsi
+        native_opts.verbose = opts.verbose
+        return native_opts
+
+    def _native_current(self):
+        """The native object, or None once self.models no longer matches
+        the Models() it was constructed with (a post-construction
+        mutation such as `dev.models.tat = True`). The fallback is
+        permanent and safe: __init__ computed every pure-Python field
+        before dispatch, and any solved state was already synced into
+        self.psi/n/p/Jn/Jp."""
+        if self._native is not None and self.models != self._native_models:
+            self._native = None
+        return self._native
+
+    def _sync_from_native(self):
+        self.psi = np.asarray(self._native.psi)
+        self.n = np.asarray(self._native.n)
+        self.p = np.asarray(self._native.p)
+        self.last_converged = self._native.last_converged
+        self.last_newton_err = self._native.last_newton_err
+        # M12-S2's frozen probabilities: tests (test_m12_tat) and the
+        # pure-Python residual read _Pn/_Pp directly after a solve.
+        if self.models.tat and len(self._native.Pn):
+            self._Pn = np.asarray(self._native.Pn)
+            self._Pp = np.asarray(self._native.Pp)
+
+    def _solve_equilibrium_native(self, opts: NewtonOptions):
+        self._native.solve_equilibrium(self._native_newton_options(opts))
+        self._sync_from_native()
+        return self
+
+    def _solve_bias_native(self, V, opts: NewtonOptions):
+        if self.psi is None:
+            self.solve_equilibrium(opts)
+        # The pure-Python path always sets these two before its Newton
+        # loop (its own opts.linsolve="auto" resolution); the native
+        # solver has no linsolve/precond/block_size choice at all (it's
+        # always a direct Eigen::SparseLU), but callers that introspect
+        # these attributes (gui/services/solver_runner.py's run record)
+        # still need them set to something honest rather than stale or
+        # missing.
+        self.last_auto_method = "direct" if opts.linsolve == "auto" else None
+        self.last_auto_reason = (
+            "native pytcad._core.Device1D always uses a direct solve "
+            "(Eigen::SparseLU); opts.linsolve/precond/block_size have no "
+            "effect on this path" if opts.linsolve == "auto" else None)
+        # The Python attributes are the warm start's source of truth:
+        # continuation.py (and any caller) may have reassigned
+        # dev.psi/n/p since the last native solve (e.g. restoring the
+        # last confirmed state after a failed step).
+        self._native.set_state(np.ascontiguousarray(self.psi, dtype=float),
+                               np.ascontiguousarray(self.n, dtype=float),
+                               np.ascontiguousarray(self.p, dtype=float))
+        self._native.solve_bias(
+            float(V[0]), float(V[1]), self._native_newton_options(opts))
+        self._sync_from_native()
+        # M15/M16: what the final residual evaluation leaves behind on the
+        # pure-Python path -- strength-scaled sources (None when the flag
+        # is off) and the ladder stage the solve ended on.
+        self._ii_strength = self._native.ii_strength
+        self._ii_gs_cache = (np.asarray(self._native.ii_gs_cache)
+                             if self.models.impact else None)
+        self._btbt_gs_cache = (np.asarray(self._native.btbt_gs_cache)
+                               if self.models.btbt else None)
+        if not self.last_converged:
+            warnings.warn(f"Newton did not converge at V={V}; "
+                          f"last update {self.last_newton_err:.2e}")
+        # self.Jn/self.Jp only exist post-solve_bias on the pure-Python
+        # path too (never set by solve_equilibrium there) -- match that
+        # exactly rather than exposing an empty array one call early.
+        self.Jn = np.asarray(self._native.Jn)
+        self.Jp = np.asarray(self._native.Jp)
+        return self
+
+    # ------------------------------------------------------------------
     def solve_bias(self, V, opts: NewtonOptions = None):
+        opts = opts or NewtonOptions()
+        if self._native_current() is not None:
+            return self._solve_bias_native(V, opts)
         # M20: DG is EQUILIBRIUM-ONLY in this milestone -- the quantum
         # potential must also enter the SG currents for a meaningful
         # biased solve, which is DG transport (out of scope; see
@@ -2530,7 +2748,6 @@ class Device1D:
             self._Pn = None
             self._Pp = None
         """Solve at applied bias V = [V_left, V_right] (volts)."""
-        opts = opts or NewtonOptions()
         # M31 P5-1 Phase D: opts.linsolve="auto" resolves ONCE, here.
         # Phase A-2 MEASURED 1D (B2) and it resolves to "direct" -- not
         # for lack of evidence but because six of seven iterative
@@ -2903,6 +3120,11 @@ class Device1D:
         In 1D steady state Jn + Jp is exactly constant; the spread across
         interfaces is a useful convergence diagnostic and is returned too.
         """
+        # No native branch: self.Jn/self.Jp are the source of truth on
+        # every path (the native solve syncs them; continuation.py's
+        # arc-length corrector writes them directly without any solve --
+        # reading the compiled object's cache here returned the LAST
+        # native solve's current for every arc-length record).
         Jt = self.Jn + self.Jp
         return float(np.mean(Jt)), float(np.std(Jt) / (np.abs(np.mean(Jt)) + 1e-30))
 
