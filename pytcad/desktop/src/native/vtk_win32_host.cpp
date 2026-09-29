@@ -64,7 +64,11 @@ void VtkWin32Host::bind(tcad::desktop::FieldScene* scene) {
     onKey->SetClientData(this);
     onKey->SetCallback([](vtkObject*, unsigned long, void* self_, void*) {
         auto* self = static_cast<VtkWin32Host*>(self_);
-        if (self->on_key) self->on_key(self->interactor_->GetKeySym() ? self->interactor_->GetKeySym() : "");
+        const std::string sym = self->interactor_->GetKeySym() ? self->interactor_->GetKeySym() : "";
+        if (self->on_key) self->on_key(sym);
+        if (self->on_key_mods)
+            self->on_key_mods(sym, self->interactor_->GetControlKey() != 0, self->interactor_->GetShiftKey() != 0,
+                              self->interactor_->GetAltKey() != 0);
     });
     interactor_->AddObserver(vtkCommand::KeyPressEvent, onKey);
 }

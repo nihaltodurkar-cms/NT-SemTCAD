@@ -118,6 +118,43 @@ target_compile_features(tcad_native_spike PRIVATE cxx_std_23)
 target_link_libraries(tcad_native_spike PRIVATE tcad_field_scene tcad_desktop_data ${TCAD_VTK_LIBS} user32 gdi32 psapi)
 vtk_module_autoinit(TARGETS tcad_native_spike MODULES ${TCAD_VTK_LIBS})
 
+# -- N1: the native platform layer and application (section 27.5) -- NO Qt ------
+# Portable core (no Win32, no VTK): the JSON-RPC session, backend/PATH configuration, settings, DPI/layout,
+# input/shortcuts. Unit-tested on any platform (tests/platform/, run by ctest here and by
+# gui/tests/test_desktop_platform_core.py with g++/clang++ off Windows).
+add_library(tcad_platform_core STATIC
+  src/platform/dpi.cpp src/platform/dpi.hpp
+  src/platform/input.cpp src/platform/input.hpp
+  src/platform/env_path.cpp src/platform/env_path.hpp
+  src/platform/settings.cpp src/platform/settings.hpp
+  src/platform/rpc_session.cpp src/platform/rpc_session.hpp)
+target_include_directories(tcad_platform_core PUBLIC src)
+target_link_libraries(tcad_platform_core PUBLIC nlohmann_json::nlohmann_json)
+target_compile_features(tcad_platform_core PUBLIC cxx_std_23)
+enable_testing()
+add_executable(tcad_platform_core_tests tests/platform/test_platform_core.cpp)
+target_link_libraries(tcad_platform_core_tests PRIVATE tcad_platform_core)
+add_test(NAME tcad_platform_core_tests COMMAND tcad_platform_core_tests)
+# Win32 side: message loop / timers / post, child process, window with input+DPI, workspace, file dialogs,
+# the backend client's transport.
+add_library(tcad_platform_win32 STATIC
+  src/platform/win32_util.cpp src/platform/win32_util.hpp
+  src/platform/app.cpp src/platform/app.hpp
+  src/platform/process.cpp src/platform/process.hpp
+  src/platform/window.cpp src/platform/window.hpp
+  src/platform/workspace.cpp src/platform/workspace.hpp
+  src/platform/file_dialog.cpp src/platform/file_dialog.hpp
+  src/platform/backend_client.cpp src/platform/backend_client.hpp)
+target_link_libraries(tcad_platform_win32 PUBLIC tcad_platform_core user32 gdi32 shell32 ole32 uuid)
+# tcad_native: one minimal native window hosting the existing FieldScene and talking to the existing backend
+add_executable(tcad_native
+  src/native/app_main.cpp
+  src/native/app_support.cpp src/native/app_support.hpp
+  src/native/vtk_win32_host.cpp src/native/vtk_win32_host.hpp
+  src/native/tcad_native.manifest)
+target_link_libraries(tcad_native PRIVATE tcad_platform_win32 tcad_field_scene tcad_desktop_data ${TCAD_VTK_LIBS} psapi)
+vtk_module_autoinit(TARGETS tcad_native MODULES ${TCAD_VTK_LIBS})
+
 if(TCAD_LEGACY_QT)
 # -- the application ----------------------------------------------------------
 set(CMAKE_AUTOMOC ON)

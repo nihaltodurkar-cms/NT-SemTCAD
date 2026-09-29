@@ -35,6 +35,8 @@ public:
 
     // key symbol as VTK names it ("f", "l", "Escape", ...)
     std::function<void(const std::string&)> on_key;
+    // The same event with the modifier state (N1: the workspace routes it as a shortcut). Both fire.
+    std::function<void(const std::string& keysym, bool ctrl, bool shift, bool alt)> on_key_mods;
 
     // SceneHost
     double devicePixelRatio() const override;

@@ -6784,3 +6784,48 @@ Slices, each gated on Windows and each leaving the legacy Qt build working until
 | N7 purge | delete the legacy Qt target, `field_view.*`, ADS, windeployqt step, QtTest; wire `check_no_qt.py` into `stage.ps1` and `verify_install.ps1`; drop Qt/ADS from the licence policy and notices | `check_no_qt.py` zero on `dist\TCAD` and on the installed tree; S3 Sandbox gate; S4 licence gate |
 Honest sizing: N2 (a text/accessibility/IME-capable UI framework) is the dominant cost and the main risk; N5's editors are the bulk of
 the ~23,000 lines. P6's parity gate (§9, §10) applies to the RESULT of N7, not to the Qt app.
+
+### 27.6 N0 result and N1: the native platform layer (2026-09-30; CODED; portable core TESTED; Win32 side NOT built or run)
+**N0 (§27.4): PASS on real Windows** (reported by the user). Commit `64be993` is the N0/P6 native-rendering baseline;
+`desktop/tools/verify_native_spike.ps1` is a permanent regression (its sha256 and the spike's own sources are pinned by
+`gui/tests/test_desktop_platform_core.py::test_n0_spike_baseline_is_preserved`).
+
+**N1 scope (user):** native Win32 platform layer -- application/message loop, Window/Workspace foundation, input and DPI,
+file dialogs, timers, process/backend JSON-RPC connection, settings/config; no Qt; the ~91 Qt files untouched;
+`TCAD_LEGACY_QT` kept; the VTK FieldScene not changed. End state: ONE minimal native window hosting the existing FieldScene
+and talking to the existing backend, with the no-Qt gate still passing.
+
+**What was built (`desktop/src/platform/`, `desktop/src/native/`):**
+| piece | files | verified how |
+|---|---|---|
+| JSON-RPC session (the Qt-free port of `BackendClient`: lazy start, handshake, FIFO one-in-flight, ASCII-escaped requests, CR strip, timeout->kill->restart, crash breaker 3 in 30 s, protocol/id errors, shutdown with scratch removal) | `rpc_session.{hpp,cpp}` behind an abstract `RpcTransport` | 18 unit tests against a scripted fake; **4 more against the REAL `backend_service`** over a POSIX pipe transport (handshake, 20+ methods, `-32601` mapping, params with non-ASCII, shutdown removes the scratch dir, a 1 ms timeout replaces the service and the queue continues); 4 mutations (drop one-in-flight, drop ASCII escaping, disable the crash breaker, drop the timeout kill) each caught |
+| backend/PATH configuration (manifest -> settings -> env; conda-prefix DLL dirs) | `env_path.{hpp,cpp}` | unit tests incl. a real temp conda-style prefix |
+| settings (JSON, atomic write, corrupt/other-version file quarantined as `.corrupt`, recent lists, window placement) | `settings.{hpp,cpp}` | unit tests |
+| DPI + workspace layout arithmetic; input events, shortcut parser/dispatcher, VTK keysym map | `dpi.*`, `input.*` | unit tests |
+| Win32: application + message loop + cross-thread `post` + timers | `app.*` | mingw **syntax check only** |
+| Win32: child process (explicit inheritable-handle list, env block, job object, reader/writer/waiter threads -> UI thread) | `process.*` | mingw syntax check only |
+| Win32: window with mouse/keyboard/char/wheel/DPI events and placement save/restore | `window.*` | mingw syntax check only |
+| Win32: workspace (content region hosting a child HWND, status strip in GDI as a placeholder for N2, shortcuts, placement) | `workspace.*` | mingw syntax check only |
+| Win32: common file dialogs (open/save/folder) | `file_dialog.*` | mingw syntax check only |
+| Win32: backend client transport (Process + timers + post) | `backend_client.*` | mingw syntax check only |
+| the application | `native/app_main.cpp` -> `tcad_native.exe` (Ctrl+O open, Ctrl+B backend check, the field-view keys, `--selftest`) | mingw syntax check against **real VTK 9.7 Windows headers** (also FieldScene, the spike, the host) |
+
+All portable code compiles clean at `-std=c++23 -Wall -Wextra` (g++ 13); all Win32 code, `app_main`, `app_support`, `vtk_win32_host`,
+`field_scene*` and the spike pass `-fsyntax-only -Wall -Wextra` under mingw-w64 against mingw's Windows headers (and VTK's). That is
+NOT MSVC, NOT a link, NOT a run.
+
+**Gate (Windows, run by the user):** `desktop/tools/verify_native_n1.ps1 -Result <2D.npz>, <3D.npz>`: build Qt-free ->
+`tcad_platform_core_tests.exe` -> stage `tcad_native.exe` + import closure (no windeployqt) -> `check_no_qt.py` (zero) ->
+`tcad_native.exe --selftest` on each result with a scrubbed PATH: layout/DPI (child window == content rect), synthesised input
+(move, click, wheel in logical px, char incl. a surrogate pair), shortcuts (real `WM_KEYDOWN`, repeat and key-up ignored, child-routed
+Ctrl+J), settings round trip, file dialogs constructible, timers, cross-thread post, **the real backend** (methods, examples.list,
+`-32601`, ping, FIFO order, handshake state), the existing FieldScene displayed (image not blank) and hover-picked in the native
+window, no Qt module loaded in the process, backend shutdown (process gone, scratch removed) and restart -> then
+`verify_native_spike.ps1 -SkipBuild` (the N0 regression). The file dialog itself needs a person; only its creation is automated.
+
+**Deliberately NOT in N1:** widgets, text rendering, Direct2D/D3D12 (N2); docking (N4); the solver run controllers and remote runs
+(the process layer they need is here); a migration of the legacy INI settings (the native layout format is new); anything that
+changes the Qt app (`TCAD_LEGACY_QT` stays ON by default). Known rough edges: the status strip is GDI text; the VTK child window owns
+keyboard focus once clicked (its keys reach the workspace through the interactor observer, as `on_key_mods`); a child HWND is composited
+apart from its parent, so UI drawn ON the view must be popup windows (N4). N1 changed `vtk_win32_host.*` additively (`on_key_mods`) and
+`CMakeLists.txt`/`build.ps1` only for the new targets; `src/views` (FieldScene) is byte-identical to the baseline (tested).
