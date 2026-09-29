@@ -41,13 +41,8 @@ bool waitFor(const std::function<bool()>& done, int ms) {
 // flattered) by a different environment than what JobRunner actually uses.
 QString normalizedDir(const QString& d) { return QDir::cleanPath(QDir::fromNativeSeparators(d)).toLower(); }
 
-QProcessEnvironment runnerEnv(const QStringList& stripFromPath) {
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    QStringList path = env.value("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
-    QStringList strip;
-    for (const QString& d : stripFromPath) strip << normalizedDir(d);
-    path.removeIf([&](const QString& d) { return strip.contains(normalizedDir(d)); });
-    env.insert("PATH", path.join(QDir::listSeparator()));
+QProcessEnvironment runnerEnv(const QString& python, const QStringList& stripFromPath) {
+    QProcessEnvironment env = pythonProcessEnvironment(python, stripFromPath);
     env.insert("PYTHONUNBUFFERED", "1");
     env.insert("PYTHONIOENCODING", "utf-8");
     return env;
@@ -105,7 +100,7 @@ nlohmann::ordered_json run_run_benchmark(const RunBenchOptions& o) {
     }
 
     std::vector<double> direct_total;
-    const QProcessEnvironment env = runnerEnv(rc.strip_from_path);
+    const QProcessEnvironment env = runnerEnv(rc.python, rc.strip_from_path);
     for (int i = 0; i < o.repeats; ++i) {
         const QDir dir(QDir(tmp.path()).absoluteFilePath(QString("direct-%1").arg(i)));
         QDir().mkpath(dir.absolutePath());

@@ -113,12 +113,7 @@ QString JobRunner::start(const JobRequest& request, QString* error) {
     }
 
     run->proc = new QProcess(this);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    QStringList path = env.value("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
-    QStringList strip;
-    for (const QString& d : config_.strip_from_path) strip << normalizedDir(d);
-    path.removeIf([&](const QString& d) { return strip.contains(normalizedDir(d)); });
-    env.insert("PATH", path.join(QDir::listSeparator()));
+    QProcessEnvironment env = pythonProcessEnvironment(config_.python, config_.strip_from_path);
     env.insert("PYTHONUNBUFFERED", "1");
     env.insert("PYTHONIOENCODING", "utf-8");
     run->proc->setProcessEnvironment(env);

@@ -311,11 +311,14 @@ def test_debye_indicator_drives_actual_refinement_on_under_resolved_diode():
         mesh.nodes[mesh.triangles[marked, 0]]
         - mesh.nodes[mesh.triangles[marked, 1]], axis=1).mean()
 
-    psi, n, p, scale, I, mesh2, history = adapt_solve_unstructured_2d(
-        Lx=6.0e-4, Ly=2.0e-4, Xj=3.0e-4, Nd_scale=1e15,
-        doping_by_region=DOPING_BY_REGION,
-        bias={"left_contact": 0.5, "right_contact": 0.0},
-        indicator_kinds=("debye",), max_passes=2, tol=1e-9, theta=0.3)
+    # max_passes caps the loop below its tol on purpose, so the
+    # loop's honest budget-limited warning is expected here.
+    with pytest.warns(UserWarning, match="stopped on the pass limit"):
+        psi, n, p, scale, I, mesh2, history = adapt_solve_unstructured_2d(
+            Lx=6.0e-4, Ly=2.0e-4, Xj=3.0e-4, Nd_scale=1e15,
+            doping_by_region=DOPING_BY_REGION,
+            bias={"left_contact": 0.5, "right_contact": 0.0},
+            indicator_kinds=("debye",), max_passes=2, tol=1e-9, theta=0.3)
     assert history[-1]["nodes"] > history[0]["nodes"], (
         "the debye indicator did not actually drive mesh refinement "
         "(node count never grew)")
@@ -324,7 +327,10 @@ def test_debye_indicator_drives_actual_refinement_on_under_resolved_diode():
         region2[idx] = name
     C2 = evaluate_doping_at_nodes(mesh2.nodes, mesh2.triangles,
                                   region2, DOPING_BY_REGION)
-    ratio_after = check_debye_adequacy_tri(mesh2, C2)
+    # two refinement passes improve, but do not reach, Debye adequacy
+    # (worst h/L_D ~11 here), so the check still warns -- by design.
+    with pytest.warns(UserWarning, match="Debye"):
+        ratio_after = check_debye_adequacy_tri(mesh2, C2)
     assert ratio_after.max() < ratio0.max(), (
         "refinement driven by the debye indicator did not reduce the "
         "worst h/L_D ratio")
@@ -439,11 +445,14 @@ def test_adaptive_refinement_improves_accuracy_vs_uniform_final_mesh():
         bias={"left_contact": 0.5, "right_contact": 0.0})
     I_reference = I_ref["left_contact"]
 
-    psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_2d(
-        Lx=6.0e-4, Ly=2.0e-4, Xj=3.0e-4, Nd_scale=1e16,
-        doping_by_region=DOPING_BY_REGION,
-        bias={"left_contact": 0.5, "right_contact": 0.0},
-        max_passes=3, tol=1e-6, theta=0.3)   # tiny tol -> run all 3 passes
+    # max_passes caps the loop below its tol on purpose, so the
+    # loop's honest budget-limited warning is expected here.
+    with pytest.warns(UserWarning, match="stopped on the pass limit"):
+        psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_2d(
+            Lx=6.0e-4, Ly=2.0e-4, Xj=3.0e-4, Nd_scale=1e16,
+            doping_by_region=DOPING_BY_REGION,
+            bias={"left_contact": 0.5, "right_contact": 0.0},
+            max_passes=3, tol=1e-6, theta=0.3)   # tiny tol -> run all 3 passes
 
     err_first = abs(history[0]["qoi"] - I_reference) / abs(I_reference)
     err_last = abs(history[-1]["qoi"] - I_reference) / abs(I_reference)

@@ -5923,3 +5923,147 @@ around it -- not a new backend feature.
   `timing`/`slow` suites, live screenshots, an adversarial probe pass),
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
+
+## 26. P5 — Packaging: detailed plan (2026-09-29, PROPOSED)
+
+User: "start P5". Nothing in this section is built yet. §9's P5 bullet
+list is the scope; this section turns it into slices and gates, from
+the tree as it stands today.
+
+### 26.1 Review findings (from the tree, before any P5 code)
+
+- **The app finds Python by an ABSOLUTE path.** `BackendClient`
+  (`desktop/src/backend/backend_client.cpp`, `resolveBackendConfig`)
+  reads `backend_python`, `backend_root` and `runtime_bin` from
+  `desktop_runtime.json`, which `build.ps1` fills with the dev machine's
+  own `tcad-dev` interpreter and source tree; the settings key
+  `backend/python` and `TCAD_BACKEND_PYTHON` override it. An installed
+  copy needs these resolved RELATIVE to `tcad_desktop.exe`.
+- **Dev builds copy no DLLs**: `tcad_desktop.cmd` puts `tcad-gui`'s
+  `Library/bin` on PATH. A package needs `windeployqt6` (present in
+  `tcad-gui`) plus VTK's and ADS's DLLs copied explicitly
+  (windeployqt handles Qt only).
+- **The backend's import closure is small.** `backend_service.server`,
+  `gui.services.{solver,process,moscap}_runner` and `pytcad` import only
+  numpy, scipy and pyamg at load (measured 2026-09-29); gmsh
+  (unstructured jobs), scikit-image and tetgen (3D process geometry)
+  are soft-imported per job. `tcad-dev` is **3.2 GB** (tests, pyvista/
+  VTK, dev tools) -- not shippable; a dedicated slim runtime env is
+  needed.
+- **MKL matters now**: since 2026-09-29 the 2D/3D direct solves use MKL
+  PARDISO, loaded at runtime from the interpreter's `mkl_rt`
+  (`linsolve.pardiso_available`). A runtime without MKL still works
+  (Eigen fallback) but loses 2-16x on heavy 2D/3D runs. Device1D is
+  C++-only and needs `pytcad/_core*.pyd` (MinGW-built, imports only
+  system DLLs -- verified with objdump).
+- **Licensing gaps §7.3 does not cover** (found in this review):
+  - **gmsh is GPL-2.0+**, and the `tetgen` package wraps **TetGen,
+    AGPL-3.0** (commercial licence available from WIAS). Shipping
+    either in a closed-source installer brings copyleft obligations.
+  - **Intel MKL** is under the Intel Simplified Software License --
+    redistributable in binary form with its notice.
+  - numpy/scipy (BSD), pyamg (MIT), scikit-image (BSD), Qt (LGPLv3,
+    dynamic), VTK (BSD), ADS (LGPL-2.1), nlohmann_json (MIT): OK with
+    notices.
+- **Tools on this machine**: `windeployqt6` (tcad-gui), `signtool`
+  (Windows SDK 10). **Not installed**: Inno Setup, WiX, conda-pack.
+  Windows 11 Pro supports **Windows Sandbox** (an optional feature;
+  enabling it needs admin) -- a disposable clean machine for the
+  install test.
+- P3-S7..S9 are marked "LANDED, uncommitted" above; P5 builds on the
+  committed tree only after those are committed (user's call).
+
+### 26.2 Target layout (installed)
+
+```
+<install dir>\
+  tcad_desktop.exe, Qt/VTK/ADS DLLs, platforms\, styles\, ...   (windeployqt + copies)
+  desktop_runtime.json          backend_python/backend_root RELATIVE to the exe
+  runtime\python.exe ...        the slim Python env (numpy, scipy, pyamg, MKL, ...)
+  backend\pytcad\ (+ _core*.pyd), backend\gui\services\, backend\backend_service\,
+  backend\workbench\, backend\examples\
+  licenses\                     THIRD_PARTY_NOTICES.txt + every package's licence text
+```
+Per-user install under `%LOCALAPPDATA%\Programs\TCAD` (no admin) by
+default; results and settings stay where they are today.
+
+### 26.3 Slices, in order
+
+**S1 — Relocatable app [S].** `resolveBackendConfig` resolves relative
+paths in `desktop_runtime.json` against the exe's directory (absolute
+paths keep working, so dev builds are unchanged). New
+`desktop/tools/stage.ps1`: build Release, run `windeployqt6`, copy
+VTK/ADS/runtime DLLs by walking `tcad_desktop.exe`'s actual imports
+(`dumpbin /dependents`, not a hand list), write a relative
+`desktop_runtime.json`. Gate: the staged folder runs with `tcad-gui`
+and `tcad-dev` REMOVED from PATH (a scrubbed-environment launcher) and
+opens a result file; a C++ unit test for the path resolution.
+
+**S2 — Slim Python runtime [M].** A `tcad-runtime` conda env spec
+(conda-forge, pinned to `tcad-dev`'s versions so the numerics match):
+python, numpy, scipy, mkl, pyamg (+ per decision 26.4-4: gmsh,
+scikit-image, tetgen). Packed with `conda-pack` into `runtime\`
+(conda-pack goes into `base` or a throwaway env, NEVER tcad-dev -- the
+compiler incident). Backend sources + `_core*.pyd` copied to
+`backend\`. Gates: an import-closure check (every module the four entry
+points import resolves inside `runtime\`), the three examples run
+through `solver_runner` from the staged folder with a scrubbed
+environment, `linsolve.pardiso_available()` is True there, and the
+staged size is measured and recorded here.
+
+**S3 — Installer [M].** A script (Inno Setup or WiX, decision 26.4-1)
+producing one `TCAD-<version>-setup.exe`: per-user install, a Start menu
+entry, a file association for the project file type, and a clean
+uninstall (removes the install dir, leaves user projects/results).
+Gate: install -> run the three examples -> uninstall, in Windows
+Sandbox, with the file list after uninstall diffed against before.
+
+**S4 — Licence bundle [S].** `stage.ps1` generates
+`licenses\THIRD_PARTY_NOTICES.txt` from what was ACTUALLY staged: each
+conda package's `info/licenses` + `info/about.json`, Qt's LGPL texts
+and the LGPL relinking statement (Qt/ADS are dynamic DLLs a user can
+replace), MKL's ISSL. Gate: a test fails if any staged DLL/package has
+no licence entry, or if a GPL/AGPL package is staged without decision
+26.4-4 allowing it.
+
+**S5 — Crash reporting [S].** Per decision 26.4-3. Default proposal:
+local only -- `SetUnhandledExceptionFilter` + `MiniDumpWriteDump` into
+`%LOCALAPPDATA%\TCAD\crashes\` plus the last 200 console lines, the
+backend's `faulthandler` enabled into the same folder, and a "the last
+session crashed -- open the folder?" prompt on next start. No network.
+Gate: a hidden `--crash-test` switch writes a dump that `cdb`/WinDbg
+opens; a backend crash leaves a faulthandler log.
+
+**S6 — Signing and exit [S].** A `signtool` step in `stage.ps1`, run
+only when a certificate is configured (decision 26.4-2); unsigned
+builds say so in the installer name. Exit: §9's P5 exit -- install on a
+clean Windows (Sandbox) -> run all examples -> uninstall cleanly --
+with the full fast suite, timing pass and slow battery green on the
+tree the package was built from.
+
+### 26.4 Decisions -- DECIDED 2026-09-29 (user's call on 1-4; 5 taken as recommended, not asked)
+
+Decided: (1) **Inno Setup**; (2) **unsigned** for now -- the signtool step stays wired and off; (3) **local-only** crash reports; (4) gmsh/tetgen as a **separate optional add-on** -- the base installer ships neither, the add-on installer adds them into `runtime\` and carries their GPL/AGPL notices; (5) **conda-pack** of the slim conda-forge runtime (recommended default; the user did not pick, so this is revisable).
+
+The options as they were put:
+
+
+1. **Installer**: Inno Setup (single script, per-user installs, free;
+   recommended) or WiX (MSI -- only needed for enterprise/GPO
+   deployment). Either needs one tool install (not into any conda env).
+2. **Code signing**: no certificate (unsigned: SmartScreen warns on
+   first run), or an OV/EV code-signing certificate you provide.
+   Nothing to buy for P5 itself; S6 skips signing without one.
+3. **Crash reporting**: local minidumps + logs only (recommended; no
+   data leaves the machine) or an upload service (Sentry/crashpad --
+   needs an account and a privacy statement).
+4. **GPL/AGPL components**: ship gmsh and tetgen (the installer then
+   carries GPL/AGPL obligations -- fine for the current academic use,
+   §12 item 7), leave them out of the package (unstructured meshing and
+   3D process geometry become "not available in this build" with a
+   clear message), or ship them as a separate optional download.
+5. **Python bundling**: conda-pack of the slim conda-forge env
+   (recommended: the same binaries -- and the same MKL -- the suite is
+   verified against) or embeddable CPython + PyPI wheels (smaller, but
+   PyPI numpy/scipy use OpenBLAS, so MKL would be an extra `mkl` wheel
+   and the numerics would differ from the tested env).

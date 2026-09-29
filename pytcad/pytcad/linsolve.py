@@ -1010,20 +1010,70 @@ def device_session(owner):
 
 def native_direct_enabled():
     """Phase 3.1 of the device port (~/.claude/plans/eager-purring-fairy.md):
-    opt-in via PYTCAD_NATIVE_LINSOLVE=1, and only where pytcad._core is
-    built. Off by default for the same reason PYTCAD_NATIVE_DEVICE1D is:
-    a different LU (Eigen SparseLU, COLAMD) matches spsolve to
-    factorization precision, not bit-for-bit, and several suites pin
-    spsolve's exact output as a golden."""
+    DEFAULT ON since 2026-09-28 wherever pytcad._core is built;
+    PYTCAD_NATIVE_LINSOLVE=0 restores scipy's spsolve everywhere. The
+    session's factorization (MKL PARDISO by default since 2026-09-29,
+    Eigen SparseLU when MKL is unavailable or PYTCAD_LINSOLVE_BACKEND=
+    eigen) matches spsolve to factorization precision, not bit-for-bit --
+    a test pinning spsolve's exact output sets the variable to "0"
+    itself. Sessions below MIN_UNKNOWNS, or whose pattern keeps changing,
+    already fall back to the caller's own solve."""
     import os
-    return (os.environ.get("PYTCAD_NATIVE_LINSOLVE", "") == "1"
+    return (os.environ.get("PYTCAD_NATIVE_LINSOLVE", "1") != "0"
             and _accel.HAVE_ACCEL)
+
+
+
+_PARDISO_STATE = {"tried": False, "ok": False}
+
+
+def pardiso_available():
+    """True when MKL PARDISO can run: pytcad._core loads the environment's
+    mkl_rt at runtime (PYTCAD_MKL_RT = explicit path; else the
+    interpreter's own Library/bin or lib directory). MKL ships with the
+    conda env as its BLAS, so no extra package is involved; without it
+    DirectSession uses Eigen's SparseLU as before.
+    PYTCAD_LINSOLVE_BACKEND=eigen forces Eigen."""
+    import glob
+    import os
+    import sys
+    if not _accel.HAVE_ACCEL or not hasattr(_accel.core, "PardisoLU"):
+        return False
+    if os.environ.get("PYTCAD_LINSOLVE_BACKEND", "pardiso").lower() == "eigen":
+        return False
+    st = _PARDISO_STATE
+    if not st["tried"]:
+        st["tried"] = True
+        paths = [os.environ["PYTCAD_MKL_RT"]] if os.environ.get("PYTCAD_MKL_RT") else []
+        for d in (os.path.join(sys.prefix, "Library", "bin"), os.path.join(sys.prefix, "lib")):
+            paths += sorted(glob.glob(os.path.join(d, "mkl_rt*.dll")), reverse=True)
+            paths += sorted(glob.glob(os.path.join(d, "libmkl_rt.so*")), reverse=True)
+        for path in paths:
+            if _accel.core.PardisoLU.load(path):
+                st["ok"], st["path"] = True, path
+                break
+    return st["ok"]
+
+
+def pardiso_threads():
+    """MKL threads per PARDISO solve: PYTCAD_PARDISO_THREADS, else 1 inside
+    a pytest-xdist worker (six workers x N threads would oversubscribe the
+    machine), else every core. Results are reproducible at any fixed
+    thread count (MKL's CNR mode, set in pardiso_lu.cpp)."""
+    import os
+    v = os.environ.get("PYTCAD_PARDISO_THREADS")
+    if v:
+        return max(1, int(v))
+    if os.environ.get("PYTEST_XDIST_WORKER"):
+        return 1
+    return max(1, os.cpu_count() or 1)
 
 
 class DirectSession:
     """A direct solver for ONE Newton solve (Device2D/Device3D solve_bias
-    and solve_equilibrium): pytcad._core.ReusableLU keeps the symbolic
-    analysis (ordering + elimination structure) while the Jacobian's
+    and solve_equilibrium): pytcad._core.PardisoLU (MKL PARDISO, the
+    default) or pytcad._core.ReusableLU (Eigen SparseLU) keeps the
+    symbolic analysis (ordering + elimination structure) while the Jacobian's
     sparsity pattern is unchanged and redoes only the numeric
     factorization per iteration. The pattern is re-checked on every call,
     so a pattern that moves (nonlocal blocks) re-analyzes and stays
@@ -1037,6 +1087,11 @@ class DirectSession:
     # 2.13x at 30,240). Below the crossover SuperLU's numeric
     # factorization is simply faster than Eigen's, so smaller systems
     # keep the caller's own call. Re-measure before quoting elsewhere.
+    # Those crossovers are EIGEN's; with PARDISO (2026-09-29) the session
+    # is 6-8x faster than Eigen per refactor at 30k-73k unknowns, so the
+    # real crossover is likely lower -- not re-measured yet, so the
+    # threshold (which also keeps small systems bit-identical to the
+    # caller's own solve) is unchanged.
     MIN_UNKNOWNS = 15000
     # A pattern that keeps moving (B10's nonlocal BTBT: 8 analyses in 14
     # solves even with the union-pattern scatter) makes every call pay a
@@ -1050,7 +1105,16 @@ class DirectSession:
         # AMDOrdering took >15 s on B3-quick's 11,640-unknown coupled
         # Jacobian that COLAMD factors in ~45 ms, and COLAMD+reuse already
         # matched scipy's best ordering (MMD_AT_PLUS_A) on M21's Poisson.
-        self._lu = _accel.core.ReusableLU(False)
+        # MKL PARDISO when available (measured 2026-09-29, per Newton
+        # refactor+solve: B3 2D 72,912 unknowns 1,456 -> 218 ms (1 thread)
+        # / 99 ms (10); B11 3D coupled 30,240 unknowns 832 -> 104 / 31 ms);
+        # Eigen SparseLU otherwise.
+        if pardiso_available():
+            self._lu = _accel.core.PardisoLU(pardiso_threads())
+            self.backend = "pardiso"
+        else:
+            self._lu = _accel.core.ReusableLU(False)
+            self.backend = "eigen"
         self._disabled = False
         self.native_solves = 0
         self.fallback_solves = 0

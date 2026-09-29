@@ -42,13 +42,12 @@ def test_instrumentation_restores_every_patch():
     """The probe swaps functions on live modules. If it ever failed to
     put them back, every subsequent solve in the process would run
     through a stale wrapper."""
-    from pytcad import linsolve, device, device2d
+    from pytcad import linsolve, device2d
     from benchmarks.instrument import instrumented
 
     before = {
         "solve_linear": linsolve.solve_linear,
         "_build_preconditioner": linsolve._build_preconditioner,
-        "device.spsolve": device.spsolve,
         "device2d.spsolve": device2d.spsolve,
     }
     with instrumented():
@@ -57,7 +56,6 @@ def test_instrumentation_restores_every_patch():
 
     assert linsolve.solve_linear is before["solve_linear"]
     assert linsolve._build_preconditioner is before["_build_preconditioner"]
-    assert device.spsolve is before["device.spsolve"]
     assert device2d.spsolve is before["device2d.spsolve"]
 
 

@@ -32,6 +32,7 @@ using tcad::desktop::BackendConfig;
 using tcad::desktop::BackendReply;
 using tcad::desktop::NpzFile;
 using tcad::desktop::ResultModel;
+using tcad::desktop::resolveManifestPath;
 using Json = nlohmann::json;
 
 namespace {
@@ -81,6 +82,19 @@ private slots:
         for (const char* v : {"TCAD_TEST_PYTHON", "TCAD_TEST_ROOT", "TCAD_TEST_DATA", "TCAD_TEST_FAKE", "TCAD_TEST_STRIP"})
             QVERIFY2(!env(v).isEmpty(), v);
         QVERIFY(QFileInfo::exists(data("mosfet_2d.npz")));
+    }
+
+    // -- installed layout: manifest paths relative to the executable (P5-S1) --
+    void manifestPathsResolveRelativeToTheApp() {
+        const QString app = QDir::cleanPath(QDir::tempPath() + "/TCAD app");
+        QCOMPARE(resolveManifestPath(app, "runtime/python.exe"),
+                 QDir::cleanPath(app + "/runtime/python.exe"));
+        QCOMPARE(resolveManifestPath(app, "backend"), QDir::cleanPath(app + "/backend"));
+        QCOMPARE(resolveManifestPath(app, "./runtime/../backend"), QDir::cleanPath(app + "/backend"));
+        // absolute (dev builds) and empty values pass through unchanged
+        const QString abs = QDir::cleanPath(QDir::tempPath() + "/elsewhere/python.exe");
+        QCOMPARE(resolveManifestPath(app, abs), abs);
+        QCOMPARE(resolveManifestPath(app, QString()), QString());
     }
 
     // -- the real service -----------------------------------------------------

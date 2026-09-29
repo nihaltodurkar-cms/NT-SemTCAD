@@ -1351,7 +1351,7 @@ class Device3D:
         self.last_auto_reason = auto_reason
 
         psi = self._bulk_psi_guess() if psi_guess is None else np.array(psi_guess, dtype=float)
-        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): symbolic-reuse LU
+        # Phase 3.1 (default on; PYTCAD_NATIVE_LINSOLVE=0 opts out): symbolic-reuse LU
         # for large DIRECT systems; None keeps the exact pre-existing call.
         session = (linsolve.DirectSession()
                    if linsolve.native_direct_enabled()
@@ -2080,7 +2080,7 @@ class Device3D:
         # the plain path keeps M11-S5's 1e-10, bit-identical
         dens_floor = _STIFF_DENSITY_FLOOR if stiff_on else 1e-10
         self._ii_strength = 1.0
-        # Phase 3.1 (opt-in PYTCAD_NATIVE_LINSOLVE=1): one symbolic-reuse
+        # Phase 3.1 (default on; PYTCAD_NATIVE_LINSOLVE=0 opts out): one symbolic-reuse
         # LU session for this whole bias solve (every stage and refresh).
         session = (linsolve.DirectSession()
                    if linsolve.native_direct_enabled()

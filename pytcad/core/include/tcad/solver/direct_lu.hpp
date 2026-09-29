@@ -33,6 +33,8 @@ std::vector<double> solve_direct_lu(std::span<const std::int64_t> rows,
                                     std::int64_t n,
                                     std::span<const double> b);
 
+/// (linsolve.DirectSession's fallback since 2026-09-29: it uses MKL PARDISO,
+/// tcad/solver/pardiso_lu.hpp, when MKL can be loaded.)
 /// Phase 3.1 of the device port: a direct solver that keeps its SYMBOLIC
 /// analysis (fill-reducing COLAMD ordering + elimination structure)
 /// across calls whose CSC sparsity pattern is unchanged -- a Newton

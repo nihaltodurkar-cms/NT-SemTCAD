@@ -1,7 +1,7 @@
 """Phase 3.1 of the device port (~/.claude/plans/eager-purring-fairy.md):
 pytcad._core.ReusableLU / linsolve.DirectSession, a direct solver that
 keeps its symbolic analysis across a Newton solve's fixed-pattern
-Jacobians, opt-in via PYTCAD_NATIVE_LINSOLVE=1 in Device2D/Device3D.
+Jacobians, default on (PYTCAD_NATIVE_LINSOLVE=0 opts out) in Device2D/Device3D.
 
 Gates: exactness of the solve against spsolve, the pattern-reuse
 bookkeeping (same / subset / superset patterns), the failure contract
@@ -93,8 +93,11 @@ def test_session_hands_back_an_unstable_pattern(monkeypatch):
     assert len(calls) == 5 - linsolve.DirectSession.MAX_ANALYSES
 
 
-def test_opt_in_is_off_by_default(monkeypatch):
+def test_default_on_with_explicit_opt_out(monkeypatch):
+    """Default ON since 2026-09-28; "0" is the only opt-out value."""
     monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    assert linsolve.native_direct_enabled()
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")
     assert not linsolve.native_direct_enabled()
     monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
     assert linsolve.native_direct_enabled()
@@ -114,7 +117,7 @@ def _mosfet():
 
 def test_device2d_bias_solve_agrees_with_default_path(monkeypatch):
     bias = {"gate": 1.0, "drain": 0.1, "source": 0.0, "body": 0.0}
-    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")   # the spsolve reference
     ref = _mosfet(); ref.solve_equilibrium(); ref.solve_bias(bias)
     assert ref.last_linsolve_session is None
 
@@ -146,7 +149,7 @@ def test_transient2d_step_solves_agree_with_default_path(monkeypatch):
                               t_end=1e-11, dt0=1e-13, dt_min=1e-16)
         return dev, res
 
-    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")   # the spsolve reference
     ref, rref = run()
     monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
     monkeypatch.setattr(linsolve.DirectSession, "MIN_UNKNOWNS", 0)
@@ -224,7 +227,7 @@ def test_unstructured_bias_solve_agrees_with_default_path(monkeypatch, dim):
                                    contacts, {"left_contact": 0.5, "right_contact": 0.0},
                                    opts=NewtonOptions(linsolve="direct"))
 
-    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")   # the spsolve reference
     psi_r, n_r, p_r, _, cur_r = run()
     monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
     monkeypatch.setattr(linsolve.DirectSession, "MIN_UNKNOWNS", 0)
@@ -246,7 +249,7 @@ def test_thermal_grid_agrees_with_default_path(monkeypatch):
     # y: isothermal sink at the bottom, adiabatic top; x: adiabatic sides
     bcs = [(ThermalBC("adiabatic"), ThermalBC("isothermal")),
            (ThermalBC("adiabatic"), ThermalBC("adiabatic"))]
-    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")   # the spsolve reference
     ref = solve_lattice_temperature_grid((y, x), H, SILICON, 300.0, bcs)
     monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")
     monkeypatch.setattr(linsolve.DirectSession, "MIN_UNKNOWNS", 0)
@@ -275,7 +278,7 @@ def test_device3d_bias_solve_agrees_with_default_path(monkeypatch):
         return d
 
     opts = NewtonOptions(linsolve="direct")
-    monkeypatch.delenv("PYTCAD_NATIVE_LINSOLVE", raising=False)
+    monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "0")   # the spsolve reference
     ref = build(); ref.solve_equilibrium(opts); ref.solve_bias({"anode": 0.4}, opts)
 
     monkeypatch.setenv("PYTCAD_NATIVE_LINSOLVE", "1")

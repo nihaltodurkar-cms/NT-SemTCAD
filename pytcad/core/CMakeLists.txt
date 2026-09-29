@@ -111,7 +111,9 @@ add_library(tcad_core OBJECT
   src/runtime/threads.cpp
   src/physics/kernels.cpp
   src/solver/direct_lu.cpp
+  src/solver/pardiso_lu.cpp
   src/device1d/device1d.cpp
+  src/device1d/inputs.cpp
   src/mesh/stencil.cpp
   src/solver/petsc_ksp.cpp
   src/process/indicators.cpp
@@ -142,6 +144,7 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
                               src/device3d/kernels.cpp src/device3d/poisson_eq.cpp
                               src/physics/kernels.cpp
                               src/device1d/device1d.cpp
+                              src/device1d/inputs.cpp
                               PROPERTIES
     COMPILE_OPTIONS "-ffp-contract=off")
 endif()

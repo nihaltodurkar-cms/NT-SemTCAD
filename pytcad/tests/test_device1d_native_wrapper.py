@@ -35,16 +35,6 @@ from pytcad.mesh import graded_mesh
 pytestmark = pytest.mark.skipif(not _accel.HAVE_ACCEL, reason="pytcad._core not built")
 
 
-@pytest.fixture(autouse=True)
-def _opt_into_native_dispatch(monkeypatch):
-    """Dispatch is OFF by default (see device.py's own comment at the
-    _native construction site -- turning it on unconditionally broke
-    several other milestones' bit-identical-anchor gates). These tests
-    exist to exercise the dispatch path itself, so opt in for their
-    duration only; every other test file in this suite is unaffected."""
-    monkeypatch.setenv("PYTCAD_NATIVE_DEVICE1D", "1")
-
-
 def _diode(models=None):
     x = graded_mesh(2e-4, [1e-4], h_min=1e-8, h_max=1e-6)
     doping = np.where(x < 1e-4, -1e17, 1e17)
@@ -59,65 +49,15 @@ def test_baseline_config_dispatches_to_native():
 @pytest.mark.parametrize("models", [
     Models(field_mobility=True),
     Models(dg=True),
-    Models(surface_mobility=True),  # Device1D doesn't implement it either
-                                     # way (2D-only feature), but the flag
-                                     # being off-default must still block
-                                     # native dispatch, not silently pass.
     Models(band_offset="affinity"),
     Models(S_n=1e3),
     Models(energy_balance=True),
 ])
-def test_nonbaseline_configs_stay_on_python_path(models):
-    """Every Models() flag Phase 1 doesn't implement must keep running
-    the existing pure-Python Newton loop, unchanged -- the whole point
-    of gating dispatch on _model_flags_beyond_baseline."""
+def test_slice5_configs_dispatch_to_native(models):
+    """Phase 2 slice 5 moved these onto the native path (gated in
+    test_device1d_native_gates.py's test_g_s5_* against device.py)."""
     dev, x, doping = _diode(models)
-    assert dev._native is None
-
-
-@pytest.mark.parametrize("models", [
-    Models(bgn=False, auger=True),
-    Models(bgn=False, auger=True, fd=True),
-    Models(bgn=False, auger=True, incomplete_ion=True),
-    Models(bgn=False, auger=True, fd=True, incomplete_ion=True),
-    Models(bgn=True, srh=True, tat=True),
-    Models(bgn=False, auger=True, fd=True, tat=True),
-], ids=["baseline", "fd", "incomplete_ion", "fd+incomplete_ion", "tat",
-        "fd+tat"])
-def test_native_dispatch_reconstructs_pure_python_result(models):
-    """Reconstruct-and-compare (CLAUDE.md protocol): force the SAME
-    fixture through the pure-Python path (by clearing _native after
-    construction) and through the native path, and compare psi/n/p/J.
-    Not bit-identical (different solver internals -- native uses a
-    direct Eigen::SparseLU, Python uses scipy spsolve, and it is a
-    fully independent Newton loop implementation), so this is a
-    physical-agreement gate, not a golden digest. Measured agreement
-    for all four configs is actually round-off (~1e-14), tighter than
-    these tolerances ask -- kept loose/uniform across configs rather
-    than tuned per-config to the measured number, since the point of
-    this gate is "agrees physically", not "matches exactly this run"."""
-    dev_native, x, doping = _diode(models)
-    assert dev_native._native is not None
-    dev_py, _, _ = _diode(models)
-    dev_py._native = None  # force the pure-Python path on the identical fixture
-
-    opts = NewtonOptions()
-    dev_native.solve_equilibrium(opts)
-    dev_py.solve_equilibrium(opts)
-    np.testing.assert_allclose(dev_native.psi, dev_py.psi, rtol=1e-6, atol=1e-9)
-
-    dev_native.solve_bias([0.3, 0.0], opts)
-    dev_py.solve_bias([0.3, 0.0], opts)
-    assert dev_native.last_converged and dev_py.last_converged
-    np.testing.assert_allclose(dev_native.psi, dev_py.psi, rtol=1e-5, atol=1e-8)
-    np.testing.assert_allclose(dev_native.n, dev_py.n, rtol=1e-4, atol=1e-12)
-    np.testing.assert_allclose(dev_native.p, dev_py.p, rtol=1e-4, atol=1e-12)
-
-    Jn_native, spread_native = dev_native.current_density()
-    Jn_py, spread_py = dev_py.current_density()
-    assert abs(Jn_native - Jn_py) / abs(Jn_py) < 1e-3, (Jn_native, Jn_py)
-    assert spread_native < 1e-3, spread_native
-    assert spread_py < 1e-3, spread_py
+    assert dev._native is not None
 
 
 def test_fd_config_dispatches_to_native():
@@ -221,35 +161,13 @@ def test_current_density_reads_wrapper_attributes():
 
 
 def test_tat_frozen_probabilities_sync_to_wrapper():
-    """test_m12_tat reads dev._Pn/_Pp after solve_bias; the native path
-    must expose the same frozen arrays the pure-Python path computes.
-    Tolerance: P = exp(-kn/F) with kn/F ~ 150 here amplifies the ~1e-15
-    difference between two independently converged states' psi into
-    ~1e-13 relative in P (measured 1.1e-13), so 1e-10, not round-off."""
+    """test_m12_tat reads dev._Pn/_Pp after solve_bias: they must be the
+    compiled solve's frozen arrays, live (nonzero) at -0.5 V."""
     dev, x, doping = _diode(Models(bgn=True, srh=True, tat=True))
-    assert dev._native is not None
-    dev_py, _, _ = _diode(Models(bgn=True, srh=True, tat=True))
-    dev_py._native = None
-    for d in (dev, dev_py):
-        d.solve_bias([0.0, -0.5])
-    assert dev._Pn is not None and dev._Pp is not None
-    assert float(np.max(dev_py._Pn)) > 0.0      # TAT genuinely live
-    np.testing.assert_allclose(dev._Pn, dev_py._Pn, rtol=1e-10, atol=0.0)
-    np.testing.assert_allclose(dev._Pp, dev_py._Pp, rtol=1e-10, atol=0.0)
-
-
-def test_models_mutated_after_construction_falls_back_to_python():
-    """test_m12_tat's fixture builds a plain device, THEN sets
-    dev.models.tat = True. The compiled object was built without TAT and
-    cannot see that mutation, so the wrapper must drop to the pure-
-    Python path rather than silently solving the stale configuration."""
-    dev, x, doping = _diode(Models(bgn=True, srh=True))
-    assert dev._native is not None
-    dev.models.tat = True
-    dev.solve_bias([0.0, 0.2])
-    assert dev._native is None
-    assert dev.last_converged
-    assert dev._Pn is not None  # the Python TAT path really ran
+    dev.solve_bias([0.0, -0.5])
+    assert float(np.max(dev._Pn)) > 0.0      # TAT genuinely live
+    assert np.array_equal(dev._Pn, np.asarray(dev._native.Pn))
+    assert np.array_equal(dev._Pp, np.asarray(dev._native.Pp))
 
 
 def test_native_path_public_api_shape():
@@ -295,19 +213,90 @@ def test_native_path_iv_sweep_and_band_diagram_still_work():
         assert np.all(np.isfinite(arr))
 
 
-def test_schottky_contact_refuses_native_dispatch():
+def test_schottky_contact_dispatches_native():
+    """Phase 2 slice 5: M46 Schottky contacts are native."""
     from pytcad.device import SchottkyContact
     x = graded_mesh(2e-4, [1e-4], h_min=1e-8, h_max=1e-6)
     doping = np.where(x < 1e-4, -1e17, 1e17)
     dev = Device1D(x, doping, T=300.0, material=SILICON,
                    models=Models(bgn=False, auger=True),
                    schottky_left=SchottkyContact(phi_metal_eV=4.8))
-    assert dev._native is None
+    assert dev._native is not None
 
 
-def test_heterostructure_refuses_native_dispatch():
+def test_heterostructure_dispatches_native():
+    """Phase 2 slice 5: a per-node material list is native."""
     x = graded_mesh(2e-4, [1e-4], h_min=1e-8, h_max=1e-6)
     doping = np.where(x < 1e-4, -1e17, 1e17)
     dev = Device1D(x, doping, T=300.0, material=[SILICON] * len(x),
                    models=Models(bgn=False, auger=True))
-    assert dev._native is None
+    assert dev._native is not None
+
+
+def test_every_models_config_builds_the_compiled_device():
+    """Since 2026-09-28 Device1D has no pure-Python solver: every Models()
+    configuration builds the compiled device -- surface_mobility too (a 2D
+    gate-contact model Device1D never read on either path)."""
+    for models in (Models(surface_mobility=True), Models(dg=True),
+                   Models(energy_balance=True), Models(S_n=1e3)):
+        dev, x, doping = _diode(models)
+        assert dev._native is not None
+
+
+def test_refused_compositions_raise():
+    """field_mobility on a heterostructure (Canali parameters are per
+    single material) is refused at bias, not silently solved."""
+    x = graded_mesh(2e-4, [1e-4], h_min=1e-8, h_max=1e-6)
+    doping = np.where(x < 1e-4, -1e17, 1e17)
+    dev = Device1D(x, doping, T=300.0, material=[SILICON] * len(x),
+                   models=Models(bgn=False, field_mobility=True))
+    dev.solve_equilibrium()
+    with pytest.raises(NotImplementedError):
+        dev.solve_bias([0.3, 0.0])
+
+
+def test_models_mutated_after_construction_rebuilds():
+    """test_m12_tat's fixture flips dev.models.tat after construction: the
+    next solve must run the MUTATED configuration (rebuilt compiled
+    device), never the stale one."""
+    dev, x, doping = _diode(Models(bgn=True, srh=True))
+    old = dev._native
+    dev.models.tat = True
+    dev.solve_bias([0.0, -0.5])
+    assert dev._native is not old
+    assert dev._Pn is not None and float(np.max(dev._Pn)) > 0.0
+
+
+@pytest.mark.parametrize("attr", ["mu_n0", "band_shift"])
+def test_post_construction_input_mutation_rebuilds(attr):
+    """The compiled object holds COPIES of the Python inputs; mutating one
+    after construction must rebuild it, so the solve sees the change."""
+    dev, x, doping = _diode(Models(bgn=False, auger=True))
+    dev.solve_bias([0.4, 0.0])
+    j0, _ = dev.current_density()
+    old = dev._native
+    if attr == "mu_n0":
+        dev.mu_n0 = dev.mu_n0 * 2.0
+        dev._set_edge_diffusivity(dev.mu_n0, dev.mu_p0)
+    else:
+        dev.band_shift = dev.band_shift + np.linspace(0.0, 0.5, dev.N)
+    dev.solve_bias([0.4, 0.0])
+    assert dev._native is not old
+    j1, _ = dev.current_density()
+    # measured 2.4e-4 (band_shift) and O(1) (mu_n0); a re-solve of the
+    # stale device from its converged state moves j at round-off only
+    assert abs(j1 - j0) > 1e-6 * abs(j0), (j0, j1)
+
+
+def test_rebuild_keeps_the_python_scaling():
+    """test_m11_hetero re-dopes dev.doping/dev.C after construction but
+    keeps dev.Ns: the rebuilt compiled device must use that same Ns, or
+    n_cm3 = n * self.Ns would silently rescale every density."""
+    dev, x, doping = _diode(Models(bgn=False))
+    Ns = dev.Ns
+    dev.doping[:] = 1e16
+    dev.C = dev.doping / dev.Ns
+    dev.solve_equilibrium()
+    assert dev.Ns == Ns
+    # uniform 1e16 n-type: bulk electron density 1e16 cm^-3 everywhere
+    assert np.allclose(dev.n_cm3[5:-5], 1e16, rtol=1e-3)

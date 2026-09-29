@@ -179,28 +179,23 @@ def test_staged_continuation_reaches_full_strength():
     dev.solve_equilibrium()
     _ramp(dev, np.arange(0.1, 1.0, 0.1))
 
-    seen = []
-    real = dev._residual_jacobian
-
-    def spy(psi, n, p, bc):
-        gs = dev._btbt_gs_cache
-        seen.append(0.0 if gs is None else float(np.abs(gs).max()))
-        return real(psi, n, p, bc)
-
-    dev._residual_jacobian = spy
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            dev.solve_bias([-1.2, 0.0], NewtonOptions())
-    finally:
-        del dev._residual_jacobian
-
-    peak = max(seen)
-    weakest = min(x for x in seen if x > 0)
-    assert peak / weakest > 15.0, (
-        f"BTBT ladder spans only {peak / weakest:.1f}x "
-        f"(weakest={weakest:.3e}, peak={peak:.3e}) -- the full-strength "
-        f"stage never ran")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        dev.solve_bias([-1.2, 0.0], NewtonOptions())
+    assert dev.last_converged
+    # The ladder ended on its full-strength rung, and the stored source
+    # is the FULL-strength one at the converged state -- the regression
+    # left a 0.5x cache behind. Re-evaluate at strength 1.0 and 0.5.
+    assert dev._ii_strength == 1.0
+    stored = dev._btbt_gs_cache.copy()
+    bc = dev._contact_values([-1.2, 0.0])
+    dev._residual_jacobian(dev.psi, dev.n, dev.p, bc)
+    np.testing.assert_allclose(dev._btbt_gs_cache, stored, rtol=1e-12, atol=0.0)
+    dev._ii_strength = 0.5
+    dev._residual_jacobian(dev.psi, dev.n, dev.p, bc)
+    dev._ii_strength = 1.0
+    np.testing.assert_allclose(2.0 * dev._btbt_gs_cache, stored, rtol=1e-12, atol=0.0)
+    assert float(np.abs(stored).max()) > 0.0
 
 
 # =========================================================== PHYSICS GATES

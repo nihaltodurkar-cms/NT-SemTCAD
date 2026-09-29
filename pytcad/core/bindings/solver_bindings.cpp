@@ -24,6 +24,7 @@
 
 #include "tcad/base/errors.hpp"
 #include "tcad/solver/direct_lu.hpp"
+#include "tcad/solver/pardiso_lu.hpp"
 #include "tcad/solver/petsc_ksp.hpp"
 
 namespace nb = nanobind;
@@ -59,6 +60,26 @@ void register_solver(nb::module_& m) {
              nb::arg("b"))
         .def_prop_ro("analyses", &tcad::solver::ReusableLU::analyses)
         .def_prop_ro("factorizations", &tcad::solver::ReusableLU::factorizations);
+
+    nb::class_<tcad::solver::PardisoLU>(m, "PardisoLU",
+        "MKL PARDISO behind ReusableLU's interface (symbolic analysis kept "
+        "while the pattern is unchanged); MKL is loaded at runtime by "
+        "PardisoLU.load(path_to_mkl_rt).")
+        .def(nb::init<int>(), nb::arg("threads") = 1)
+        .def_static("load", &tcad::solver::PardisoLU::load, nb::arg("dll_path"))
+        .def_static("available", &tcad::solver::PardisoLU::available)
+        .def("solve_csc",
+             [](tcad::solver::PardisoLU& lu, I64 indptr, I64 indices, F64 data,
+                std::int64_t n, F64 b) {
+                 std::vector<double> x = lu.solve_csc(
+                     {indptr.data(), indptr.shape(0)}, {indices.data(), indices.shape(0)},
+                     {data.data(), data.shape(0)}, n, {b.data(), b.shape(0)});
+                 return publish(std::move(x));
+             }, nb::arg("indptr"), nb::arg("indices"), nb::arg("data"), nb::arg("n"),
+             nb::arg("b"))
+        .def_prop_ro("analyses", &tcad::solver::PardisoLU::analyses)
+        .def_prop_ro("factorizations", &tcad::solver::PardisoLU::factorizations)
+        .def_prop_ro("last_residual", &tcad::solver::PardisoLU::last_residual);
 
     m.def("petsc_available", &tcad::solver::have_petsc,
           "True when this extension was compiled against PETSc. False is a "

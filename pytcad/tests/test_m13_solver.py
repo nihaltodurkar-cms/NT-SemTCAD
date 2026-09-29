@@ -403,9 +403,17 @@ TAT_FW_DIGEST = ("029c2637d792a4b48c2d05a08088fd76"
 # converged (err 1.1e-13), all fields finite, n and p > 0, forward
 # current conserved along the device to 4.3e-4 (same as the 09-25 capture).
 HETERO_FW_DIGESTS = {
-    "Windows": "50ab3e0a3c8079b0b33b21427b20e44008d5a0c4f970c7c34673536c1fdc6638",
-    "Linux": "5828f729ec2eb91358e1b84cad07ad0924b23df69e0f5f5352794eb4c53d2788",
+    "Windows": "6b4d2b54151da72eaca4b04c57f6afd3a53bc92f0ade8026e041b421ffb3b8ff",
 }
+# 2026-09-28: Device1D became C++-only (pytcad._core.Device1D; the
+# pure-Python solver was removed at the user's request), which changes
+# the floating-point summation order these digests pin -- an
+# implementation change, not a physics change. Windows re-captured on
+# this machine from the compiled solve: converged (err 5.9e-14), finite,
+# n,p > 0, current conserved to 7.5e-5 (the Python capture: 4.3e-4). The
+# previous Windows digest was 50ab3e0a... (Python solver, numpy 2.5.3 /
+# scipy 1.18.1). The Linux digest (5828f729...) was ALSO a Python-solver
+# capture and is removed (the project targets Windows only).
 # Re-captured 2026-09-04 on THIS machine's own numpy/scipy/BLAS build --
 # a prior re-capture (2026-09-03) was done in a different sandbox and its
 # digests did not reproduce here bit-for-bit (confirmed: same code, same

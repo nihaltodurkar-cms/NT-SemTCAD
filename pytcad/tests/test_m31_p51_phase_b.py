@@ -99,23 +99,22 @@ def _spy_solve_linear(monkeypatch, module):
     return calls
 
 
-def test_1d_coupled_solve_honors_block_size_and_precond(monkeypatch):
-    """Device1D.solve_bias's coupled Newton loop (device.py) threads
-    opts.block_size/opts.precond through to solve_linear."""
+def test_1d_coupled_solve_reports_its_direct_solve():
+    """Device1D solves in the compiled device with a direct LU only (an
+    iterative 1D solve was measured ~300x slower or non-convergent, and
+    the Python loop that honoured one was removed 2026-09-28). An explicit
+    iterative request still solves -- direct -- and the run record SAYS
+    so instead of claiming the requested method ran."""
     from pytcad import Device1D, Models
-    import pytcad.device as device_mod
 
     x = np.linspace(0.0, 1.0e-4, 41)
     dop = np.where(x < 0.5e-4, -1e17, 1e17)
     dev = Device1D(x, dop, T=300.0, models=Models(bgn=False, srh=True))
-
-    calls = _spy_solve_linear(monkeypatch, device_mod)
     opts = NewtonOptions(linsolve="gmres", block_size=7, precond="block_jacobi")
     dev.solve_bias([0.3, 0.0], opts)
-
-    assert calls, "solve_linear was never called -- opts.linsolve did not reach it"
-    assert any(c.get("block_size") == 7 for c in calls)
-    assert any(c.get("precond") == "block_jacobi" for c in calls)
+    assert dev.last_converged
+    assert dev.last_auto_method == "direct"
+    assert "gmres" in dev.last_auto_reason and "block_jacobi" in dev.last_auto_reason
 
 
 def test_2d_coupled_solve_honors_block_size_and_precond(monkeypatch):

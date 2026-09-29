@@ -47,6 +47,10 @@ def _captured_args(dev, module):
             dev.solve_equilibrium()
             if isinstance(dev, Device1D):
                 dev.solve_bias([-1.0, 0.0], NewtonOptions())
+                # the compiled 1D solve evaluates its paths inside C++; the
+                # Python-side evaluation of the solved paths goes through
+                # the module name this spy wraps
+                dev._btbt_nl_eval(dev.psi)
             else:
                 dev.solve_bias({"left": -1.0, "right": 0.0})
         finally:

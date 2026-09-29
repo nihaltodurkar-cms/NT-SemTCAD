@@ -142,3 +142,21 @@ def test_g6_s_n_combined_with_robin_schottky_refused():
     dev.solve_equilibrium()
     with pytest.raises(NotImplementedError):
         dev.solve_bias([0.1, 0.0])
+
+
+def test_left_robin_contact_does_not_leak_into_the_right_contact():
+    """Each contact's Robin velocity is its own: a Robin Schottky contact
+    on the LEFT must leave the ohmic RIGHT contact's density rows plain
+    Dirichlet (before 2026-09-28 the contact loop carried the left v_R
+    into the right row)."""
+    sch = SchottkyContact(phi_metal_eV=4.8, A_star=_A_STAR_N)
+    dev = _device(schottky_left=sch)
+    dev.solve_equilibrium()
+    dev.solve_bias([0.1, 0.0])
+    N = dev.N
+    # read off device.py's own assembly (the native path, if dispatched,
+    # is held equal to it by test_device1d_native_gates' reconstruct gate)
+    dev._residual_jacobian(dev.psi, dev.n, dev.p, dev._contact_values([0.1, 0.0]))
+    rows = set(dev._dirichlet_rows.tolist())
+    assert {3 * (N - 1) + 1, 3 * (N - 1) + 2} <= rows, "right contact must stay Dirichlet"
+    assert 1 not in rows, "left (Robin) electron row must not be Dirichlet"

@@ -44,16 +44,52 @@ void BackendReply::fail(int code, QString message) {
 
 // -- configuration ---------------------------------------------------------------
 
+QProcessEnvironment pythonProcessEnvironment(const QString& python,
+                                             const QStringList& strip_from_path) {
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    QStringList path = env.value("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
+    QStringList strip;
+    for (const QString& d : strip_from_path) strip << normalizedDir(d);
+    path.removeIf([&](const QString& d) { return strip.contains(normalizedDir(d)); });
+    // A conda-style prefix: python.exe at its root with Libraryin beside it.
+    const QDir prefix = QFileInfo(python).absoluteDir();
+    if (!python.isEmpty() && QFileInfo(prefix.filePath("Library/bin")).isDir()) {
+        QStringList add;
+        for (const char* sub : {".", "Library/mingw-w64/bin", "Library/usr/bin", "Library/bin",
+                                "Scripts", "bin"}) {
+            const QString d = QDir::cleanPath(prefix.filePath(sub));
+            if (QFileInfo(d).isDir()) add << QDir::toNativeSeparators(d);
+        }
+        path.removeIf([&](const QString& d) {
+            for (const QString& a : add)
+                if (normalizedDir(a) == normalizedDir(d)) return true;
+            return false;
+        });
+        path = add + path;
+    }
+    env.insert("PATH", path.join(QDir::listSeparator()));
+    return env;
+}
+
+QString resolveManifestPath(const QString& app_dir, const QString& value) {
+    if (value.isEmpty() || QDir::isAbsolutePath(value)) return value;
+    return QDir::cleanPath(QDir(app_dir).absoluteFilePath(value));
+}
+
 BackendConfig resolveBackendConfig(const QString& settings_python) {
     BackendConfig c;
     QString runtime_bin;
-    QFile manifest(QDir(QCoreApplication::applicationDirPath()).filePath("desktop_runtime.json"));
+    const QString app_dir = QCoreApplication::applicationDirPath();
+    QFile manifest(QDir(app_dir).filePath("desktop_runtime.json"));
     if (manifest.open(QIODevice::ReadOnly)) {
         try {
             const auto j = nlohmann::json::parse(manifest.readAll().toStdString());
-            if (j.contains("backend_python")) c.python = QString::fromStdString(j["backend_python"].get<std::string>());
-            if (j.contains("backend_root")) c.working_dir = QString::fromStdString(j["backend_root"].get<std::string>());
-            if (j.contains("runtime_bin")) runtime_bin = QString::fromStdString(j["runtime_bin"].get<std::string>());
+            const auto path = [&](const char* key) {
+                return resolveManifestPath(app_dir, QString::fromStdString(j[key].get<std::string>()));
+            };
+            if (j.contains("backend_python")) c.python = path("backend_python");
+            if (j.contains("backend_root")) c.working_dir = path("backend_root");
+            if (j.contains("runtime_bin")) runtime_bin = path("runtime_bin");
         } catch (const nlohmann::json::exception&) {
             // an unreadable manifest: fall through to the other sources
         }
@@ -124,12 +160,7 @@ void BackendClient::startProcess() {
         return;
     }
     process_ = new QProcess(this);
-    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-    QStringList path = env.value("PATH").split(QDir::listSeparator(), Qt::SkipEmptyParts);
-    QStringList strip;
-    for (const QString& d : config_.strip_from_path) strip << normalizedDir(d);
-    path.removeIf([&](const QString& d) { return strip.contains(normalizedDir(d)); });
-    env.insert("PATH", path.join(QDir::listSeparator()));
+    QProcessEnvironment env = pythonProcessEnvironment(config_.python, config_.strip_from_path);
     if (config_.debug)
         env.insert("TCAD_BACKEND_DEBUG", "1");
     else

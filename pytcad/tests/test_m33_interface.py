@@ -355,3 +355,18 @@ def test_s2_thermionic_refuses_impact_ionization():
         Device1D(x, np.full_like(x, 1e17), material=mats,
                  models=Models(bgn=False, band_offset="affinity",
                                thermionic=True, impact=True))
+
+
+def test_affinity_equilibrium_densities_match_their_own_psi():
+    """The equilibrium solve slaves carriers to psi + band_shift; the
+    STORED n/p must follow the same law (before 2026-09-28 they were
+    nie*exp(+-psi), dropping the shift), and so the equilibrium
+    electron quasi-Fermi level must be flat across the interface."""
+    dev = _hetero(chi_right=4.35, band_offset="affinity", equilibrium_only=True)
+    psi_c = dev.psi + dev.band_shift
+    assert np.allclose(dev.n, dev.nie_s * np.exp(psi_c), rtol=1e-14, atol=0.0)
+    assert np.allclose(dev.p, dev.nie_s * np.exp(-psi_c), rtol=1e-14, atol=0.0)
+    _Ec, _Ev, EFn, EFp = dev.band_diagram()
+    # flat to the equilibrium solve's own precision (a dropped 0.3 eV
+    # shift shows up here as a 0.3 V step)
+    assert np.ptp(EFn) < 1e-6 and np.ptp(EFp) < 1e-6, (np.ptp(EFn), np.ptp(EFp))

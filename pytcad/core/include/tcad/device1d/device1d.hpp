@@ -7,12 +7,14 @@
 // Phase 2 slice 2 adds M12-S2 trap-assisted tunneling (Models.tat);
 // slice 3 adds M15 local impact ionization (Models.impact) and M16
 // local Kane BTBT (Models.btbt) with the stiff-generation ladder; slice
-// 4 adds their M34 nonlocal variants (impact_nonlocal, btbt_nonlocal).
-// Every OTHER Models() flag (dg, S_n/S_p,
-// thermionic, heterojunction, energy_balance) is still Phase 2+ and
-// refused by the Python wrapper before construction, not by this
-// class -- see device.py's own thin-wrapper dispatch
-// (_NATIVE_DEVICE1D_MODEL_FIELDS).
+// 4 adds their M34 nonlocal variants (impact_nonlocal, btbt_nonlocal);
+// slice 5 adds the rest of Device1D: heterostructures (per-node
+// materials, eps(x), the M33-S1 affinity gauge, M33-S2 thermionic
+// interface flux), M14 S_n/S_p Robin contacts, M46 Schottky contacts
+// (Dirichlet and Robin), lagged field mobility, M44 energy balance and
+// the M20 density-gradient equilibrium solve. Refusals (unvalidated
+// model compositions) stay in the Python wrapper, which raises before
+// constructing or calling this class.
 //
 // Materials evaluation (Caughey-Thomas mobility, Slotboom BGN,
 // Scharfetter lifetime) happens ONCE, in Python, before construction --
@@ -29,6 +31,8 @@
 
 #include <array>
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <span>
 #include <tuple>
 #include <utility>
@@ -55,6 +59,57 @@ struct Models {
     // ionization (requires impact) and M34-S1 nonlocal path Kane BTBT.
     bool impact_nonlocal = false;
     bool btbt_nonlocal = false;
+    // Phase 2 slice 5: M33-S2 thermionic interface flux, lagged Canali
+    // field mobility, M44 electron energy balance, M20 density-gradient
+    // equilibrium. Heterostructures, the affinity gauge, M14 S_n/S_p and
+    // M46 Schottky contacts need no flag here: they are carried entirely
+    // by the per-node/per-side arrays in Extras below.
+    bool thermionic = false;
+    bool field_mobility = false;
+    bool energy_balance = false;
+    bool dg = false;
+};
+
+/// Phase 2 slice 5 inputs, all evaluated ONCE in Python (materials stay
+/// Python, as for every earlier slice) and fixed for the device's
+/// lifetime. Every empty vector means "the homojunction value" (et = 1,
+/// band_shift = 0, the scalar Auger coefficients), so a default Extras
+/// leaves the earlier slices' arithmetic untouched.
+struct Extras {
+    // device.py's self.Ns (0 => max(|doping|, ni), the constructor's own
+    // rule). Passed so a device rebuilt after its doping was mutated keeps
+    // the Python object's scaling (n_cm3 = n * self.Ns), as device.py does.
+    double Ns = 0.0;
+    std::vector<double> et;          // N-1: device.py's _eps_tilde_edge()
+    std::vector<double> band_shift;  // N:   device.py's band_shift
+    std::vector<double> Cn_auger, Cp_auger;  // N: per-node material values
+    // M33-S2 thermionic emission (N-1 each; only read when thermionic).
+    std::vector<double> te_edge, te_Kn, te_Kp, te_dlnNc, te_dlnNv, te_rNc, te_rNv;
+    // M46-S1 Schottky contacts: barrier-limited (n0, p0) replace local
+    // neutrality on that side (non-FD contacts only, as in device.py).
+    std::array<bool, 2> contact_override{false, false};
+    std::array<double, 2> contact_n0{0.0, 0.0}, contact_p0{0.0, 0.0};
+    // M14 S_n/S_p and M46-S2 Robin Schottky: SCALED surface velocities
+    // per side, exactly as device.py's contact loop ends up using them
+    // (0 => the plain Dirichlet density row).
+    std::array<double, 2> S_n_s{0.0, 0.0}, S_p_s{0.0, 0.0};
+    // Canali field mobility (materials.mobility_field) of self.mat.
+    double vsat_n = 0.0, beta_n = 0.0, vsat_p = 0.0, beta_p = 0.0;
+    // M44 energy balance: device.py's _ALPHA_RELAX/_KAPPA0 and
+    // hydrodynamic.effective_field_from_temperature's constants.
+    double alpha_relax = 0.0, kappa0 = 0.0, tau_w = 0.0, kB = 0.0, q_hydro = 0.0;
+    // M20 DG: relative masses per node, target gamma, dg.py's constants.
+    std::vector<double> m_n_star, m_p_star;
+    double dg_gamma = 1.0, dg_hbar = 0.0, dg_m0 = 0.0, dg_q = 0.0;
+};
+
+/// M44 lagged energy-balance inputs of one residual evaluation
+/// (device.py's theta / n_lag / Jn_lag / Qheat_lag arguments).
+struct EbLag {
+    const std::vector<double>* theta;
+    const std::vector<double>* n_lag;
+    const std::vector<double>* Jn_lag;
+    const std::vector<double>* Qheat_lag;
 };
 
 /// Physical parameters of the nonlocal models, evaluated in Python (the
@@ -140,7 +195,9 @@ public:
              std::span<const double> tat_kn = {},
              std::span<const double> tat_kp = {},
              // Phase 2 slice 4 (impact_nonlocal / btbt_nonlocal).
-             NonlocalParams nl = {});
+             NonlocalParams nl = {},
+             // Phase 2 slice 5 (hetero / contacts / mobility / EB / DG).
+             Extras ex = {});
 
     void solve_equilibrium(const NewtonOptions& opts);
     /// Returns true if converged. V = {V_left, V_right} [volts].
@@ -200,15 +257,101 @@ public:
     bool has_solution() const { return has_solution_; }
     bool last_converged() const { return last_converged_; }
     double last_newton_err() const { return last_newton_err_; }
+    /// Whether the last solve_equilibrium converged (device.py warns
+    /// "Equilibrium Poisson solve did not converge." / the DG message).
+    bool last_eq_converged() const { return last_eq_converged_; }
+    /// Edge diffusivities (scaled) the last residual evaluation used --
+    /// device.py's dn_edge/dp_edge, which field_mobility/energy_balance
+    /// overwrite every Newton iterate and leave behind after a solve.
+    const std::vector<double>& dn_edge() const { return dn_edge_; }
+    const std::vector<double>& dp_edge() const { return dp_edge_; }
+    /// M44 carrier temperature [K] (device.py's Tn; empty == None).
+    const std::vector<double>& Tn() const { return Tn_; }
+    void set_Tn(std::span<const double> Tn);
+    /// M20 DG quantum potentials [V] of the last DG equilibrium solve.
+    const std::vector<double>& dg_Lam_n() const { return Lam_n_; }
+    const std::vector<double>& dg_Lam_p() const { return Lam_p_; }
+    /// Line sink for NewtonOptions.verbose progress, emitted in
+    /// device.py's exact print formats (the GUI parses them from stdout:
+    /// gui/services/progress_channel.py). Unset => verbose prints nothing.
+    void set_logger(std::function<void(const std::string&)> log) { log_ = std::move(log); }
+
+    /// Opt-in solve counters for the M32 benchmark probe
+    /// (benchmarks/instrument.py), which cannot patch compiled code:
+    /// wall time + calls of residual/Jacobian assembly (every
+    /// residual_jacobian call, line-search trials included, as the
+    /// Python probe counts _residual_jacobian) and of the LU solves,
+    /// plus the largest solved system's DOF/NNZ (after Dirichlet
+    /// elimination, duplicates summed -- what the LU actually factors).
+    struct Stats {
+        double assembly_s = 0.0, linsolve_s = 0.0;
+        long long assembly_calls = 0, linsolve_calls = 0, dof = 0, nnz = 0;
+    };
+    void set_collect_stats(bool on) { collect_stats_ = on; stats_ = Stats{}; }
+    const Stats& stats() const { return stats_; }
 
     struct ResidualJacobian {
-        std::vector<double> F;   // length 3*N
-        Coo J;                   // 3N x 3N
+        std::vector<double> F;   // length 3*N (4*N with an energy-balance block)
+        Coo J;                   // 3N x 3N (4N x 4N)
         std::vector<double> Jn;  // per-edge scaled electron current, length N-1
         std::vector<double> Jp;
         std::vector<double> ii_gs;    // empty unless models.impact
         std::vector<double> btbt_gs;  // empty unless models.btbt
+        std::vector<std::int64_t> dirichlet;  // device.py's _dirichlet_rows
     };
+
+    /// The residual/Jacobian at an arbitrary state with EVERY frozen input
+    /// explicit -- the entry point device.py's _residual_jacobian (and
+    /// through it transient.py / continuation.py / ac.py) calls. Pn/Pp
+    /// empty unless models.tat; starts/ends are the frozen btbt_nonlocal
+    /// path spans (empty unless btbt_nonlocal); eb non-null adds the M44
+    /// 4th block. Uses the CURRENT dn_edge_/dp_edge_ (set_edge_diffusivity_scaled).
+    ResidualJacobian assemble_explicit(std::span<const double> psi,
+                                       std::span<const double> n,
+                                       std::span<const double> p, ContactBC bc0,
+                                       ContactBC bc1, std::span<const double> Pn,
+                                       std::span<const double> Pp, double strength,
+                                       std::span<const std::int64_t> starts,
+                                       std::span<const std::int64_t> ends,
+                                       const EbLag* eb) const;
+    /// Overwrite the (scaled) edge diffusivities -- device.py's
+    /// dn_edge/dp_edge attributes are the source of truth.
+    void set_edge_diffusivity_scaled(std::span<const double> dn, std::span<const double> dp);
+    /// device.py's _contact_values(V): (psi0, n0, p0) for both contacts.
+    std::array<ContactBC, 2> contact_values(double V_left, double V_right) const {
+        return {contact_value(0, V_left), contact_value(1, V_right)};
+    }
+    /// device.py's _update_tat_probabilities for psi.
+    std::pair<std::vector<double>, std::vector<double>>
+    tat_probabilities_at(std::span<const double> psi) const {
+        return tat_probabilities_for_test(psi);
+    }
+    /// device.py's _dg_residual_jacobian_eq with explicit contact BCs.
+    std::pair<std::vector<double>, Coo> dg_assemble(std::span<const double> psi,
+                                                    std::span<const double> Lam_n,
+                                                    std::span<const double> Lam_p,
+                                                    ContactBC bc0, ContactBC bc1,
+                                                    double gamma) const;
+
+    /// Test-only hook (M44 FD-Jacobian gate): the 4N residual/Jacobian
+    /// with the energy-balance block for the given lagged inputs.
+    std::tuple<std::vector<double>, std::vector<std::int64_t>,
+              std::vector<std::int64_t>, std::vector<double>>
+    residual_jacobian_eb_for_test(std::span<const double> psi,
+                                  std::span<const double> n,
+                                  std::span<const double> p, double V_left,
+                                  double V_right, std::span<const double> theta,
+                                  std::span<const double> n_lag,
+                                  std::span<const double> Jn_lag,
+                                  std::span<const double> Qheat_lag) const;
+    /// Test-only hook (M20 FD-Jacobian gate): device.py's
+    /// _dg_residual_jacobian_eq at V = 0 for the given gamma.
+    std::tuple<std::vector<double>, std::vector<std::int64_t>,
+              std::vector<std::int64_t>, std::vector<double>>
+    dg_residual_jacobian_for_test(std::span<const double> psi,
+                                  std::span<const double> Lam_n,
+                                  std::span<const double> Lam_p,
+                                  double gamma) const;
 
     /// Test-only hook (FD-Jacobian gate): (F, rows, cols, vals) for an
     /// arbitrary (psi, n, p) at the current contact bias. Not used by
@@ -249,6 +392,8 @@ private:
     /// shape rather than threading FD conditionals through the
     /// baseline loop.
     void solve_equilibrium_fd(const NewtonOptions& opts);
+    /// device.py's solve_equilibrium, Boltzmann (non-FD/ion/DG) branch.
+    void solve_equilibrium_boltzmann(const NewtonOptions& opts);
     ResidualJacobian residual_jacobian(const std::vector<double>& psi,
                                        const std::vector<double>& n,
                                        const std::vector<double>& p,
@@ -256,19 +401,42 @@ private:
                                        const std::vector<double>& Pn,
                                        const std::vector<double>& Pp,
                                        double strength,
-                                       const NlPaths& paths) const;
+                                       const NlPaths& paths,
+                                       const EbLag* eb = nullptr) const;
     /// One Newton solve at the given contact BCs (in place on psi/n/p),
     /// with the frozen TAT probabilities Pn_/Pp_ (ignored unless tat),
     /// frozen tunnel paths nl_paths_, and generation strength `strength`.
     /// `line_search` = device.py's `stiff_gen` (backtracking), `floored`
-    /// = its `floored` (density-floor update test). Returns (converged,
-    /// final err).
+    /// = its `floored` (density-floor update test). `theta`/`Jn_prev` are
+    /// the energy-balance state (null unless models.energy_balance),
+    /// carried across calls exactly like device.py's closure variables.
+    /// Not const: field_mobility/energy_balance re-set dn_edge_/dp_edge_
+    /// every iterate, as device.py's _set_edge_diffusivity does. Returns
+    /// (converged, final err).
     std::pair<bool, double> newton(const std::array<ContactBC, 2>& bc,
                                    const NewtonOptions& opts, double strength,
                                    bool line_search, bool floored,
                                    std::vector<double>& psi,
                                    std::vector<double>& n,
-                                   std::vector<double>& p) const;
+                                   std::vector<double>& p,
+                                   std::vector<double>* theta = nullptr,
+                                   std::vector<double>* Jn_prev = nullptr);
+    /// device.py's _set_edge_diffusivity from per-node mobilities.
+    void set_edge_diffusivity(const std::vector<double>& mu_n,
+                              const std::vector<double>& mu_p);
+    /// materials.mobility_field (Canali) for carrier 0 = n, 1 = p.
+    std::vector<double> mobility_field(const std::vector<double>& mu0,
+                                       const std::vector<double>& E,
+                                       int carrier) const;
+    /// M20: device.py's _solve_equilibrium_dg_coupled and its helpers.
+    void solve_equilibrium_dg(const NewtonOptions& opts);
+    std::pair<std::vector<double>, Coo> dg_residual_jacobian(
+        const std::vector<double>& psi, const std::vector<double>& Lam_n,
+        const std::vector<double>& Lam_p, const std::array<ContactBC, 2>& bc,
+        double gamma) const;
+    bool dg_newton(std::vector<double>& psi, std::vector<double>& Lam_n,
+                   std::vector<double>& Lam_p, const std::array<ContactBC, 2>& bc,
+                   double gamma, int max_iter, double tol) const;
 
     int N_;
     double T_, VT_, eps_, ni_, Ns_, LD_, J0_, R0_;
@@ -306,11 +474,29 @@ private:
     void effective_field(const std::vector<double>& psi, int carrier,
                          std::vector<double>& E, std::vector<double>* D) const;
 
+    // Phase 2 slice 5 (see Extras); et_/band_shift_/Cn_/Cp_ are always
+    // full-length (homojunction defaults filled in by the constructor).
+    Extras ex_;
+    std::function<void(const std::string&)> log_;
+    bool collect_stats_ = false;
+    mutable Stats stats_;
+    /// solve_direct_lu, timed and sized into stats_ when collecting.
+    std::vector<double> lu_solve(const Coo& J, std::int64_t M,
+                                 const std::vector<double>& rhs) const;
+    /// residual_jacobian, timed into stats_ when collecting.
+    ResidualJacobian assemble(const std::vector<double>& psi, const std::vector<double>& n,
+                              const std::vector<double>& p,
+                              const std::array<ContactBC, 2>& bc, double strength,
+                              const EbLag* eb = nullptr) const;
+    std::vector<double> et_, band_shift_, Cn_node_, Cp_node_;
+    std::vector<double> Tn_;            // empty == device.py's Tn None
+    std::vector<double> Lam_n_, Lam_p_;  // M20 DG equilibrium potentials
+
     std::vector<double> psi_, n_, p_;
     std::vector<double> Jn_scaled_, Jp_scaled_;  // last solve's per-edge currents
-    std::array<std::int64_t, 6> dirichlet_rows_{};
     bool has_solution_ = false;
     bool last_converged_ = false;
+    bool last_eq_converged_ = true;
     double last_newton_err_ = 0.0;
 };
 

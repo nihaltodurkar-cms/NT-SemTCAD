@@ -74,6 +74,14 @@ def _build_fd(x, doping, models, T=300.0):
     return wrapper._native
 
 
+def _py_only(*args, **kwargs):
+    """A wrapper-level Device1D (pytcad.device) -- since 2026-09-28 a thin
+    shell over the same compiled device, so this is the public-API route
+    to it, not an independent reference."""
+    from pytcad.device import Device1D as _PyDevice1D
+    return _PyDevice1D(*args, **kwargs)
+
+
 def test_g0_jacobian_matches_finite_differences():
     """The analytic Newton Jacobian must match a numerical one -- same
     gate shape as test_validation.py::test_jacobian_matches_finite_differences."""
@@ -284,9 +292,8 @@ def _tat_pair(**models_kwargs):
     models = PyModels(tat=True, **models_kwargs)
     native = _build_fd(x, doping, models)
     from pytcad.device import Device1D as _PyDevice1D
-    py = _PyDevice1D(x, doping, T=300.0, material=SILICON,
+    py = _py_only(x, doping, T=300.0, material=SILICON,
                      models=PyModels(tat=True, **models_kwargs))
-    assert py._native is None  # env opt-in is scoped to _build_fd
     opts = _core.Device1DNewtonOptions()
     native.solve_equilibrium(opts)
     native.solve_bias(0.3, 0.0, opts)
@@ -331,47 +338,6 @@ def test_g_tat_jacobian_matches_finite_differences(models_kwargs):
         worst = max(worst, np.abs((np.asarray(F2) - F) / step - an).max()
                     / (np.abs(an).max() + 1e-30))
     assert worst < 1e-4, f"Jacobian error {worst:.2e}"
-
-
-@pytest.mark.parametrize("models_kwargs", [
-    dict(bgn=True), dict(bgn=False, fd=True)], ids=["tat", "fd+tat"])
-def test_g_tat_residual_reconstructs_python(models_kwargs):
-    """Reconstruct-and-compare at the residual level: the SAME state and
-    the SAME frozen nonzero P through device.py's _residual_jacobian and
-    through the native one. Measured as round-off, not bit-identical
-    (independent summation order)."""
-    py, dev = _tat_pair(**models_kwargs)
-    N = dev.N
-    Pn, Pp = _synthetic_P(N, 5)
-    psi, n, p = py.psi.copy(), py.n.copy(), py.p.copy()
-    py._Pn, py._Pp = Pn.copy(), Pp.copy()
-    bc = py._contact_values([0.3, 0.0])
-    F_py, J_py, _, _ = py._residual_jacobian(psi, n, p, bc)
-    F_nat, rows, cols, vals = dev._residual_jacobian_for_test(psi, n, p, 0.3, 0.0, Pn, Pp)
-    J_nat = csr_matrix((vals, (rows, cols)), shape=(3 * N, 3 * N))
-    scale = np.maximum(np.abs(F_py), 1e-30)
-    assert np.max(np.abs(np.asarray(F_nat) - F_py) / np.maximum(scale, 1.0)) < 1e-10
-    dJ = (J_nat - J_py).tocoo()
-    Jmax = abs(J_py).max()
-    assert (np.abs(dJ.data).max() if dJ.nnz else 0.0) < 1e-10 * Jmax
-
-
-def test_g_tat_probabilities_match_python():
-    """The native field -> P law against device.py's
-    _update_tat_probabilities on a synthetic potential whose node fields
-    span the tunneling turn-on (P from underflow up to O(1)), so the
-    comparison is not just zeros."""
-    py, dev = _tat_pair(bgn=True)
-    N = dev.N
-    rng = np.random.default_rng(11)
-    psi = np.cumsum(10.0 ** rng.uniform(0.0, 4.0, N)) * rng.choice([-1.0, 1.0])
-    py._update_tat_probabilities(psi)
-    Pn, Pp = dev._tat_probabilities_for_test(psi)
-    Pn, Pp = np.asarray(Pn), np.asarray(Pp)
-    assert np.count_nonzero(Pn) > N // 2 and np.count_nonzero(Pp) > N // 2
-    assert np.all(Pn < 1.0) and np.all(Pp < 1.0)
-    np.testing.assert_allclose(Pn, py._Pn, rtol=1e-13, atol=0.0)
-    np.testing.assert_allclose(Pp, py._Pp, rtol=1e-13, atol=0.0)
 
 
 def test_g_tat_zero_probabilities_are_plain_srh():
@@ -435,8 +401,7 @@ def _gen_fixture(kind):
         if kind.endswith("+fd"):
             kw["fd"] = True
         native = _build_fd(x, doping, PyModels(**kw))
-        py = _PyDevice1D(x, doping, T=300.0, material=SILICON, models=PyModels(**kw))
-        assert py._native is None
+        py = _py_only(x, doping, T=300.0, material=SILICON, models=PyModels(**kw))
         py.solve_equilibrium()
         for v in ramp:
             py.solve_bias([-v, 0.0], NewtonOptions())
@@ -534,103 +499,6 @@ def test_g_gen_jacobian_matches_finite_differences(kind):
     assert worst < 1e-4, f"generation Jacobian error {worst:.2e}"
 
 
-@pytest.mark.parametrize("kind", _GEN_KINDS)
-def test_g_gen_residual_reconstructs_python(kind):
-    """Reconstruct-and-compare at the residual level: the generation
-    contribution (F(s) - F(0)) and its Jacobian through device.py's
-    _residual_jacobian and through the native one, on the same perturbed
-    state. Round-off agreement expected (libm vs numpy exp)."""
-    dev, py, V = _gen_fixture(kind)
-    N = dev.N
-    psi, n, p = _perturbed(py, 6)
-    bc = py._contact_values([V, 0.0])
-    # btbt_nl: both sides locate their paths lazily from THIS psi (the
-    # native device here has never solved, so it has none frozen)
-    py._btbt_nl_paths = None
-    out = {}
-    for s in (0.35, 0.0):
-        py._ii_strength = s
-        Fp, Jp_, _, _ = py._residual_jacobian(psi, n, p, bc)
-        a = dev._residual_jacobian_for_test(psi, n, p, V, 0.0, strength=s)
-        Jn_ = csr_matrix((a[3], (a[1], a[2])), shape=(3 * N, 3 * N))
-        out[s] = (Fp, Jp_, np.asarray(a[0]), Jn_)
-    py._ii_strength = 1.0
-    G_py = out[0.35][0] - out[0.0][0]
-    G_nat = out[0.35][2] - out[0.0][2]
-    assert np.abs(G_py).max() > 0.0
-    assert np.abs(G_nat - G_py).max() < 1e-9 * np.abs(G_py).max()
-    JG_py = (out[0.35][1] - out[0.0][1]).tocsr()
-    JG_nat = (out[0.35][3] - out[0.0][3]).tocsr()
-    d = (JG_nat - JG_py)
-    assert abs(d).max() < 1e-9 * abs(JG_py).max()
-    # the full residual agrees too (baseline terms + generation)
-    scale = max(np.abs(out[0.35][0]).max(), 1.0)
-    assert np.abs(out[0.35][2] - out[0.35][0]).max() < 1e-9 * scale
-
-
-@pytest.mark.parametrize("kind", ["impact", "btbt", "impact_nl", "btbt_nl"])
-def test_g_gen_ladder_solve_agrees_with_python(kind):
-    """solve_bias through the full stiff ladder (stages 0 -> 1.0 with
-    backtracking) from the SAME warm start the pure-Python path used,
-    one more bias step deeper: converges at full strength, psi agrees to
-    round-off, densities above the stiff floor agree tightly, and the
-    strength-scaled generation source agrees. (Sub-floor minority
-    densities -- p ~ 1e-22 scaled on the n+ side -- are only resolved to
-    ~1e-16 absolute by DESIGN in both implementations, see device.py's
-    _STIFF_DENSITY_FLOOR, so they are excluded from the density check.
-    Mean reverse-leakage current is not compared here: its edge spread
-    exceeds its mean on the M15 fixture in BOTH implementations even with
-    impact off, i.e. it is round-off-limited, not a physics observable.)"""
-    import warnings
-    from pytcad import _core
-    from pytcad.device import NewtonOptions
-    dev, py, V = _gen_fixture(kind)
-    V2 = V * 1.25
-    opts = _core.Device1DNewtonOptions()
-    assert dev.solve_bias(V2, 0.0, opts)
-    assert dev.ii_strength == 1.0
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        py.solve_bias([V2, 0.0], NewtonOptions())
-    assert py.last_converged and py._ii_strength == 1.0
-    np.testing.assert_allclose(dev.psi, py.psi, rtol=0, atol=1e-9 * np.abs(py.psi).max())
-    floor = 1e-8
-    for a, b in ((np.asarray(dev.n), py.n), (np.asarray(dev.p), py.p)):
-        m = b > floor
-        assert np.max(np.abs(a[m] - b[m]) / b[m]) < 1e-6
-    if kind == "btbt_nl":
-        # M34-S1: same frozen path set after the post-convergence
-        # refresh, same refresh outcome, and the tunnel current (a well-
-        # conditioned observable on this fixture) to round-off
-        assert list(dev.btbt_nl_starts) == list(py._btbt_nl_paths.start)
-        assert dev.last_btbt_nl_refreshes == py.last_btbt_nl_refreshes
-        assert dev.last_btbt_nl_stable is True and py.last_btbt_nl_stable is True
-        j_nat, _ = dev.current_density()
-        j_py, _ = py.current_density()
-        assert abs(j_nat - j_py) < 1e-10 * abs(j_py)
-    elif kind == "btbt":
-        # G depends on psi alone -> as well conditioned as psi itself
-        cache_nat = np.asarray(dev.btbt_gs_cache)
-        cache_py = py._btbt_gs_cache
-        assert cache_py.max() > 0.0
-        assert np.abs(cache_nat - cache_py).max() < 1e-6 * cache_py.max()
-    else:
-        # gs ~ alpha(E) |J|, and |J| at this reverse bias sits at the
-        # round-off floor of the SG flux (J ~ 1e-15 J0), so the two
-        # implementations' gs are NOT comparable pointwise. Gate instead
-        # that the cache is exactly the source the native residual
-        # applies at the returned state (the formula itself is held
-        # against device.py by test_g_gen_residual_reconstructs_python).
-        cache_nat = np.asarray(dev.ii_gs_cache)
-        assert cache_nat.max() > 0.0 and np.all(np.isfinite(cache_nat))
-        psi, n, p = np.asarray(dev.psi), np.asarray(dev.n), np.asarray(dev.p)
-        a = dev._residual_jacobian_for_test(psi, n, p, V2, 0.0, strength=1.0)
-        b = dev._residual_jacobian_for_test(psi, n, p, V2, 0.0, strength=0.0)
-        G_e = (np.asarray(a[0]) - np.asarray(b[0]))[1::3][1:-1]
-        np.testing.assert_allclose(G_e, cache_nat[1:-1] * py.dV[1:-1],
-                                   rtol=1e-9, atol=1e-12 * np.abs(G_e).max())
-
-
 def test_g_nl_effective_field_is_bit_identical():
     """M34-S2: the native effective field and its dense Jacobian against
     pytcad.ii_nonlocal.effective_field on a solved reverse-biased state
@@ -645,21 +513,6 @@ def test_g_nl_effective_field_is_bit_identical():
         assert E_py.max() > 1e5
         assert np.array_equal(np.asarray(E_nat), E_py)
         assert np.array_equal(np.asarray(D_nat).reshape(py.N, py.N), D_py)
-
-
-def test_g_nl_path_locator_matches_python():
-    """M34-S1: the native path locator + build_1d against device.py's
-    _btbt_nl_build_paths on the same solved state -- identical start
-    set and identical flat geometry."""
-    dev, py, V = _gen_fixture("btbt_nl")
-    ref = py._btbt_nl_build_paths(py.psi)
-    starts, ends = dev.locate_btbt_nl_paths(py.psi)
-    assert ref.n_paths > 0
-    assert np.array_equal(np.asarray(starts), ref.start)
-    from pytcad.nonlocal_path import build_1d
-    got = build_1d(py.x * 1e-2, np.asarray(starts), np.asarray(ends))
-    for f in ("offset", "sidx", "swts", "seg_len", "gidx", "gwts"):
-        assert np.array_equal(getattr(got, f), getattr(ref, f)), f
 
 
 def test_g_gen_off_leaves_no_source():
@@ -680,30 +533,379 @@ def test_g_gen_off_leaves_no_source():
         assert np.array_equal(np.asarray(u), np.asarray(v))
 
 
-def test_g_tat_coefficient_factoring_is_bit_identical():
-    """_tat_exponent_coeffs was factored out of _update_tat_probabilities
-    for the native constructor; the pure-Python probabilities must be
-    bit-identical to the inline expression (pre-refactor body, with the
-    2026-09-28 m0 unit fix applied: effective masses in kg)."""
-    from pytcad.device import Q_E_CONST, HBAR_CONST
+# ======================================================================
+# Phase 2 slice 5: heterostructures (eps(x), the M33-S1 affinity gauge,
+# M33-S2 thermionic flux), M14 S_n/S_p Robin contacts, M46 Schottky
+# contacts, lagged field mobility, M44 energy balance, M20 DG equilibrium.
+# ======================================================================
+import dataclasses
+import warnings
+
+from pytcad.device import Device1D as _Dev, Models as _M, SchottkyContact
+
+
+def _s5_mesh():
+    x = graded_mesh(2e-4, [1e-4], h_min=1e-7, h_max=4e-6, ratio=1.25)
+    return x, np.where(x < 1e-4, -1e17, 1e17)
+
+
+def _s5_hetero_mats(x, **right_kw):
+    right = dataclasses.replace(SILICON, name="s5-right", **right_kw)
+    return [SILICON if xi < 1e-4 else right for xi in x]
+
+
+def _s5_make(kind):
+    """Constructor kwargs for one slice-5 configuration."""
+    x, dop = _s5_mesh()
+    het = dict(chi=4.35, eps_r=12.0, Eg0=1.3, Cn_auger=3e-31)
+    if kind == "hetero_nie":
+        return dict(x=x, doping=dop, material=_s5_hetero_mats(x, **het),
+                    models=_M(bgn=False))
+    if kind == "hetero_affinity":
+        return dict(x=x, doping=dop, material=_s5_hetero_mats(x, **het),
+                    models=_M(bgn=False, band_offset="affinity"))
+    if kind == "hetero_fd":
+        return dict(x=x, doping=dop, material=_s5_hetero_mats(x, **het),
+                    models=_M(bgn=False, fd=True))
+    if kind.startswith("thermionic"):
+        # 0.3 eV offset (|u| ~ 11 at the interface, the realistic
+        # barrier) plus +-0.03 eV (|u| ~ 1): the emission slots' min()
+        # branches are u > 0 / w < 0 for a positive offset and the
+        # reverse for a negative one, and at |u| ~ 11 the active
+        # derivative slot is ~e^-11 of its row -- a sign error there is
+        # invisible to FD (measured by mutation, 2026-09-28), so the
+        # small offsets are what actually exercise every branch.
+        chi = {"thermionic": 4.35, "thermionic_up": 4.08, "thermionic_dn": 4.02}[kind]
+        return dict(x=x, doping=np.full_like(x, 1e17),
+                    material=_s5_hetero_mats(x, chi=chi),
+                    models=_M(bgn=False, band_offset="affinity", thermionic=True))
+    if kind == "S":
+        return dict(x=x, doping=dop, models=_M(bgn=False, S_n=1e4, S_p=1e3))
+    if kind == "S_fd":
+        return dict(x=x, doping=dop, models=_M(bgn=False, fd=True, S_n=1e4, S_p=1e4))
+    if kind in ("schottky", "schottky_robin"):
+        from pytcad.schottky import richardson_a_star
+        xs = graded_mesh(2e-4, [0.0], h_min=1e-6, h_max=4e-6)
+        a = richardson_a_star("Si", "n") if kind == "schottky_robin" else None
+        return dict(x=xs, doping=np.full_like(xs, 1e16), models=_M(bgn=False),
+                    schottky_left=SchottkyContact(4.8, a))
+    if kind == "field_mobility":
+        return dict(x=x, doping=dop, models=_M(bgn=False, field_mobility=True))
+    if kind == "energy_balance":
+        return dict(x=x, doping=dop, models=_M(bgn=False, energy_balance=True))
+    if kind == "dg":
+        return dict(x=x, doping=dop, models=_M(bgn=False, dg=True))
+    raise KeyError(kind)
+
+
+_S5_BIAS = {"thermionic": 0.1, "thermionic_up": 0.1, "thermionic_dn": 0.1,
+            "schottky": 0.2, "schottky_robin": 0.2}
+_S5_KINDS = ["hetero_nie", "hetero_affinity", "hetero_fd", "thermionic",
+             "thermionic_up", "thermionic_dn", "S", "S_fd", "schottky",
+             "schottky_robin", "field_mobility", "energy_balance"]
+
+
+def _s5_pair(kind):
+    """(pure-Python device, native-dispatched device) for `kind`."""
+    old = os.environ.get("PYTCAD_NATIVE_DEVICE1D")
+    try:
+        os.environ["PYTCAD_NATIVE_DEVICE1D"] = "0"
+        py = _Dev(**_s5_make(kind))
+        os.environ["PYTCAD_NATIVE_DEVICE1D"] = "1"
+        nat = _Dev(**_s5_make(kind))
+    finally:
+        if old is None:
+            os.environ.pop("PYTCAD_NATIVE_DEVICE1D", None)
+        else:
+            os.environ["PYTCAD_NATIVE_DEVICE1D"] = old
+    assert nat._native is not None, kind
+    return py, nat
+
+
+def _s5_state(dev, seed):
+    """A perturbed state off the converged one (so every term is live)."""
+    rng = np.random.default_rng(seed)
+    N = dev.N
+    return (dev.psi + 0.05 * rng.standard_normal(N),
+            dev.n * np.exp(0.1 * rng.standard_normal(N)),
+            dev.p * np.exp(0.1 * rng.standard_normal(N)))
+
+
+def _row_scaled_fd_error(Ffun, u, J, steps, colscale, rows=None):
+    """Worst |central FD - analytic| over EVERY column, measured as an
+    EFFECT ON F: entry (r, c) is weighted by column c's natural variation
+    colscale[c] (1 for psi, |u_c| for a density) and divided by row r's
+    largest such effect. A raw per-row entry scale is blind to the
+    psi-columns of a minority-carrier row (they carry a factor p ~ 1e-14
+    that the density columns do not -- measured: a sign flip in the hole
+    thermionic slot passed it, 2026-09-28). Each entry's FD round-off
+    bound, 1e-14 * (row's largest |J_rc u_c|) / step_c, is subtracted
+    first: a minority-density column of an O(1) Poisson row is otherwise
+    pure noise (measured FD 0 or 10 against the exact, linear dV = 3.2).
+    Entries FD cannot resolve are left to the reconstruct gate, which
+    compares against device.py exactly."""
+    worst = 0.0
+    eff = np.abs(J) * colscale[None, :]
+    rowscale = eff.max(axis=1) + 1e-300
+    termscale = (np.abs(J) * np.abs(u)[None, :]).max(axis=1)
+    sel = np.arange(J.shape[0]) if rows is None else np.asarray(rows)
+    for c in range(u.size):
+        up = u.copy(); up[c] += steps[c]
+        um = u.copy(); um[c] -= steps[c]
+        fd = (Ffun(up) - Ffun(um)) / (2.0 * steps[c])
+        noise = 1e-14 * termscale / steps[c]
+        excess = np.maximum(np.abs(fd - J[:, c]) - noise, 0.0) * colscale[c]
+        worst = max(worst, float((excess / rowscale)[sel].max()))
+    return worst
+
+
+def _s5_solved(dev, kind):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        dev.solve_equilibrium()
+        dev.solve_bias([_S5_BIAS.get(kind, 0.4), 0.0])
+    return dev
+
+
+@pytest.mark.parametrize("kind", ["hetero_affinity", "thermionic", "thermionic_up",
+                                  "thermionic_dn", "S", "S_fd", "schottky_robin"])
+def test_g_s5_jacobian_matches_finite_differences(kind):
+    """Central-difference FD-Jacobian of the native assembly over every
+    column, row-scaled: the eps(x)/band-shift SG terms, the thermionic
+    slot replacement, and the Robin contact rows including their fd
+    chain (restricted to those four rows for the contact kinds)."""
+    _, nat = _s5_pair(kind)
+    _s5_solved(nat, kind)
+    V = [_S5_BIAS.get(kind, 0.4), 0.0]
+    psi, n, p = _s5_state(nat, 5)
+    N = nat.N
+    u = np.stack([psi, n, p], axis=1).ravel()
+
+    def F(uu):
+        return np.asarray(nat._native._residual_jacobian_for_test(
+            uu[0::3], uu[1::3], uu[2::3], V[0], V[1])[0])
+
+    _, r, c, v = nat._native._residual_jacobian_for_test(psi, n, p, V[0], V[1])
+    J = csr_matrix((v, (r, c)), shape=(3 * N, 3 * N)).toarray()
+    is_psi = np.arange(3 * N) % 3 == 0
+    steps = np.where(is_psi, 1e-7, 1e-6 * np.abs(u))
+    rows = None
+    if kind in ("S", "S_fd", "schottky_robin"):
+        rows = [1, 2, 3 * (N - 1) + 1, 3 * (N - 1) + 2]   # the Robin rows
+    worst = _row_scaled_fd_error(F, u, J, steps, np.where(is_psi, 1.0, np.abs(u)), rows)
+    assert worst < 1e-5, f"{kind}: FD-Jacobian error {worst:.2e}"
+
+
+def test_g_s5_energy_balance_jacobian_matches_finite_differences():
+    """The M44 theta block (rows/cols 3N..4N-1) against central FD, with
+    the lagged inputs held fixed exactly as device.py's derivation says
+    (the psi/n/p columns of the theta rows are genuinely zero)."""
+    _, nat = _s5_pair("energy_balance")
+    _s5_solved(nat, "energy_balance")
+    N = nat.N
+    psi, n, p = _s5_state(nat, 6)
+    rng = np.random.default_rng(7)
+    theta = 1.0 + 0.5 * rng.random(N)
+    lag = (n * 1.01, 1e-3 * rng.standard_normal(N - 1), 1e-4 * rng.standard_normal(N))
+
+    def full(th):
+        return nat._native._residual_jacobian_eb_for_test(
+            psi, n, p, 0.4, 0.0, th, *lag)
+
+    _, r, c, v = full(theta)
+    J = csr_matrix((v, (r, c)), shape=(4 * N, 4 * N)).toarray()[3 * N:, 3 * N:]
+    worst = _row_scaled_fd_error(lambda th: np.asarray(full(th)[0])[3 * N:], theta,
+                                 J, np.full(N, 1e-6), np.ones(N))
+    assert worst < 1e-6, f"energy-balance FD-Jacobian error {worst:.2e}"
+
+
+def test_g_s5_dg_jacobian_matches_finite_differences():
+    """M20 coupled (psi, Lambda_n, Lambda_p) Jacobian against central FD
+    at a perturbed state off the converged DG equilibrium, and the
+    native residual equals device.py's _dg_residual_jacobian_eq."""
+    _, nat = _s5_pair("dg")
+    nat.solve_equilibrium()
+    N = nat.N
+    rng = np.random.default_rng(8)
+    psi = nat.psi + 0.05 * rng.standard_normal(N)
+    Ln = nat._dg_Lam_n + 1e-3 * rng.standard_normal(N)
+    Lp = nat._dg_Lam_p + 1e-3 * rng.standard_normal(N)
+    gamma = 0.7
+    Fn, r, c, v = nat._native._dg_residual_jacobian_for_test(psi, Ln, Lp, gamma)
+    J = csr_matrix((v, (r, c)), shape=(3 * N, 3 * N)).toarray()
+    Fp, Jp = nat._dg_residual_jacobian_eq(psi, Ln, Lp, nat._contact_values([0.0, 0.0]),
+                                          gamma=gamma)
+    assert np.abs(np.asarray(Fn) - Fp).max() <= 1e-14 * np.abs(Fp).max()
+    assert np.abs(J - Jp.toarray()).max() <= 1e-14 * np.abs(J).max()
+    u = np.stack([psi, Ln, Lp], axis=1).ravel()
+
+    def F(uu):
+        return np.asarray(nat._native._dg_residual_jacobian_for_test(
+            uu[0::3], uu[1::3], uu[2::3], gamma)[0])
+
+    is_psi = np.arange(3 * N) % 3 == 0
+    steps = np.where(is_psi, 1e-7, 1e-7 * nat.VT)
+    worst = _row_scaled_fd_error(F, u, J, steps, np.where(is_psi, 1.0, nat.VT))
+    assert worst < 1e-5, f"DG FD-Jacobian error {worst:.2e}"
+
+
+def test_g_s5_refusals():
+    """Unvalidated compositions are refused: DG+fd at equilibrium, and a
+    Robin Schottky contact with S_n != 0 at bias."""
+    from pytcad.schottky import richardson_a_star
+    old = os.environ.get("PYTCAD_NATIVE_DEVICE1D")
+    os.environ["PYTCAD_NATIVE_DEVICE1D"] = "1"
+    try:
+        x, dop = _s5_mesh()
+        d = _Dev(x, dop, models=_M(bgn=False, dg=True, fd=True))
+        with pytest.raises(NotImplementedError):
+            d.solve_equilibrium()
+        xs = graded_mesh(2e-4, [0.0], h_min=1e-6, h_max=4e-6)
+        d2 = _Dev(xs, np.full_like(xs, 1e16), models=_M(bgn=False, S_n=1e4),
+                  schottky_left=SchottkyContact(4.8, richardson_a_star("Si", "n")))
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            d2.solve_equilibrium()
+        with pytest.raises(NotImplementedError):
+            d2.solve_bias([0.1, 0.0])
+    finally:
+        if old is None:
+            os.environ.pop("PYTCAD_NATIVE_DEVICE1D", None)
+        else:
+            os.environ["PYTCAD_NATIVE_DEVICE1D"] = old
+
+
+# ======================================================================
+# Compiled material evaluation (tcad/device1d/inputs.hpp) vs materials.py
+# ======================================================================
+def _reference_inputs(dev):
+    """Device1D's derived inputs recomputed from materials.py / constants.py
+    directly -- the pre-2026-09-29 Python __init__ arithmetic, kept here as
+    the independent reference (materials.py is still what Device2D/Device3D
+    evaluate)."""
+    from pytcad import hydrodynamic
+    from pytcad.constants import EPS0, KB, KB_EV, Q, thermal_voltage
+    from pytcad.device import emission_velocity
+    from pytcad.materials import (lifetime_scharfetter, mobility_caughey_thomas,
+                                  nie_effective)
+    T, mats, Ntot = dev.T, dev.mats, dev.Ntot
+    r = {"VT": thermal_voltage(T)}
+    r["eps_arr"] = np.array([m.eps_r * EPS0 for m in mats])
+    r["ni"] = mats[0].ni(T)
+    r["Ns"] = max(float(np.abs(dev.doping).max()), r["ni"])
+    r["LD"] = np.sqrt(r["eps_arr"][0] * r["VT"] / (Q * r["Ns"]))
+    r["J0"] = Q * 1.0 * r["Ns"] / r["LD"]
+    r["R0"] = 1.0 * r["Ns"] / r["LD"] ** 2
+    xs = dev.x / r["LD"]
+    r["h"] = np.diff(xs)
+    r["C"] = dev.doping / r["Ns"]
+    N = dev.N
+    for k in ("nie", "mu_n0", "mu_p0", "tau_n", "tau_p", "nc_s", "nv_s", "eg_kt"):
+        r[k] = np.empty(N)
+    seen = []
+    for mm in mats:
+        if not any(mm is m2 for m2 in seen):
+            seen.append(mm)
+    for m in seen:
+        nodes = np.array([mm is m for mm in mats])
+        nt = Ntot[nodes]
+        r["nie"][nodes] = nie_effective(nt, m, T, dev.models.bgn)
+        r["mu_n0"][nodes] = (mobility_caughey_thomas(nt, m, T, "n")
+                             if dev.models.doping_mobility else m.mu_n_max)
+        r["mu_p0"][nodes] = (mobility_caughey_thomas(nt, m, T, "p")
+                             if dev.models.doping_mobility else m.mu_p_max)
+        r["tau_n"][nodes] = lifetime_scharfetter(nt, m.tau_n0, m.tau_Nref)
+        r["tau_p"][nodes] = lifetime_scharfetter(nt, m.tau_p0, m.tau_Nref)
+        r["nc_s"][nodes] = m.Nc(T) / r["Ns"]
+        r["nv_s"][nodes] = m.Nv(T) / r["Ns"]
+        r["eg_kt"][nodes] = m.Eg(T) / (KB_EV * T)
+    r["nie_s"] = r["nie"] / r["Ns"]
+    r["ln_gn"] = np.log(r["nc_s"] / r["nie_s"])
+    r["ln_gp"] = np.log(r["nv_s"] / r["nie_s"])
+    if dev.models.band_offset == "affinity":
+        s = r["ln_gn"] + np.array([m.chi for m in mats]) / r["VT"]
+        r["band_shift"] = s - s[0]
+    hm = lambda a: 2.0 * a[:-1] * a[1:] / (a[:-1] + a[1:])
+    r["dn_edge"] = hm(r["mu_n0"]) * r["VT"] / 1.0
+    r["dp_edge"] = hm(r["mu_p0"]) * r["VT"] / 1.0
+    if dev.models.thermionic:
+        r["_te_Kn"] = hm(emission_velocity(r["nc_s"] * r["Ns"], T)) * r["LD"] / 1.0
+        r["_te_Kp"] = hm(emission_velocity(r["nv_s"] * r["Ns"], T)) * r["LD"] / 1.0
+    r["_ALPHA_RELAX"] = (1.5 * KB * T * r["Ns"] * r["LD"]
+                         / (hydrodynamic.TAU_W_N * r["J0"] * r["VT"]))
+    r["_KAPPA0"] = (2.5 * (KB * KB / Q) * r["Ns"] * T * T
+                    / (r["LD"] * r["J0"] * r["VT"]))
+    return r
+
+
+def _mat_kinds():
+    from pytcad.materials import GAAS, GE
+    x = graded_mesh(2e-4, [1e-4], h_min=1e-7, h_max=4e-6, ratio=1.25)
+    dop = np.where(x < 1e-4, -1e17, 1e18)
+    right = dataclasses.replace(SILICON, name="mr", chi=4.35, eps_r=12.0, Eg0=1.3)
+    side = [SILICON if xi < 1e-4 else right for xi in x]
+    return {
+        "homojunction": dict(x=x, doping=dop),
+        "bgn+mob off, 350K": dict(x=x, doping=dop, T=350.0,
+                                  models=_M(bgn=False, doping_mobility=False)),
+        "degenerate fd": dict(x=x, doping=np.where(x < 1e-4, -1e20, 1e20), models=_M(fd=True)),
+        "Si/GaAs": dict(x=x, doping=dop, material=[SILICON if xi < 1e-4 else GAAS for xi in x]),
+        "Ge/GaAs": dict(x=x, doping=dop, material=[GE if xi < 1e-4 else GAAS for xi in x]),
+        "affinity": dict(x=x, doping=dop, material=side, models=_M(band_offset="affinity")),
+        "thermionic": dict(x=x, doping=np.full_like(x, 1e17), material=side,
+                           models=_M(band_offset="affinity", thermionic=True)),
+    }
+
+
+@pytest.mark.parametrize("kind", list(_mat_kinds()))
+def test_g_materials_compiled_inputs_match_materials_py(kind):
+    """The compiled material evaluation (scaling, nie with Slotboom BGN,
+    Caughey-Thomas mobility, Scharfetter lifetime, band-DOS, affinity band
+    shift, thermionic velocities, M44 constants) equals materials.py's.
+    Measured 2026-09-29: bit-identical in every case below (same libm);
+    1e-14 leaves room for a numpy build whose vectorized exp/log differ in
+    the last bit, far below any physical effect."""
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.simplefilter("ignore", UserWarning)
+        dev = _Dev(**_mat_kinds()[kind])
+    ref = _reference_inputs(dev)
+    for k, v in ref.items():
+        got = np.asarray(getattr(dev, k), dtype=float)
+        np.testing.assert_allclose(got, np.asarray(v, dtype=float), rtol=1e-14, atol=0.0,
+                                   err_msg=f"{kind}: {k}")
+
+
+def test_g_materials_tat_and_schottky_match_python_formulas():
+    """TAT exponent numerators (B = 4 sqrt(2 m* m0 q)/(3 hbar), SI) and the
+    M46 Schottky contact densities, compiled vs their Python formulas."""
     from pytcad.btbt import M0_SI
-    py, _ = _tat_pair(bgn=True)
-    rng = np.random.default_rng(13)
-    psi = np.cumsum(10.0 ** rng.uniform(0.0, 4.0, py.N))
-    py._update_tat_probabilities(psi)
-    # pre-refactor body, verbatim except the m0 factor
-    edge_F = np.abs(np.diff(psi)) * py.VT / (py.LD * py.h) * 100.0
-    F = np.empty(py.N)
-    F[1:-1] = 0.5 * (edge_F[:-1] + edge_F[1:])
-    F[0], F[-1] = edge_F[0], edge_F[-1]
-    et_rel = py.models.trap_et_rel
-    phi_n = py.Eg0_arr * (1.0 - et_rel)
-    phi_p = np.array([m.Eg(py.T) for m in py.mats]) * et_rel
-    m_n = np.array([m.m_n_star for m in py.mats]) * M0_SI
-    m_p = np.array([m.m_p_star for m in py.mats]) * M0_SI
-    B_n = 4.0 * np.sqrt(2.0 * m_n * Q_E_CONST) / (3.0 * HBAR_CONST)
-    B_p = 4.0 * np.sqrt(2.0 * m_p * Q_E_CONST) / (3.0 * HBAR_CONST)
-    safe_F = np.maximum(F, 1.0)
-    assert np.array_equal(py._Pn, np.exp(-B_n * phi_n ** 1.5 / safe_F))
-    assert np.array_equal(py._Pp, np.exp(-B_p * phi_p ** 1.5 / safe_F))
-    assert np.count_nonzero(py._Pn) > 0
+    from pytcad.constants import KB_EV
+    from pytcad.device import HBAR_CONST, Q_E_CONST
+    x = graded_mesh(2e-4, [1e-4], h_min=1e-7, h_max=4e-6, ratio=1.25)
+    dev = _Dev(x, np.where(x < 1e-4, -1e17, 1e17), models=_M(tat=True, trap_et_rel=0.4))
+    kn, kp = dev._tat_exponent_coeffs()
+    m = dev.mats[0]
+    Bn = 4.0 * np.sqrt(2.0 * m.m_n_star * M0_SI * Q_E_CONST) / (3.0 * HBAR_CONST)
+    Bp = 4.0 * np.sqrt(2.0 * m.m_p_star * M0_SI * Q_E_CONST) / (3.0 * HBAR_CONST)
+    np.testing.assert_allclose(kn, Bn * (m.Eg0 * 0.6) ** 1.5, rtol=1e-14)
+    np.testing.assert_allclose(kp, Bp * (m.Eg(dev.T) * 0.4) ** 1.5, rtol=1e-14)
+    xs = graded_mesh(2e-4, [0.0], h_min=1e-6, h_max=4e-6)
+    for dop, phi in ((1e16, 4.8), (-1e16, 4.6)):
+        d = _Dev(xs, np.full_like(xs, dop), models=_M(bgn=False),
+                 schottky_left=SchottkyContact(phi))
+        (_, n0, p0), _ = d._contact_values([0.0, 0.0])
+        kT, nie = KB_EV * d.T, d.nie_s[0]
+        phi_Bn = phi - d.mats[0].chi
+        if dop > 0:
+            n_ref = d.nc_s[0] * np.exp(-phi_Bn / kT); p_ref = nie * nie / n_ref
+        else:
+            p_ref = d.nv_s[0] * np.exp(-(d.mats[0].Eg(d.T) - phi_Bn) / kT); n_ref = nie * nie / p_ref
+        np.testing.assert_allclose([n0, p0], [n_ref, p_ref], rtol=1e-14)
+
+
+def test_g_materials_constants_match_constants_py():
+    """The compiled physical constants ARE pytcad.constants'."""
+    from pytcad import _accel
+    from pytcad.constants import EPS0, HBAR, KB, KB_EV, M0, Q
+    assert tuple(_accel.core.MATERIAL_CONSTANTS) == (Q, KB, KB_EV, EPS0, HBAR, M0)

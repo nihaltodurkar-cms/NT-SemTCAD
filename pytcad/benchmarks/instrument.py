@@ -217,7 +217,7 @@ def instrumented(device=None, memory=True):
     # Device-port Phase 3.1: the opt-in DirectSession's native LU never
     # goes through spsolve/solve_linear (its size/instability FALLBACK
     # does, and is counted by the patches above/below), so its own solve
-    # is timed here or PYTCAD_NATIVE_LINSOLVE=1 runs report linsolve = 0.
+    # is timed here or native-LU runs (the default) report linsolve = 0.
     # Patched on the class: sessions are created inside the solve.
     if hasattr(_linsolve, "DirectSession"):
         patch(_linsolve.DirectSession, "_solve_native",
@@ -275,6 +275,13 @@ def instrumented(device=None, memory=True):
             if bound is not None:
                 setattr(device, meth, _capture_matrix(probe, bound))
                 undo.append((device, meth, None))   # instance attr: delete
+    # A native-dispatched Device1D (the default since 2026-09-28) assembles and
+    # solves inside compiled code no Python patch reaches, so it times
+    # itself: the same two phases, counted the same way (every
+    # residual/Jacobian evaluation incl. line-search trials; every LU).
+    native = getattr(device, "_native", None) if device is not None else None
+    if native is not None and hasattr(native, "set_collect_stats"):
+        native.set_collect_stats(True)
 
     if memory:
         tracemalloc.start()
@@ -289,6 +296,17 @@ def instrumented(device=None, memory=True):
             probe.py_peak_mb = peak / (1024.0 * 1024.0)
             probe.note("tracemalloc was active: total_s is inflated and is "
                        "not comparable with an untraced run")
+        if native is not None and hasattr(native, "set_collect_stats"):
+            st = native.stats()
+            native.set_collect_stats(False)
+            probe.assembly_s += st["assembly_s"]
+            probe.assembly_calls += st["assembly_calls"]
+            probe.linsolve_s += st["linsolve_s"]
+            probe.linsolve_calls += st["linsolve_calls"]
+            probe.dof = max(probe.dof, st["dof"])
+            probe.nnz = max(probe.nnz, st["nnz"])
+            probe.note("native Device1D: assembly/linsolve timed inside the "
+                       "compiled solver (NNZ after Dirichlet elimination)")
         for obj, name, old in reversed(undo):
             if old is None:
                 # An instance attribute we added shadowing a class method:

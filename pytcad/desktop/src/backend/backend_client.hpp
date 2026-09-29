@@ -30,6 +30,7 @@
 
 #include <QByteArray>
 #include <QElapsedTimer>
+#include <QProcessEnvironment>
 #include <QObject>
 #include <QPointer>
 #include <QProcess>
@@ -58,6 +59,27 @@ struct BackendConfig {
 // then "backend_python" / "backend_root" in desktop_runtime.json next to
 // the executable. Empty python -> the first call fails with a named error.
 BackendConfig resolveBackendConfig(const QString& settings_python = QString());
+
+// A desktop_runtime.json path value, as used: an absolute path unchanged
+// (dev builds record the tcad-dev interpreter and the source tree), a
+// RELATIVE one resolved against `app_dir` -- the installed layout
+// (NATIVE-DESKTOP-PLAN.md section 26.2) ships "runtime/python.exe" and
+// "backend" next to tcad_desktop.exe. Empty stays empty.
+QString resolveManifestPath(const QString& app_dir, const QString& value);
+
+// The environment every Python child (backend service, solver jobs) runs
+// in: the system environment with `strip_from_path` removed from PATH, and
+// -- when `python` sits at the root of a conda-style prefix -- that
+// prefix's own DLL directories PREPENDED, exactly the ones `conda
+// activate` adds (<prefix>, Library\mingw-w64\bin, Library\usr\bin,
+// Library\bin, Scripts, bin). Without them a non-activated conda
+// interpreter aborts on its first LAPACK call (MKL loads its threading
+// DLLs from PATH lazily; exit 0xC06D007F -- found 2026-09-29: every
+// analysis map and solve crashed the backend when the app was started
+// from a plain shell). The installed runtime (conda-pack, section 26) has
+// the same layout, so it needs this too.
+QProcessEnvironment pythonProcessEnvironment(const QString& python,
+                                             const QStringList& strip_from_path);
 
 class BackendReply : public QObject {
     Q_OBJECT

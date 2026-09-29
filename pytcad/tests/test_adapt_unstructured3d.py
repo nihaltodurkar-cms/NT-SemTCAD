@@ -165,10 +165,13 @@ def test_warm_start_reduces_newton_iterations_3d(diode3d_bias_state):
 # ----------------------------------------------------------------------
 @pytest.mark.slow
 def test_adaptive_loop_3d_terminates_and_refines():
-    psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_3d(
-        doping_by_region=DOPING_BY_REGION,
-        bias={"left_contact": 0.3, "right_contact": 0.0},
-        max_passes=2, tol=1e-6, theta=0.3)
+    # max_passes caps the loop below its tol on purpose, so the
+    # loop's honest budget-limited warning is expected here.
+    with pytest.warns(UserWarning, match="stopped on the pass limit"):
+        psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_3d(
+            doping_by_region=DOPING_BY_REGION,
+            bias={"left_contact": 0.3, "right_contact": 0.0},
+            max_passes=2, tol=1e-6, theta=0.3)
     assert len(history) <= 2
     node_counts = [h["nodes"] for h in history]
     assert node_counts == sorted(node_counts)
@@ -184,11 +187,14 @@ def test_adaptive_loop_3d_with_indicator_kinds_and_residual():
     kinds INCLUDING the Task C solver-residual signal end-to-end,
     through the outer loop's own diagnostics wiring (not just the
     indicator function in isolation)."""
-    psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_3d(
-        doping_by_region=DOPING_BY_REGION,
-        bias={"left_contact": 0.3, "right_contact": 0.0},
-        max_passes=2, tol=1e-6, theta=0.3,
-        indicator_kinds=("field", "doping", "solver_residual"))
+    # max_passes caps the loop below its tol on purpose, so the
+    # loop's honest budget-limited warning is expected here.
+    with pytest.warns(UserWarning, match="stopped on the pass limit"):
+        psi, n, p, scale, I, mesh, history = adapt_solve_unstructured_3d(
+            doping_by_region=DOPING_BY_REGION,
+            bias={"left_contact": 0.3, "right_contact": 0.0},
+            max_passes=2, tol=1e-6, theta=0.3,
+            indicator_kinds=("field", "doping", "solver_residual"))
     assert len(history) <= 2
     assert history[0]["n_newton_iter"] is not None
 
@@ -273,11 +279,14 @@ def test_debye_indicator_drives_actual_refinement_on_under_resolved_3d_diode():
     marked = mark_dorfler(eta, theta=0.3)
     assert 0 < marked.size < mesh.n_tets()
 
-    psi, n, p, scale, I, mesh2, history = adapt_solve_unstructured_3d(
-        doping_by_region=doping,
-        bias={"left_contact": 0.3, "right_contact": 0.0},
-        indicator_kinds=("debye",), max_passes=2, tol=1e-9, theta=0.3,
-        Nd_scale=1e15, **GEOM)
+    # max_passes caps the loop below its tol on purpose, so the
+    # loop's honest budget-limited warning is expected here.
+    with pytest.warns(UserWarning, match="stopped on the pass limit"):
+        psi, n, p, scale, I, mesh2, history = adapt_solve_unstructured_3d(
+            doping_by_region=doping,
+            bias={"left_contact": 0.3, "right_contact": 0.0},
+            indicator_kinds=("debye",), max_passes=2, tol=1e-9, theta=0.3,
+            Nd_scale=1e15, **GEOM)
     # A single gmsh remesh pass embeds extra resolution AT the marked
     # centroids, not uniformly everywhere, and this fixture's small
     # geometry means the GLOBAL worst h/L_D ratio can sit in an
