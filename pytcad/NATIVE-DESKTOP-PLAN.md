@@ -6494,3 +6494,61 @@ Remove-Item .\dist\TCAD\dxcompiler.dll, .\dist\TCAD\dxil.dll -ErrorAction Silent
 `--check-only` with `--download` fills `build\license-cache` and writes no bundle. Paste the table, the
 "LICENCE TEXTS MISSING -- by cause" block and the "HUMAN DECISIONS NEEDED" block. The gate passes only with zero FAILs; S5
 does not start before a valid bundle exists.
+
+#### 26.9.2 Second real Windows run (reported): 11 blockers -- investigation of upstream sources; NO gate or policy change
+
+**Reported blockers:** 6 packages whose ARCHIVES contain no licence text (`libsqlite`, `libwinpthread`, `pyamg`, `ucrt`,
+`vc`, `libfreetype6`) and 4 licence identifiers needing review (`TCL`, `LicenseRef-Public-Domain`,
+`LicenseRef-MicrosoftWindowsSDK10`, `LicenseRef-MicrosoftVisualCpp2015-2022Runtime`). That lists ten items; the report said
+eleven, so one is unaccounted for here (a licence id shared by two packages would explain it) -- the full gate output
+settles it. `--restore-texts/--download` worked as designed: what remains is text the archives never had.
+
+**Method.** Read the real win-64 conda-forge archives of these packages (`info/files`, `info/licenses`, `about.json`) from
+conda.anaconda.org and the upstream sources from GitHub mirrors (sqlite.org, freetype.org and learn.microsoft.com are not
+reachable from the cloud session). **Caveat: I inspected the LATEST builds, not the versions/builds in your environment**
+(unknown to me); anything below that depends on a build number must be checked against the gate's own output.
+
+**The six archive-empty packages**
+
+| Package | What the archive holds | Upstream source of the text | What is needed |
+|---|---|---|---|
+| `libsqlite` | 5 files, no `info/licenses` (licence `blessing`) | Public-domain dedication; the only text upstream carries in its sources is the blessing in the header of `src/sqlite.h.in` (lines 1-9), recorded by the recipe's `license_url` http://www.sqlite.org/copyright.html | Supplement that excerpt as this package's text (291 B, sha256 `fa1f2618...`) |
+| `libwinpthread` | 1 file (`libwinpthread-1.dll`), no text; its `about.json` `license_file` names a directory that is not in the package | mingw-w64 `winpthreads/COPYING` (2883 B, sha256 `63263614...`). **It contains two licences**: the mingw-w64 MIT terms AND a BSD-3-Clause-style notice for code derived from Lockless Inc.'s pthreads library. conda-forge's `MIT` understates it | Ship the WHOLE `COPYING`; both notices must be reproduced |
+| `pyamg` | 242 files, no text in this build (`py314..._1`); `_2` of the same version ships `LICENSE.txt` | pyamg repo `LICENSE.txt` (MIT, 1088 B, sha256 `853c1446...`) | **Do not swap to `_2` as the fix:** it is a rebuild, all 9 compiled `.pyd` differ from `_1` (108 `.pyc`, dist-info also differ; the 108 `.py` are identical), so it would change the S2-validated binaries. Supplement the MIT text instead |
+| `libfreetype6` | 1 file, no text (`GPL-2.0-only OR FTL`) | The top-level `freetype` output of the same recipe ships `docs/FTL.TXT` + `docs/GPLv2.TXT`; `FTL.TXT` is byte-identical to upstream (6743 B, sha256 `5a5ee54c...`) | Supplement `FTL.TXT`. **FTL section 2 requires** that binary redistribution's documentation state that the software is based in part on the work of the FreeType Team: a credit line must be added to the notices (proposed: "Portions of this software are based on the work of the FreeType Team (https://www.freetype.org).") |
+| `vc` | **0 files**: a metapackage that only pins `vc14_runtime` (its licence field says BSD-3-Clause, no text) | n/a | Nothing ships, so nothing is owed and nothing must be removed. The gate cannot see that today: a structural rule "conda-meta `files` is empty -> ships nothing, listed as a metapackage, no text required" is PROPOSED (not implemented) |
+| `ucrt` | 92 files, no text although its recipe declares `license_file: LICENSE.txt` | Microsoft Windows SDK licence terms; not retrievable from the cloud. Local source on your machine: the SDK's `Licenses` folder (`Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\Licenses" -Recurse`) | Tied to the Microsoft decision below. The package's own summary: "This is only needed Windows <10" |
+
+Nothing has to be removed for the first four (they ship real DLLs/code and have permissive texts); `vc` ships nothing; `ucrt`
+is the open question. The mechanism proposed for the four supplements is a per-package, version-pinned, SHA-256-pinned
+`supplemental_texts` policy entry with the text vendored in the repo; it is **not implemented**, pending approval.
+
+**The four licence ids (the exact text is quoted; NO `reviewed` entry has been added)**
+- **`TCL`** -- text in the archive (`info/licenses/tcl9.0.4/license.terms`, on `tcl`, `tk`, `libtcl`, `libtk`): permission "to use,
+  copy, modify, distribute, and license this software and its documentation for any purpose, provided that existing copyright
+  notices are retained in all copies and that this notice is included verbatim in any distributions"; no royalty. The generator
+  already copies the text into `licenses\texts\`. Needs a person to read it and accept.
+- **`LicenseRef-Public-Domain`** -- the only plausible runtime package is `tzdata` (the others with this id on conda-forge are
+  unrelated packages). Its archive text (`info/licenses/LICENSE`): "Unless specified below, all files in the tz code and data
+  (including this LICENSE file) are in the public domain. If the files date.c, newstrftime.3, and strftime.c are present, they
+  contain material derived from BSD and use the BSD 3-clause license." Needs a person to accept it, and to check whether those
+  three files are among the installed ones. To be confirmed from the gate output.
+- **`LicenseRef-MicrosoftWindowsSDK10`** (`ucrt`) -- no text in the archive (above). Python 3.14 and Qt 6.11 both require Windows 10+,
+  where the Universal CRT is part of the OS; shipping these files is a choice, and dropping them is a runtime change that needs S2
+  re-validated. Needs a person to read the SDK licence terms and decide.
+- **`LicenseRef-MicrosoftVisualCpp2015-2022Runtime`** (`vc14_runtime`) -- the text IS in the archive (`LICENSE.TXT`, a non-authoritative
+  conversion of `LICENSE.RTF`). **Read it before accepting: under "SCOPE OF LICENSE" it says you may not "provide the software as a
+  stand-alone offering or combined with any of your applications for others to use, or transfer the software or this agreement to
+  any third party."** That text alone does not authorise bundling these DLLs in an installer; a grant, if there is one, would come
+  from Microsoft's Visual Studio "Distributable Code" terms for the edition in use (§12 item 7: Community), and a `reviewed` entry
+  must cite THAT, not this text. Alternatives (a person's decision): rely on Distributable Code and cite it; or stop bundling the
+  runtime and have the installer require Microsoft's own redistributable. I am not giving a legal conclusion.
+Draft (unapplied) entries with blanks for the reviewer, the fetched texts with SHA-256 and their provenance are in the
+session scratchpad under `s4-proposals\` (`PROPOSED_policy_entries.json`, `provenance.json`, `texts\`).
+
+**`dxcompiler.dll` / `dxil.dll`.** Not among the reported blockers, which is consistent with them being gone. In the code:
+`stage.ps1` removes both after `windeployqt6` (committed in `17b3bfe`, pinned by a test), and the unowned-DLL gate would
+fail again if either came back. What I cannot confirm from here is that YOUR current `dist\TCAD` lacks them:
+`Test-Path .\dist\TCAD\dxcompiler.dll, .\dist\TCAD\dxil.dll` (both must be `False`).
+
+S4 stays OPEN: the real Windows gate must return zero FAILs and write a bundle. S5 is not started.
