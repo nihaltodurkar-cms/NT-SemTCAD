@@ -6715,7 +6715,9 @@ source with Qt off. The Python runtime env (`tcad-runtime.yml`) contains no Qt (
   UndoStack shell, and 12 QtTest files are written on Qt Widgets. Removing Qt means REPLACING the GUI toolkit and re-running
   the P1-P4 gates on the replacement -- a rewrite of the UI layer, not a build-flag change.
 - The 3D/2D view needs a non-Qt render host: VTK must render into a native (Win32) window or an offscreen framebuffer.
-- Needs a decision: which toolkit replaces Qt (open, §27.3). Nothing below is started.
+- **DECIDED 2026-09-30 (user):** the replacement is the platform itself -- **C++23 + Win32 + Direct3D 12 + Direct2D +
+  DirectWrite + DXGI + WIC, with the TCAD UI framework implemented natively.** Not Qt, wxWidgets, WebView2 or Dear ImGui,
+  not even as an intermediate framework. Keep VTK for the field/3D visualisation.
 
 ### 27.3 Gate and state
 - **Gate (built, not wired):** `desktop/tools/check_no_qt.py <dist\TCAD>`: file names, plugin dirs, binary content (Qt DLL
@@ -6723,3 +6725,62 @@ source with Qt off. The Python runtime env (`tcad-runtime.yml`) contains no Qt (
   (fake trees, mutation-checked). It is deliberately NOT in `stage.ps1` yet: the current app is Qt, so a real stage fails it
   by design; wiring it in (stage.ps1 + verify_install.ps1) is the last step of the purge.
 - **State:** Qt still present everywhere in the native app. P5/S4 (licences) and P6 parity are unaffected until the toolkit is chosen.
+
+
+### 27.4 First spike: the existing field view on a native Win32 host (2026-09-30; CODED, NOT BUILT, NOT RUN)
+Scope (user): (1) remove the vtkGUISupportQt dependency; (2) a native Win32 HWND render host for the field view;
+(3) keep VTK; (4) prove the native executable displays the EXISTING field view without Qt; (5) run the hard no-Qt scanner
+with zero hits; (6) do NOT rewrite the 91 Qt source files.
+
+**What was done (all in the tree; nothing compiled -- there is no MSVC/VTK in the cloud session):**
+- `FieldView` (2,475 lines, `views/field/`) was split, not rewritten: its display pipeline is now the **Qt-free `FieldScene`**
+  (`field_scene.{hpp,cpp}`, `field_scene_3d.cpp`, git-moved from `field_view*`). Mechanical changes only: the base class
+  `QVTKOpenGLNativeWidget` and `Q_OBJECT` are gone; the two signals became callbacks (`on_display_changed`,
+  `on_readout_changed`); the four QString-typed entry points became `std::string` ones (`readoutAtStr`, ...); mouse/leave/
+  resize events became `handleMouseMove/handleLeave/handleResize`; the widget queries the scene needed (device pixel ratio,
+  logical width, GL-context-ready, request-redraw) are the `SceneHost` interface; the render window is injected by `attach()`.
+- `FieldView` is now a thin legacy wrapper (`field_view.{hpp,cpp}`): `class FieldView : public QVTKOpenGLNativeWidget, public
+  FieldScene`. Every FieldScene method is inherited unchanged; the four QString names stay on the wrapper, so the ~91 Qt files
+  and 12 QtTest binaries that call `FieldView` compile as before (unverified: see below).
+- New Qt-free native code, `desktop/src/native/`: `win32_window` (RegisterClassEx/CreateWindowEx/message loop, DPI change),
+  `vtk_win32_host` (**`vtkWin32OpenGLRenderWindow` as a child HWND + `vtkWin32RenderWindowInteractor`**, from RenderingOpenGL2/
+  RenderingUI -- this replaces `QVTKOpenGLNativeWidget`), `spike_main` (`tcad_native_spike.exe`), and an application manifest
+  (per-monitor-v2 DPI, UTF-8, long paths). New code is C++23 (`std::expected`, `std::format`); shared libraries stay C++20.
+- CMake: `TCAD_LEGACY_QT` (default ON). The VTK component list no longer names `GUISupportQt`; `GUISupportQt`, Qt6, ADS and all
+  Qt targets/tests are inside `if(TCAD_LEGACY_QT)`. `-DTCAD_LEGACY_QT=OFF` (`build.ps1 -NoLegacyQt`) configures no Qt at all.
+  (`tcad_npz_dump` used QCryptographicHash and is legacy-only until a std hash replaces it.)
+- Gate (Windows, run by the user): `desktop/tools/verify_native_spike.ps1 -Result <2D.npz>, <3D.npz>`: build Qt-free -> stage the
+  exe + its import closure with NO windeployqt -> `check_no_qt.py` on the stage (zero hits required) -> run with a scrubbed PATH and
+  `--screenshot`: the image must not be blank, hover must hit, and the process reports the modules loaded in it (none may be Qt).
+- Static gates run here: `gui/tests/test_desktop_native_spike.py` (10 tests: native/scene sources contain no Qt; every Qt
+  reference in CMake is inside the legacy block; the split lost no API; script has its steps; mutation-checked) and
+  `test_desktop_no_qt.py`. 
+
+**Not verified, and not claimed:** that any of it compiles (the split touches 2,475 lines blind; MI of two QObject-adjacent bases
+can surface name clashes -- `renderWindow()` was one, renamed `sceneWindow()`); that the VTK Win32 window renders inside the parent,
+receives mouse events, or hovers; that the staged closure is Qt-free; the display itself. The spike is PENDING until
+`verify_native_spike.ps1` returns ok on Windows.
+
+Known limits: the `tcad-gui` build env still contains qt6-main (conda-forge's `vtk-base` requires it); only the stage matters, and
+its closure is taken from the exe's own imports. A source build of VTK with Qt off would remove even that. Focus, keyboard and tooltips
+over the VTK child window are the spike's crudest part (an HWND child is composited by DWM apart from the parent: UI drawn ON the 3D view
+must be popup windows -- the "airspace" rule, to be designed in 27.5).
+
+### 27.5 Incremental replacement of the Qt panels -- PLAN, contingent on the spike passing (not started)
+Target architecture: Win32 windows and message loop; **Direct3D 12** device/swap chain via **DXGI** for compositing the UI; **Direct2D**
+(on the D3D12 device through D3D11On12 or a D2D device context per window -- decided in N2) for vector drawing; **DirectWrite** for text;
+**WIC** for images/PNG; the TCAD widget framework on top. VTK keeps drawing with OpenGL in a child HWND (VTK has no D3D12 renderer), so
+the field/3D view stays a hosted child window (the spike's `VtkWin32Host`), not a D3D surface.
+
+Slices, each gated on Windows and each leaving the legacy Qt build working until N7:
+| slice | replaces | gate |
+|---|---|---|
+| N1 platform layer, Qt-free | `QProcess`/`QTimer`/`QFile`/`QDir`/`QSettings`/`QUuid`/`QLocale`/file dialogs used by `backend/`, `run/`, `document/`, `shell/app_settings` (the non-GUI Qt: async child process + pipes, timers, JSON-RPC client, settings as JSON, IFileOpenDialog) | the existing backend/run/project/remote contract tests, re-pointed at the Qt-free libraries; no `Q*` include in those libs |
+| N2 UI framework core | `QWidget` machinery: window/HWND wrapper, D3D12+DXGI swap chain, D2D/DirectWrite renderer, layout engine, widget tree, input/focus/keyboard, DPI, theme from `theme/tokens.hpp`, UI Automation (accessibility), IME/text input (TSF) | a headless UI test driver (event injection + readback) replacing QTest; render goldens at 100/150/200% |
+| N3 widget set | labels, buttons, check/radio, combo, spin/slider, line/multi-line edit, list, tree, tabs, splitter, scroll, toolbar, menu, tooltip, modal dialog | per-widget behaviour tests + accessibility tree checks |
+| N4 shell + docking | `MainWindow`, ADS -> own dock manager (tabs, float, save/restore layout), status bar; hosts the VTK child window | dock/layout tests; the spike's field view inside a dock |
+| N5 panels, by dependency | Display, Info, View3D, Playback -> Plot (`PlotView`'s QPainter -> Direct2D; PlotModel/axis maths are already Qt-free) -> Run, Console, Telemetry -> Study -> Build + editors (Mesh, Structure, Doping, Contacts, Gates, Process steps) -> Validation, Catalog, Compact Model | each panel's existing shell test ported and passing; the P1-P4 exit checklists re-run |
+| N6 bench/selftest | `bench/selftest.cpp` (Qt-based) | same numbers as before within the recorded tolerances |
+| N7 purge | delete the legacy Qt target, `field_view.*`, ADS, windeployqt step, QtTest; wire `check_no_qt.py` into `stage.ps1` and `verify_install.ps1`; drop Qt/ADS from the licence policy and notices | `check_no_qt.py` zero on `dist\TCAD` and on the installed tree; S3 Sandbox gate; S4 licence gate |
+Honest sizing: N2 (a text/accessibility/IME-capable UI framework) is the dominant cost and the main risk; N5's editors are the bulk of
+the ~23,000 lines. P6's parity gate (§9, §10) applies to the RESULT of N7, not to the Qt app.

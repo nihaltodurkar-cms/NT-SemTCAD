@@ -2,7 +2,10 @@
 #
 # A SEPARATE CMake project from core/ on purpose: core/ builds the
 # MinGW `_core` extension for the tcad-dev Python; this builds MSVC
-# executables against Qt 6 + VTK from the separate `tcad-gui` conda env.
+# executables against VTK (and, while TCAD_LEGACY_QT is ON, Qt 6) from the separate
+# `tcad-gui` conda env. NATIVE-DESKTOP-PLAN.md section 27: Qt is being purged; the
+# Win32 + VTK spike (tcad_native_spike) and everything it links are Qt-free, and
+# build with -DTCAD_LEGACY_QT=OFF, which needs no Qt, no ADS, no vtkGUISupportQt.
 # The two never link each other -- the app talks to the solver through
 # the job-file/.npz process boundary only (plan section 3).
 #
@@ -25,20 +28,32 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 add_compile_options(/W4 /permissive- /utf-8 /EHsc)
 add_compile_definitions(NOMINMAX UNICODE _UNICODE)
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets Test)
+# The legacy Qt Widgets app and its tests (section 27). ON until the panels are
+# replaced; OFF builds only the Qt-free targets.
+option(TCAD_LEGACY_QT "Build the legacy Qt Widgets app, its Qt tests and the Qt contract tools" ON)
+
 find_package(nlohmann_json 3 REQUIRED)
-# Qt Advanced Docking System (LGPL-2.1, section 7.3): conda-forge
-# qt6-advanced-docking-system 5.1.1, built against qt6-main 6.11 -- the
-# two are pinned together in build.ps1 / README (section 15.9).
-find_package(qtadvanceddocking-qt6 5.1 REQUIRED)
 find_package(ZLIB)
+# VTK WITHOUT its Qt modules: vtkGUISupportQt / vtkRenderingQt are the only VTK
+# modules that import Qt6 (their PE import tables, section 27.1). RenderingUI has
+# the Win32 interactor, IOImage the PNG writer used by the spike's screenshot.
 find_package(VTK 9 REQUIRED COMPONENTS
   CommonCore CommonDataModel CommonColor
   FiltersCore FiltersGeometry
   FiltersExtraction FiltersFlowPaths FiltersModeling FiltersSources
   RenderingCore RenderingOpenGL2 RenderingAnnotation RenderingFreeType
   RenderingVolume RenderingVolumeOpenGL2
-  InteractionStyle GUISupportQt)
+  RenderingUI InteractionStyle IOImage)
+set(TCAD_VTK_LIBS ${VTK_LIBRARIES})
+if(TCAD_LEGACY_QT)
+  find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets OpenGLWidgets Test)
+  # Qt Advanced Docking System (LGPL-2.1, section 7.3): conda-forge
+  # qt6-advanced-docking-system 5.1.1, built against qt6-main 6.11 -- the
+  # two are pinned together in build.ps1 / README (section 15.9).
+  find_package(qtadvanceddocking-qt6 5.1 REQUIRED)
+  find_package(VTK 9 REQUIRED COMPONENTS GUISupportQt)
+  set(TCAD_VTK_LEGACY_LIBS ${TCAD_VTK_LIBS} VTK::GUISupportQt)
+endif()
 
 # -- Qt-free data layer: .npz reader, result model, DeviceSpec document ----
 add_library(tcad_desktop_data STATIC
@@ -62,8 +77,10 @@ if(ZLIB_FOUND)
 endif()
 
 # -- contract tools driven by the Python suite (gui/tests/test_desktop_contracts.py)
-add_executable(tcad_npz_dump src/tools/npz_dump.cpp)
-target_link_libraries(tcad_npz_dump PRIVATE tcad_desktop_data Qt6::Core psapi)
+if(TCAD_LEGACY_QT)  # uses QCryptographicHash: goes with the Qt purge (a std hash replaces it)
+  add_executable(tcad_npz_dump src/tools/npz_dump.cpp)
+  target_link_libraries(tcad_npz_dump PRIVATE tcad_desktop_data Qt6::Core psapi)
+endif()
 add_executable(tcad_theme_dump src/tools/theme_dump.cpp)
 target_include_directories(tcad_theme_dump PRIVATE src)
 target_link_libraries(tcad_theme_dump PRIVATE tcad_desktop_data)
@@ -80,6 +97,28 @@ target_link_libraries(tcad_desktop_plotmath PUBLIC tcad_desktop_data)
 add_executable(tcad_plot_ticks src/tools/plot_ticks.cpp)
 target_link_libraries(tcad_plot_ticks PRIVATE tcad_desktop_plotmath)
 
+# -- FieldScene: the field display pipeline, Qt-free (section 27) --------------
+# Shared by the legacy Qt wrapper (FieldView) and the native Win32 host.
+add_library(tcad_field_scene STATIC
+  src/views/field/field_scene.cpp src/views/field/field_scene.hpp
+  src/views/field/field_scene_3d.cpp
+  src/views/colormaps.cpp src/views/colormaps.hpp)
+target_include_directories(tcad_field_scene PUBLIC src)
+target_link_libraries(tcad_field_scene PUBLIC tcad_desktop_data ${TCAD_VTK_LIBS})
+vtk_module_autoinit(TARGETS tcad_field_scene MODULES ${TCAD_VTK_LIBS})
+
+# -- the native Win32 spike (section 27.4): NO Qt, no ADS, no vtkGUISupportQt ---
+# C++23 for the NEW native code only; the shared libraries stay C++20.
+add_executable(tcad_native_spike
+  src/native/spike_main.cpp
+  src/native/win32_window.cpp src/native/win32_window.hpp
+  src/native/vtk_win32_host.cpp src/native/vtk_win32_host.hpp
+  src/native/tcad_native.manifest)
+target_compile_features(tcad_native_spike PRIVATE cxx_std_23)
+target_link_libraries(tcad_native_spike PRIVATE tcad_field_scene tcad_desktop_data ${TCAD_VTK_LIBS} user32 gdi32 psapi)
+vtk_module_autoinit(TARGETS tcad_native_spike MODULES ${TCAD_VTK_LIBS})
+
+if(TCAD_LEGACY_QT)
 # -- the application ----------------------------------------------------------
 set(CMAKE_AUTOMOC ON)
 # The client for the Python backend service (P1 S4): Qt Core only.
@@ -133,8 +172,6 @@ add_library(tcad_desktop_ui STATIC
   src/shell/catalog_panel.cpp src/shell/catalog_panel.hpp
   src/shell/compact_model_panel.cpp src/shell/compact_model_panel.hpp
   src/views/field/field_view.cpp src/views/field/field_view.hpp
-  src/views/field/field_view_3d.cpp
-  src/views/colormaps.cpp src/views/colormaps.hpp
   src/views/plot/plot_view.cpp src/views/plot/plot_view.hpp src/views/plot/plot_model.hpp
   src/views/plot/curve_modes.cpp src/views/plot/curve_modes.hpp
   src/theme/theme.cpp src/theme/theme.hpp src/theme/tokens.hpp
@@ -144,13 +181,13 @@ add_library(tcad_desktop_ui STATIC
   src/bench/bench_run.cpp)
 target_include_directories(tcad_desktop_ui PUBLIC src)
 target_link_libraries(tcad_desktop_ui PUBLIC
-  tcad_desktop_data tcad_desktop_plotmath tcad_desktop_backend tcad_desktop_run Qt6::Widgets Qt6::OpenGLWidgets ads::qtadvanceddocking-qt6
-  ${VTK_LIBRARIES} psapi)
-vtk_module_autoinit(TARGETS tcad_desktop_ui MODULES ${VTK_LIBRARIES})
+  tcad_field_scene tcad_desktop_data tcad_desktop_plotmath tcad_desktop_backend tcad_desktop_run Qt6::Widgets Qt6::OpenGLWidgets ads::qtadvanceddocking-qt6
+  ${TCAD_VTK_LEGACY_LIBS} psapi)
+vtk_module_autoinit(TARGETS tcad_desktop_ui MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 add_executable(tcad_desktop src/app/main.cpp)
 target_link_libraries(tcad_desktop PRIVATE tcad_desktop_ui)
-vtk_module_autoinit(TARGETS tcad_desktop MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # -- unit tests -----------------------------------------------------------------
 enable_testing()
@@ -186,38 +223,38 @@ target_link_libraries(tcad_desktop_project_tests PRIVATE tcad_desktop_run tcad_d
 # probed; run by gui/tests/test_desktop_plot.py at display scales 1/1.5/2.
 add_executable(tcad_desktop_plot_tests tests/test_plot.cpp)
 target_link_libraries(tcad_desktop_plot_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_plot_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_plot_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # Run dock / Console / Run-Stop end to end (P3-S4): the real window, the real
 # backend and solver; run by gui/tests/test_desktop_run_shell.py.
 add_executable(tcad_desktop_run_shell_tests tests/test_run_shell.cpp)
 target_link_libraries(tcad_desktop_run_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_run_shell_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_run_shell_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 add_executable(tcad_desktop_shell_tests tests/test_shell.cpp)
 target_link_libraries(tcad_desktop_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_shell_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_shell_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # Device Builder shell assembly gates (P4 section 21, plan section 20.4):
 # the real MainWindow's Build dock against the real backend; run by
 # gui/tests/test_desktop_build_shell.py.
 add_executable(tcad_desktop_build_shell_tests tests/test_build_shell.cpp)
 target_link_libraries(tcad_desktop_build_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_build_shell_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_build_shell_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # Compact Model dock gates (section 25): the real window's Compact Model
 # dock against a real `gui.services.compact_runner` subprocess; run by
 # gui/tests/test_desktop_compact_model_shell.py.
 add_executable(tcad_desktop_compact_model_shell_tests tests/test_compact_model_shell.cpp)
 target_link_libraries(tcad_desktop_compact_model_shell_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_compact_model_shell_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_compact_model_shell_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # MeshEditor / StructureEditorView gates (P4 S2, plan section 20.4): the
 # real widgets, driven through their testable methods; run by
 # gui/tests/test_desktop_editors.py.
 add_executable(tcad_desktop_editor_tests tests/test_editors.cpp)
 target_link_libraries(tcad_desktop_editor_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_editor_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_editor_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
 
 # UndoStack gates (P4 S8, plan section 20.4): Qt-free logic, tested with
 # QtTest for convenience only (no widget/window needed); run by
@@ -230,7 +267,9 @@ target_link_libraries(tcad_desktop_undo_tests PRIVATE tcad_desktop_data Qt6::Tes
 # gui/tests/test_desktop_validation.py.
 add_executable(tcad_desktop_validation_tests tests/test_validation.cpp)
 target_link_libraries(tcad_desktop_validation_tests PRIVATE tcad_desktop_ui Qt6::Test)
-vtk_module_autoinit(TARGETS tcad_desktop_validation_tests MODULES ${VTK_LIBRARIES})
+vtk_module_autoinit(TARGETS tcad_desktop_validation_tests MODULES ${TCAD_VTK_LEGACY_LIBS})
+
+endif()  # TCAD_LEGACY_QT
 
 # -- runtime manifest: where the Qt/VTK DLLs live, for the Python contract
 #    tests and the dev launcher (no DLLs are copied in dev builds) ----------
