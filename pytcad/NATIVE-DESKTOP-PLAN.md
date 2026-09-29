@@ -5924,12 +5924,13 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1 and S2 coded, Windows gates outstanding)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 coded, Windows gates pending)
 
 User: "start P5". §9's P5 bullet list is the scope; this section turns it
 into slices and gates, from the tree as it stands today. **Status (see
-§26.5 and §26.6): S1 and S2 are implemented in the tree; no Windows gate of
-either has been run or recorded. S3-S6 are not started.** The 26.1-26.4
+§26.5-§26.8): S1 and S2 are implemented and their Windows gates were run by
+the user (§26.6.4, as reported). S3 (installer) is implemented in the tree
+(§26.8) but has never been compiled or run: its Windows gates are pending. S4-S6 are not started.** The 26.1-26.4
 text below is the plan as written on 2026-09-29 and is left as it was.
 
 ### 26.1 Review findings (from the tree, before any P5 code)
@@ -6185,7 +6186,22 @@ the evidenced pins; conda-forge only; stage.ps1 never installs into a dev env), 
 a 1% tampered result, a changed `record__meta`), plus real subprocess runs of the script. The
 example/reference/tamper test needs the compiled `_core` and skips without it.
 
-### 26.7 Windows-only gates still to run (NOT run; nothing below is claimed)
+#### 26.6.4 Windows results for S2 (reported by the user; not observed by the author)
+After the include fix (`job_runner.cpp` now includes `backend/backend_client.hpp`; §26.5's build
+error C3861 was that missing include, not the conda env), the user ran the full S2 staging on
+Windows and reported:
+- **15/15 runtime gates passed** (`check_runtime.py` on the staged `runtime\` + `backend\`);
+- **the scrubbed-PATH `--selftest` passed** (`stage.ps1 -Check`, PATH = Windows directories only),
+  which is also S1's own gate (a staged folder that runs with the conda envs off PATH and opens a
+  result file);
+- **staged `runtime\` = 857.1 MB**;
+- **numerical reference difference vs tcad-dev = 0.00e+00** (rtol 1e-6 was the bound; the two
+  agree exactly).
+
+Not reported, hence NOT recorded here: the pinned spec that `conda env create` solved, the MKL/PARDISO
+path, per-example times, total staged size, DLL count. Add them from the console output if wanted.
+
+### 26.7 Windows-only gates (S1/S2 reported done in 26.6.4; the original list is kept)
 1. S1: `stage.ps1 -DevBackend -Check <a.npz>` (scrubbed PATH); the desktop test binary
    (`test_backend`, incl. `manifestPathsResolveRelativeToTheApp`); record file/DLL counts and MB here.
 2. S2: `stage.ps1 -EmitReference` once, then a full `stage.ps1 -Reference` -- which exercises
@@ -6196,3 +6212,79 @@ example/reference/tamper test needs the compiled `_core` and skips without it.
    and the `reference` max relative difference against tcad-dev (rtol 1e-6 was chosen in advance, not
    measured; if the honest number is larger, say why before loosening it).
 4. Then S3 (installer) onward is unblocked.
+
+### 26.8 P5-S3 status (2026-09-30): installer -- coded; NEVER COMPILED OR RUN; every Windows gate pending
+
+**Implemented (files in the tree):**
+
+| File | What |
+|---|---|
+| `desktop/installer/tcad.iss` | The Inno Setup 6.3+ script (decision 26.4-1). Per-user, `PrivilegesRequired=lowest`, `DefaultDirName={autopf}\TCAD` (= `%LOCALAPPDATA%\Programs\TCAD` without admin), x64 only, lzma2 solid. Ships the whole stage dir, a Start menu shortcut, an optional desktop shortcut, and an optional "Open with" registration. Output `TCAD-<version>-unsigned-setup.exe` (decision 26.4-2; `/DNameSuffix=` empty is S6's signed name). A fixed `AppId` GUID (never change it: it is how an upgrade finds the install). |
+| `desktop/tools/make_installer.ps1` | Reads the version from `desktop/CMakeLists.txt`'s `project(tcad_desktop VERSION ...)`, refuses an uninstallable stage, finds `ISCC.exe`, runs it, prints size and SHA-256. `-WriteSandboxConfig` also writes a Windows Sandbox `.wsb`. |
+| `desktop/tools/verify_install.ps1` | The S3 gate, for a clean machine (Windows Sandbox): silent install, layout check, `check_runtime.py` (all S2 gates, three examples included) on the INSTALLED runtime, the installed exe's `--selftest` on each result with PATH = Windows dirs only, silent uninstall, then a before/after diff of `%LOCALAPPDATA%\Programs`, the Start menu and the registry, and a check that user data survived. Writes `verify_install.json`; exit 0 only if every check passed. |
+| `gui/tests/test_desktop_installer.py` | 23 tests (below). |
+
+`make_installer.ps1` refuses a stage that: lacks the exe, manifest, `runtime\python.exe`, backend or
+`pytcad\_core*.pyd`; has an ABSOLUTE `backend_python`/`backend_root` (a `-DevBackend` stage would ship
+this machine's interpreter path); or contains gmsh, tetgen or scikit-image (decision 26.4-4: the base
+installer ships none of them).
+
+**Decisions taken in this slice (revisable):**
+1. **No file association.** §26.3 asks for "a file association for the project file type". The project
+   file type is plain `.json` (`main_window.cpp`'s "PyTCAD projects (*.json)" filter; DeviceSpec job files
+   are `.json` too) and results are `.npz`, so a default association would take over every JSON/NumPy
+   file on the machine. The installer instead registers the app in the per-user "Open with" list for
+   `.json` and `.npz` (`HKCU\Software\Classes\Applications\tcad_desktop.exe`, task `openwith`, on by
+   default; the app already opens its argv[1] via `tryOpen`). **A real association needs a dedicated
+   project extension -- a file-format decision for you (e.g. a `.tcadproj` that `project_store`,
+   the dialog filters and the C++ project code all agree on), not made here.** A test fails if the
+   `*.json` filter disappears, so this decision cannot go stale unnoticed.
+2. **Uninstall is surgical.** Inno removes what it installed; `[UninstallDelete]` adds only
+   `{app}\runtime` and `{app}\backend` (the `.pyc` caches the runtime writes after the first run are not
+   in the uninstall log) and the folder itself if empty. It never deletes all of `{app}` (a user may
+   have chosen a folder with other content) and never touches user data: settings
+   `%APPDATA%\PyTCAD\` (`AppSettings::userDefault`), runs `%LOCALAPPDATA%\PyTCAD\runs\` (`runsDir()`),
+   and the user's own project/result files.
+3. **Unsigned name** (`-unsigned`) by default, per decision 26.4-2; the signtool step is S6.
+4. **Only the base installer.** The separate gmsh/tetgen add-on installer (decision 26.4-4) is not built.
+
+**Verified in the cloud session (Linux, PowerShell 7.4, Python 3.11) -- everything below is static
+or executed-function checking, NOT an install:**
+- `test_desktop_installer.py`: 23 passed. It lints `tcad.iss` (valid fixed GUID, shared with the verify
+  script; `lowest` privileges, `{autopf}\TCAD`, x64; required defines guarded by `#error`; every
+  `{#define}` used is defined; no registry write outside `Software\Classes\Applications\`, none under
+  HKLM/HKCR, all on the optional task; the launch-after-install entry skips silent installs; no
+  `{userappdata}`/`{localappdata}`/`{userdocs}` anywhere) and ties its claims to the app's real paths
+  (`AppSettings`, `runsDir()`, the `.json` filter, the CMake target name). It also EXECUTES the scripts'
+  functions under `pwsh`: the version read from CMake; nine ways a stage must be refused (each
+  mutation, including an absolute dev manifest and each of gmsh/tetgen/skimage, is caught) and the
+  complete relative stage accepted; the sandbox config parsed as XML with the right mappings; and the
+  before/after file-list diff reporting a leftover `__pycache__` as added and a vanished file as removed.
+- Mutation check of the lint: adding a `.json` default association, switching to `admin`, wiping all of
+  `{app}` on uninstall, deleting `{userappdata}\PyTCAD`, and dropping the `AppVersion` guard were each
+  caught by exactly the test written for it.
+- Both `.ps1` files parse with 0 errors under PowerShell 7.4.
+
+**NOT verified -- Windows-only, and the largest risk is that `tcad.iss` has never been compiled by
+Inno Setup, so a syntax or directive error there is entirely possible:**
+1. `make_installer.ps1` end to end: `ISCC.exe` compiling `tcad.iss` (Inno 6.3+ for `x64compatible`;
+   the 857.1 MB runtime of 26.6.4), and the resulting `TCAD-0.1.0-unsigned-setup.exe`'s size.
+2. The S3 gate: `verify_install.ps1` in Windows Sandbox -- install, the three examples through the
+   installed runtime, the installed exe's scrubbed-PATH `--selftest`, uninstall, and a file-list/registry
+   diff that must be empty. Untested specifics: the Inno uninstaller re-launches itself and returns at
+   once (the script polls for the folder to vanish, up to 180 s); Windows Sandbox's GPU/OpenGL for the
+   `--selftest`; the "before" snapshot on a real user profile.
+3. Whether the installed app also opens a file passed as argv[1] from "Open with".
+
+Windows commands (from the repo root, `pytcad\`; Inno Setup 6.3+ installed once, outside any conda env):
+```powershell
+# 1. The full S2 stage, as before (NOT -DevBackend)
+powershell -ExecutionPolicy Bypass -File .\desktop\tools\stage.ps1 -Reference .\build\ref
+# 2. Build the installer (+ a Windows Sandbox config)
+powershell -ExecutionPolicy Bypass -File .\desktop\tools\make_installer.ps1 -WriteSandboxConfig
+# 3. Double-click dist\installer\tcad-install-test.wsb  (Windows Sandbox feature must be enabled);
+#    the result is dist\installer\sandbox-log\verify_install.json. Or, on a clean user account:
+powershell -ExecutionPolicy Bypass -File .\desktop\tools\verify_install.ps1 -Installer .\dist\installer\TCAD-0.1.0-unsigned-setup.exe -ToolsDir .\desktop\tools
+```
+S4 (licence bundle) is next; its `licenses\` folder will ride in the stage and therefore in the installer
+without a change to `tcad.iss`.
