@@ -185,3 +185,43 @@ def test_the_script_reports_the_staged_ucrt_and_msvc_files_and_changes_nothing(t
     assert [(c["name"], c["where"]) for c in d["C_packages"]].count(("ucrt", "runtime")) == 1
     txt = _read(str(out / "s4-evidence.txt"))
     assert "== A. ucrt" in txt and "== B. MSVC runtime" in txt and "== C. packages" in txt
+
+
+# -- loaded-module evidence for the staged python.exe (why "no matching modules read" was not evidence) -----------
+
+def _lm():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("loaded_modules", os.path.join(ROOT, "desktop", "tools", "loaded_modules.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def test_loaded_modules_summarize_flags_stage_and_ucrt():
+    lm = _lm()
+    stage = "C:\\dist\\TCAD\\runtime"
+    rep = lm.summarize([stage + "\\python.exe", "C:\\Windows\\System32\\ucrtbase.dll", stage + "\\vcruntime140.dll",
+                        "C:\\Windows\\System32\\kernel32.dll", "c:/dist/tcad/runtime/api-ms-win-crt-math-l1-1-0.dll"], stage)
+    assert rep["moduleCount"] == 5
+    got = {m["module"]: m["fromStage"] for m in rep["matches"]}
+    assert got == {"ucrtbase.dll": False, "vcruntime140.dll": True, "api-ms-win-crt-math-l1-1-0.dll": True}
+
+
+def test_loaded_modules_refuses_rather_than_reports_nothing_off_windows():
+    if os.name == "nt":
+        pytest.skip("Windows")
+    import sys
+    p = subprocess.run([sys.executable, os.path.join(ROOT, "desktop", "tools", "loaded_modules.py")], capture_output=True, text=True)
+    assert p.returncode == 2 and p.stdout == "" and "Windows only" in p.stderr
+
+
+def test_evidence_runs_staged_python_on_a_script_file_not_an_unquoted_dash_c():
+    code = _read(SCRIPT)
+    assert "loaded_modules.py" in code and "time.sleep(12)" not in code          # the old failing invocation is gone
+    assert "-ArgumentList (ConvertTo-ArgString" in code                          # nothing passes a raw array to Start-Process
+
+
+@needs_pwsh
+def test_argstring_quotes_spaces_and_empty():
+    s = _ps('ConvertTo-ArgString @("--settings", "C:\\a b\\x.ini", "", "plain")')
+    assert s == '--settings "C:\\a b\\x.ini" "" plain'

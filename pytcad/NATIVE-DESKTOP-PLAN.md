@@ -6654,3 +6654,15 @@ python .\pytcad\desktop\tools\redist_table.py --evidence .\build\s4-evidence\s4-
 
 The TCL/tzdata `reviewed` drafts and the four supplemental-text drafts (session scratchpad `s4-proposals\PROPOSED_entries_v2.json`) are
 UNCHANGED; `license_policy.json` and the gate are unchanged. S4 stays open.
+
+#### 26.9.5 S4 evidence collector: the Python UCRT result was never captured (fixed; result pending)
+
+`s4_evidence.ps1` reported "no matching modules read" for `runtime\python.exe`, so the decisive UCRT evidence for
+Python was missing. Cause found in the script: it launched `python.exe -c "import time; time.sleep(12)"` through
+`Start-Process -ArgumentList @(...)`, which does not quote array elements, so python received `-c import` (a
+SyntaxError) and exited before the sample. Fix (no stage.ps1 / policy / gate change): the staged python now
+reports its own modules through `desktop/tools/loaded_modules.py` (psapi `EnumProcessModulesEx`, no race), once
+with PATH = Windows directories only and once with the caller's PATH; the `tcad_desktop.exe` sampler polls up to
+30 s, quotes its arguments (`ConvertTo-ArgString`), and states WHY when it has nothing (exited early with code N /
+no access / none matched). Verified here: pure logic and refusal paths. Not verified here: the Windows run itself.
+The Python UCRT result is therefore still PENDING the user's re-run of `s4_evidence.ps1`.
