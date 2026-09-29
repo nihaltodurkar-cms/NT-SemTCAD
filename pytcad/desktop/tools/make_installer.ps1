@@ -36,7 +36,8 @@ function Get-DesktopVersion([string] $cmakeLists) {
 function Get-StageProblems([string] $stage) {
     $p = @()
     foreach ($rel in @("tcad_desktop.exe", "desktop_runtime.json", "runtime\python.exe",
-                       "backend\backend_service\__main__.py", "backend\gui\services\solver_runner.py")) {
+                       "backend\backend_service\__main__.py", "backend\gui\services\solver_runner.py",
+                       "licenses\THIRD_PARTY_NOTICES.txt", "licenses\manifest.json")) {
         if (-not (Test-Path (Join-Path $stage $rel))) { $p += "missing $rel" }
     }
     if (-not (Get-ChildItem (Join-Path $stage "backend\pytcad") -Filter "_core*.pyd" -ErrorAction SilentlyContinue)) {
@@ -52,6 +53,13 @@ function Get-StageProblems([string] $stage) {
                 elseif ([System.IO.Path]::IsPathRooted($v)) { $p += "desktop_runtime.json $k is absolute ($v): a -DevBackend stage cannot be installed" }
             }
         } catch { $p += "desktop_runtime.json is not valid JSON" }
+    }
+    # P5-S4: the bundle must describe THIS stage (every package and DLL covered, every text intact,
+    # nothing strong-copyleft in a base bundle). gen_licenses.py --verify-bundle is stdlib-only.
+    $py = Join-Path $stage "runtime\python.exe"
+    if ((Test-Path $py) -and (Test-Path (Join-Path $stage "licenses\manifest.json"))) {
+        $out = & $py (Join-Path $PSScriptRoot "gen_licenses.py") --verify-bundle $stage 2>&1
+        if ($LASTEXITCODE) { $p += ("licence bundle does not match the stage:`n      " + (($out | Out-String).Trim() -replace "`r?`n", "`n      ")) }
     }
     # decision 26.4-4: the GPL/AGPL add-on packages are not in the base installer
     $sp = Join-Path $stage "runtime\Lib\site-packages"

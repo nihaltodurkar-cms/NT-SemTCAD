@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import uuid
 import xml.etree.ElementTree as ET
 
@@ -166,11 +167,22 @@ def _arr(items):
 
 def _fake_stage(tmp_path, manifest=None):
     st = tmp_path / "stage"
-    for rel in ("tcad_desktop.exe", "runtime/python.exe", "backend/backend_service/__main__.py",
+    for rel in ("tcad_desktop.exe", "backend/backend_service/__main__.py",
                 "backend/gui/services/solver_runner.py", "backend/pytcad/_core.cp314-win_amd64.pyd"):
         f = st / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"")
+    # runtime\python.exe must RUN (make_installer.ps1 calls gen_licenses.py --verify-bundle with it):
+    # a stand-in that execs this interpreter (Linux CI; the pwsh tests need a POSIX shell)
+    py = st / "runtime" / "python.exe"
+    py.parent.mkdir(parents=True, exist_ok=True)
+    py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    py.chmod(0o755)
+    # a minimal valid licence bundle (P5-S4): no components, no DLLs, so it matches this stage
+    lic = st / "licenses"
+    lic.mkdir()
+    (lic / "THIRD_PARTY_NOTICES.txt").write_text("notices\n")
+    (lic / "manifest.json").write_text(json.dumps({"components": [], "dlls": {}, "addon": False}))
     (st / "desktop_runtime.json").write_text(json.dumps(
         manifest or {"backend_python": "runtime\\python.exe", "backend_root": "backend", "runtime_bin": ""}))
     return st
@@ -197,6 +209,9 @@ def test_a_complete_relative_stage_is_installable(tmp_path):
     ("gmsh shipped", lambda st: (st / "runtime" / "Lib" / "site-packages" / "gmsh").mkdir(parents=True), "gmsh"),
     ("tetgen shipped", lambda st: (st / "runtime" / "Lib" / "site-packages" / "tetgen").mkdir(parents=True), "tetgen"),
     ("scikit-image shipped", lambda st: (st / "runtime" / "Lib" / "site-packages" / "skimage").mkdir(parents=True), "skimage"),
+    ("no licence notices", lambda st: (st / "licenses" / "THIRD_PARTY_NOTICES.txt").unlink(), "licenses\\THIRD_PARTY_NOTICES.txt"),
+    ("no licence manifest", lambda st: (st / "licenses" / "manifest.json").unlink(), "licenses\\manifest.json"),
+    ("stale licence bundle", lambda st: (st / "added_later.dll").write_bytes(b""), "licence bundle does not match"),
     ("garbage manifest", lambda st: (st / "desktop_runtime.json").write_text("{not json"), "not valid JSON"),
     ("dev manifest", lambda st: (st / "desktop_runtime.json").write_text(json.dumps(
         {"backend_python": os.path.abspath(os.sep + os.path.join("opt", "tcad-dev", "python.exe")),

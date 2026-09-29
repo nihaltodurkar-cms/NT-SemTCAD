@@ -85,7 +85,8 @@ try {
     Record "install" ($p.ExitCode -eq 0) "setup exit code $($p.ExitCode)"
 
     # layout
-    $need = @("tcad_desktop.exe", "desktop_runtime.json", "runtime\python.exe", "backend\backend_service\__main__.py")
+    $need = @("tcad_desktop.exe", "desktop_runtime.json", "runtime\python.exe", "backend\backend_service\__main__.py",
+              "licenses\THIRD_PARTY_NOTICES.txt", "licenses\manifest.json")
     $missing = @($need | Where-Object { -not (Test-Path (Join-Path $app $_)) })
     if (-not (Get-ChildItem (Join-Path $app "backend\pytcad") -Filter "_core*.pyd" -ErrorAction SilentlyContinue)) { $missing += "backend\pytcad\_core*.pyd" }
     $lnk = Get-ChildItem $startMenu -Filter "PyTCAD Desktop*.lnk" -Recurse -ErrorAction SilentlyContinue
@@ -103,6 +104,13 @@ try {
     & $py (Join-Path $ToolsDir "check_runtime.py") --backend (Join-Path $app "backend") --runtime (Join-Path $app "runtime") --scratch $scratch *>&1 |
         Tee-Object -FilePath (Join-Path $LogDir "check_runtime.log") | Out-Host
     Record "runtime" ($LASTEXITCODE -eq 0) "check_runtime.py exit $LASTEXITCODE (log: check_runtime.log)"
+
+    # licenses (P5-S4): the INSTALLED bundle still matches the installed files -- every package and DLL
+    # covered, every licence text present and unmodified
+    $lic = & $py (Join-Path $ToolsDir "gen_licenses.py") --verify-bundle $app *>&1
+    $licOut = ($lic | Out-String).Trim()
+    Set-Content -Path (Join-Path $LogDir "licenses.log") -Value $licOut
+    Record "licenses" ($LASTEXITCODE -eq 0) $(if ($LASTEXITCODE -eq 0) { "installed licence bundle verified" } else { $licOut })
 
     # selftest: the installed app, PATH = Windows only
     $saved = $env:PATH

@@ -1,0 +1,21 @@
+LGPL components and your right to replace them
+----------------------------------------------
+The following components are licensed under the GNU Lesser General Public License (LGPL). Each is used
+as a separate dynamic-link library (a .dll file in this installation folder or one of its subfolders such
+as platforms\), as built and distributed by conda-forge; none is statically linked into tcad_desktop.exe.
+Where a component is offered under more than one licence (Qt: LGPL-3.0 or GPL-3.0), this installation
+uses it under the LGPL.
+
+@LGPL_COMPONENTS@
+
+The full licence text of each is in the licenses\texts\ folder next to this file, and the component
+list below gives where each was obtained (the conda-forge package URL). The corresponding source code
+is available from the upstream projects (Qt: https://code.qt.io ; Qt Advanced Docking System:
+https://github.com/githubuser0xFFFF/Qt-Advanced-Docking-System) and from the conda-forge feedstock of
+each package; ask the distributor of this installation if you cannot obtain it.
+
+As the LGPL permits, you may replace any of these libraries with a modified or newer build of the same
+library (with a compatible binary interface) by copying your build over the .dll file of the same name in
+this installation, and run the application with it.
+
+(This statement is the engineering team's draft and has not been reviewed by counsel.)
