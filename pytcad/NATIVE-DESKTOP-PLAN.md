@@ -6428,3 +6428,69 @@ powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\stage.ps1 -Refer
 powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\make_installer.ps1 -WriteSandboxConfig
 # then the Windows Sandbox gate as before; verify_install.json should now list 10 checks
 ```
+
+#### 26.9.1 First real Windows run of the S4 gate (reported by the user): FAILED, correctly -- and what was done
+
+**Result (reported, not observed by the author):** `gen_licenses.py` found **43 licence problems in 54 components** and
+wrote no bundle. Categories: (a) most runtime packages have a recognised licence identifier but no licence TEXT in the
+local conda package cache; (b) four licence strings the classifier will not classify: `TCL`, `LicenseRef-Public-Domain`,
+`LicenseRef-MicrosoftWindowsSDK10`, `LicenseRef-MicrosoftVisualCpp2015-2022Runtime`; (c) two staged DLLs no package
+owns, `dxcompiler.dll` and `dxil.dll`; (d) `libfreetype6` with no licence text. **The gate was not weakened and no
+policy exception was added.** The S4 gate has not been re-run on Windows since; that is still pending (below).
+
+**(a)/(d) Missing texts -- the mechanical fix, now in the generator.** conda-meta records where each package was
+extracted (`extracted_package_dir`, in the pkgs cache) and where it came from (`url`, `sha256`/`md5`,
+`package_tarball_full_path`). `conda clean` removes the extracted dirs and/or the tarballs, after which
+`info/licenses` is gone although the package is still installed. The texts live in the package ARCHIVE, so:
+- `--restore-texts` restores `info/licenses/**` and `info/about.json` from the LOCAL tarball if it still exists
+  (never touches the network); only those files are extracted, into `build\license-cache\<name>-<ver>-<build>\`,
+  refusing any archive path that escapes it;
+- `--download` (stage.ps1: `-DownloadLicenseTexts`) additionally re-fetches a package whose tarball is gone, from the
+  url conda recorded, and **refuses it unless it matches the recorded sha256 (else md5)**; a package with no recorded
+  checksum is not downloaded; the archive is deleted after extraction and the texts are kept, so a later run needs
+  neither the tarball nor the network;
+- `.tar.bz2` needs only the stdlib; `.conda` needs zstd: the staged runtime is Python 3.14, whose stdlib has
+  `compression.zstd` (older interpreters need the `zstandard` package; added to `requirements-dev.txt` for the tests);
+- the notices say where every restored text came from (`text-src:`), and a failing run now prints WHY each text is
+  missing, grouped by cause (extracted dir gone / dir has no `info/licenses` / download failed or refused / the archive
+  itself contains no text), with the fix named. **What I do not know:** which of those causes applies on your machine
+  (the first run's message did not distinguish them) and whether every archive still carries `info/licenses`. A package
+  whose ARCHIVE has no licence text (`libfreetype6` may be one) cannot be fixed mechanically: it needs a person to
+  find the upstream text or drop the package.
+
+**(c) `dxcompiler.dll` / `dxil.dll` -- resolved by not shipping them (inference, please confirm).** The app is Qt
+Widgets + `OpenGLWidgets` + VTK's OpenGL widget: no Qt RHI, Quick or Direct3D 12 code anywhere in `desktop/` (searched).
+`stage.ps1` already tells `windeployqt6` to skip the Windows-SDK D3D compiler (`--no-system-d3d-compiler`), and DXC is
+deployed from the same place by the same tool, which would explain why no `tcad-gui` package owns them. They are
+Microsoft binaries with unreviewed redistribution terms and nothing uses them, so `stage.ps1` now deletes both after
+`windeployqt6` (by name, not by a flag whose spelling varies by Qt version) and says so. The unowned-DLL gate is
+unchanged: if either ever comes back it fails again, and shipping it would need a reviewed `unowned_dlls` policy entry
+with a licence text. To confirm the provenance on your machine:
+```powershell
+Get-ChildItem .\dist\TCAD\dx*.dll | Select-Object Name, @{n='Company';e={$_.VersionInfo.CompanyName}}, @{n='Version';e={$_.VersionInfo.FileVersion}}
+Test-Path "$gui\Library\bin\dxcompiler.dll"          # False => not from the tcad-gui env (windeployqt / SDK)
+& "$gui\Library\bin\windeployqt6.exe" --help | Select-String dxc
+```
+
+**(b) Human decisions still required -- I have NOT added any policy entry for these.** Each needs a person to read the
+package's own licence text (restore the texts first) and decide; the generator now prints, on failure, each unclassified
+licence with the exact packages carrying it. The facts I can offer, and the decision each needs:
+
+| Licence string | What it is (from the identifier; the packages are named by the gate's output) | Decision needed from a person |
+|---|---|---|
+| `TCL` | SPDX id of the Tcl/Tk licence, a permissive BSD-style licence that requires keeping the copyright/licence notice. Most likely on `tcl`/`tk` (a Python dependency; the backend does not use tkinter) -- to be confirmed from the gate output. | Accept as permissive (a `reviewed` entry, class `permissive`, per package) after reading the text; or remove tcl/tk from the runtime, which is NOT a mechanical change (I believe, but have not checked, that Python's conda package depends on `tk`) and would need S2 re-validated. |
+| `LicenseRef-Public-Domain` | A public-domain dedication; conda-forge uses this for a few data/library packages (I would guess `tzdata` -- not verified). No obligations, and often no licence file in the package. | Accept as permissive, AND decide whether a public-domain package must carry a licence text. The gate requires one; a package with none would need a deliberate per-package "no text" allowance (not implemented -- say so if you want it, with a reason field, not a blanket rule). |
+| `LicenseRef-MicrosoftWindowsSDK10` | Microsoft's Windows SDK terms, applied to the conda `ucrt` (Universal CRT redistributable) package. Proprietary; redistribution is governed by the SDK licence's "distributable code" terms. | Whether shipping the UCRT DLLs in this product is permitted under those terms for the intended distribution (and whether they are needed at all on Windows 10+, where the UCRT is part of the OS). If accepted: a `reviewed` entry, class `proprietary-redistributable`, with the basis stated. Removing them would change the S2-validated runtime. |
+| `LicenseRef-MicrosoftVisualCpp2015-2022Runtime` | Microsoft's VC++ redistributable terms, the conda `vc14_runtime` package (`vcruntime140.dll`, `msvcp140.dll`, ...); it may also arrive on the APP side (`stage.ps1` copies the MSVC runtime DLLs the exe imports from `tcad-gui`); the gate output will show. | Whether the distribution fits the redistribution terms, together with the earlier Visual Studio Community licence decision (§12 item 7). If accepted: a `reviewed` entry, class `proprietary-redistributable`, per package/version, with the basis stated. |
+I am not giving a legal conclusion on any of these; the classification is mechanical and the LGPL statement is a draft.
+
+**Re-running the gate on Windows (pending; nothing below has been run).** The existing `dist\TCAD` predates the
+DXC removal, so either re-stage or delete the two DLLs first. To iterate on licences without re-staging:
+```powershell
+$gui = ((conda env list --json | Out-String) | ConvertFrom-Json).envs | Where-Object { (Split-Path $_ -Leaf) -eq "tcad-gui" }
+Remove-Item .\dist\TCAD\dxcompiler.dll, .\dist\TCAD\dxil.dll -ErrorAction SilentlyContinue
+.\dist\TCAD\runtime\python.exe .\pytcad\desktop\tools\gen_licenses.py --stage .\dist\TCAD --gui-env $gui --check-only --download
+```
+`--check-only` with `--download` fills `build\license-cache` and writes no bundle. Paste the table, the
+"LICENCE TEXTS MISSING -- by cause" block and the "HUMAN DECISIONS NEEDED" block. The gate passes only with zero FAILs; S5
+does not start before a valid bundle exists.

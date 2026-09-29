@@ -264,7 +264,7 @@ def test_addon_runtime_allows_only_the_packages_the_policy_names(fake, capsys):
 
 def test_refuses_a_package_whose_licence_text_is_missing(fake, capsys):
     fake.pkg(fake.rt, "notext", "1.0", "MIT", files=["Lib/notext.py"], texts=False)
-    _fails(fake, capsys, expect="notext 1.0: no licence text on disk")
+    _fails(fake, capsys, expect="notext 1.0: no licence text")
 
 
 def test_refuses_a_package_whose_extracted_directory_is_gone(fake, capsys):
@@ -390,7 +390,7 @@ def test_a_base_bundle_that_lists_strong_copyleft_fails_verification(fake):
 
 def test_stage_make_installer_and_verify_scripts_use_the_bundle():
     stage = _read(os.path.join(TOOLS, "stage.ps1"))
-    assert "gen_licenses.py" in stage and "--gui-env $gui" in stage and "[switch] $NoLicenses" in stage
+    assert "gen_licenses.py" in stage and '"--gui-env", $gui' in stage and "[switch] $NoLicenses" in stage
     call = stage.index('(Join-Path $PSScriptRoot "gen_licenses.py")')          # the invocation, not the header comment
     assert call > stage.index('Copy-Tree (Join-Path $root "gui\\services")')          # after the backend is staged
     assert call < stage.index("$stagedRuntime = $true")                            # inside the runtime-staging block
@@ -408,3 +408,241 @@ def test_relinking_template_has_its_placeholder_and_the_counsel_caveat():
     t = _read(gl.RELINK_TEMPLATE)
     assert "@LGPL_COMPONENTS@" in t and "not been reviewed by counsel" in t
     assert "statically linked" in t                                  # the claim S1's DLL closure supports
+
+
+# -- restoring licence texts the package cache no longer has ---------------------------------------
+#
+# The first real Windows run reported 43 problems in 54 components, most of them "no licence text":
+# conda-meta's extracted_package_dir (in the pkgs cache) no longer held info/licenses. The texts live
+# in the package ARCHIVE, so they can be restored mechanically (--restore-texts: the local tarball;
+# --download: re-fetch, verified against the checksum conda recorded). Real archives are built here.
+
+import hashlib  # noqa: E402
+import io  # noqa: E402
+import tarfile  # noqa: E402
+import zipfile  # noqa: E402
+
+try:                                                       # the same choice gen_licenses makes
+    from compression import zstd as _zstd  # noqa: F401
+    HAVE_ZSTD = True
+except ImportError:
+    try:
+        import zstandard as _zstandard
+        HAVE_ZSTD = True
+    except ImportError:
+        HAVE_ZSTD = False
+needs_zstd = pytest.mark.skipif(not HAVE_ZSTD, reason="reading .conda packages needs Python 3.14+ or `zstandard`")
+
+
+def _tar_bytes(members):
+    """members: {name: bytes}; a name may contain '..' (built with TarInfo, not the filesystem)."""
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, data in members.items():
+            ti = tarfile.TarInfo(name)
+            ti.size = len(data)
+            tf.addfile(ti, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _zst(data):
+    try:
+        from compression import zstd
+        return zstd.compress(data)
+    except ImportError:
+        return _zstandard.ZstdCompressor().compress(data)
+
+
+def make_archive(path, kind, name, version, licence_text=b"the package's licence text\n", about_license="MIT",
+                 with_licenses=True, extra=None):
+    """A real conda package at `path` (kind: 'tar.bz2' or 'conda') with info/licenses, info/about.json and a
+    payload file that must NOT be extracted."""
+    info = {"info/about.json": json.dumps({"license": about_license}).encode(),
+            "info/index.json": json.dumps({"name": name, "version": version}).encode()}
+    if with_licenses:
+        info["info/licenses/LICENSE.txt"] = licence_text
+    info.update(extra or {})
+    payload = {"lib/payload.txt": b"payload"}
+    if kind == "tar.bz2":
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:bz2") as tf:
+            for n, d in {**payload, **info}.items():
+                ti = tarfile.TarInfo(n)
+                ti.size = len(d)
+                tf.addfile(ti, io.BytesIO(d))
+        path.write_bytes(buf.getvalue())
+    else:
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("metadata.json", json.dumps({"conda_pkg_format_version": 2}))
+            z.writestr(f"pkg-{name}-{version}-0.tar.zst", _zst(_tar_bytes(payload)))
+            z.writestr(f"info-{name}-{version}-0.tar.zst", _zst(_tar_bytes(info)))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _set_meta(prefix, name, version, **kv):
+    f = prefix / "conda-meta" / f"{name}-{version}-0.json"
+    m = json.loads(f.read_text())
+    m.update(kv)
+    f.write_text(json.dumps(m))
+
+
+def _cleaned_package(fake, name="cleaned", version="1.0", license="MIT", kind="tar.bz2", tarball=True,
+                     sha=True, **archive_kw):
+    """A runtime package whose extracted cache dir is gone (`conda clean`), optionally with its tarball."""
+    fake.pkg(fake.rt, name, version, license, files=[f"Lib/{name}.py"], keep_dir=False)
+    arch = fake.tmp / "tarballs" / f"{name}-{version}-0.{kind}"
+    arch.parent.mkdir(exist_ok=True)
+    digest = make_archive(arch, kind, name, version, **archive_kw)
+    kv = {"url": arch.as_uri()}
+    if sha:
+        kv["sha256"] = digest
+    if tarball:
+        kv["package_tarball_full_path"] = str(arch)
+    _set_meta(fake.rt, name, version, **kv)
+    return arch
+
+
+def _cache(fake):
+    return fake.tmp / "license-cache"
+
+
+def test_without_restore_the_diagnosis_says_why_and_names_the_fix(fake, capsys):
+    _cleaned_package(fake)
+    out = _fails(fake, capsys, expect="cleaned 1.0: no licence text (its extracted package directory no longer exists")
+    assert "LICENCE TEXTS MISSING -- by cause:" in out and "extracted directory gone: 1" in out
+    assert "--restore-texts" in out and "--download" in out
+
+
+@pytest.mark.parametrize("kind", ["tar.bz2", pytest.param("conda", marks=needs_zstd)])
+def test_restore_texts_from_the_local_tarball(fake, capsys, kind):
+    _cleaned_package(fake, kind=kind, licence_text=b"MIT LICENCE OF cleaned\n")
+    assert fake.run("--restore-texts", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+    lic = fake.stage / "licenses"
+    man = json.loads(_read(str(lic / "manifest.json")))
+    row = next(c for c in man["components"] if c["name"] == "cleaned")
+    assert row["texts_from"] == "restored from the local package tarball"
+    assert (lic / row["texts"][0]["file"]).read_text() == "MIT LICENCE OF cleaned\n"
+    assert "text-src: restored from the local package tarball" in _read(str(lic / "THIRD_PARTY_NOTICES.txt"))
+    # ONLY the licence files were taken out of the archive, not the payload
+    cached = [os.path.relpath(os.path.join(b, f), str(_cache(fake)))
+              for b, _d, fs in os.walk(str(_cache(fake))) for f in fs]
+    assert sorted(c.replace("\\", "/") for c in cached) == sorted(
+        ["cleaned-1.0-0/info/about.json", "cleaned-1.0-0/info/licenses/LICENSE.txt"])
+
+
+def test_restore_uses_no_network_and_needs_no_download_flag(fake, capsys):
+    _cleaned_package(fake)                                                   # tarball present
+    _set_meta(fake.rt, "cleaned", "1.0", url="http://127.0.0.1:9/never-fetched.tar.bz2")
+    assert fake.run("--restore-texts", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+
+
+def test_a_missing_tarball_needs_download_and_says_so(fake, capsys):
+    _cleaned_package(fake, tarball=False)
+    out = _fails(fake, capsys, "--restore-texts", "--text-cache", str(_cache(fake)),
+                 expect="the extracted directory and the tarball are both gone; re-run with --download")
+    assert "the tarballs are gone too: re-run with --download" in out
+
+
+@pytest.mark.parametrize("kind", ["tar.bz2", pytest.param("conda", marks=needs_zstd)])
+def test_download_restores_the_texts_verified_against_the_recorded_checksum(fake, capsys, kind):
+    _cleaned_package(fake, kind=kind, tarball=False, licence_text=b"fetched licence\n")
+    assert fake.run("--download", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    row = next(c for c in man["components"] if c["name"] == "cleaned")
+    assert row["texts_from"].startswith("downloaded from file:///") and "checksum verified" in row["texts_from"]
+    assert not list((_cache(fake) / "_download").glob("*"))                 # only the texts are kept
+
+
+def test_a_download_that_does_not_match_the_recorded_checksum_is_refused(fake, capsys):
+    _cleaned_package(fake, tarball=False)
+    _set_meta(fake.rt, "cleaned", "1.0", sha256="0" * 64)
+    out = _fails(fake, capsys, "--download", "--text-cache", str(_cache(fake)), expect="sha256 does not match conda-meta")
+    assert "download of file:///" in out and "refused" in out
+    assert not (_cache(fake) / "cleaned-1.0-0").exists() and not list((_cache(fake) / "_download").glob("*"))
+
+
+def test_a_download_with_no_recorded_checksum_is_refused(fake, capsys):
+    _cleaned_package(fake, tarball=False, sha=False)
+    _fails(fake, capsys, "--download", "--text-cache", str(_cache(fake)), expect="cannot be verified")
+
+
+def test_the_md5_is_used_when_no_sha256_is_recorded(fake, capsys):
+    arch = _cleaned_package(fake, tarball=False, sha=False)
+    _set_meta(fake.rt, "cleaned", "1.0", md5=hashlib.md5(arch.read_bytes()).hexdigest())
+    assert fake.run("--download", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+
+
+def test_a_failed_download_is_a_named_reason_not_a_crash(fake, capsys):
+    _cleaned_package(fake, tarball=False)
+    _set_meta(fake.rt, "cleaned", "1.0", url=(fake.tmp / "no_such.tar.bz2").as_uri())
+    out = _fails(fake, capsys, "--download", "--text-cache", str(_cache(fake)), expect="failed:")
+    assert "download failed or refused: 1" in out
+
+
+def test_an_archive_with_no_licence_text_is_a_human_decision_not_a_mechanical_fix(fake, capsys):
+    _cleaned_package(fake, with_licenses=False)
+    out = _fails(fake, capsys, "--restore-texts", "--text-cache", str(_cache(fake)),
+                 expect="the package archive itself contains no info/licenses")
+    assert "archive itself has no licence text (upstream): 1" in out and "human decision" in out
+
+
+def test_a_hostile_archive_cannot_write_outside_the_cache(fake, capsys):
+    arch = _cleaned_package(fake, extra={"info/licenses/../../evil.txt": b"pwned"})
+    out = _fails(fake, capsys, "--restore-texts", "--text-cache", str(_cache(fake)), expect="unsafe path in package archive")
+    assert not (fake.tmp / "evil.txt").exists() and not (_cache(fake) / "evil.txt").exists()
+    assert not list(fake.tmp.rglob("evil.txt"))
+    assert arch.exists()
+
+
+def test_restored_texts_are_kept_so_a_second_run_needs_neither_tarball_nor_network(fake, capsys):
+    arch = _cleaned_package(fake, tarball=False)
+    assert fake.run("--download", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+    arch.unlink()                                                          # the "network" is gone now
+    shutil = __import__("shutil")
+    shutil.rmtree(str(fake.stage / "licenses"))
+    assert fake.run("--restore-texts", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    assert next(c for c in man["components"] if c["name"] == "cleaned")["texts_from"] == "restored earlier (licence-text cache)"
+
+
+def test_the_licence_string_falls_back_to_the_restored_about_json(fake, capsys):
+    _cleaned_package(fake, license=None, about_license="Apache-2.0")
+    assert fake.run("--restore-texts", "--text-cache", str(_cache(fake))) == 0, _out(capsys)
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    assert next(c for c in man["components"] if c["name"] == "cleaned")["license"] == "Apache-2.0"
+
+
+def test_extract_info_takes_only_licence_files_and_refuses_unsafe_names(tmp_path):
+    arch = tmp_path / "p.tar.bz2"
+    make_archive(arch, "tar.bz2", "p", "1")
+    dest = tmp_path / "out"
+    assert gl.extract_info(str(arch), str(dest)) == 2
+    assert sorted(os.listdir(str(dest / "info"))) == ["about.json", "licenses"]
+    assert not (dest / "lib").exists()
+    for bad in ("/abs/x", "info/licenses/../../x", "C:/x", ""):
+        assert not gl._safe_member(bad), bad
+    assert gl._safe_member("info/licenses/LICENSE.txt")
+    with pytest.raises(ValueError, match="unrecognised"):
+        gl.extract_info(str(tmp_path / "p.zip"), str(dest))
+
+
+# -- the human decisions, laid out ----------------------------------------------------------------
+
+def test_unclassified_licences_are_grouped_with_the_exact_packages(fake, capsys):
+    fake.pkg(fake.rt, "tzdata", "2025b", "LicenseRef-Public-Domain", files=["Lib/tzdata.py"])
+    fake.pkg(fake.rt, "libsqlite", "3.50", "LicenseRef-Public-Domain", files=["Library/bin/sqlite3.dll"])
+    fake.pkg(fake.rt, "ucrt", "10.0.22621", "LicenseRef-MicrosoftWindowsSDK10", files=["Library/bin/ucrtbase.dll"])
+    fake.pkg(fake.rt, "tk", "8.6.13", "TCL", files=["Library/bin/tk86t.dll"])
+    out = _fails(fake, capsys, expect="HUMAN DECISIONS NEEDED")
+    assert "'LicenseRef-Public-Domain': libsqlite 3.50, tzdata 2025b" in out
+    assert "'LicenseRef-MicrosoftWindowsSDK10': ucrt 10.0.22621" in out
+    assert "'TCL': tk 8.6.13" in out
+    assert "reviewed" in out and "class, reason, basis" in out
+
+
+def test_stage_script_passes_the_restore_options_and_removes_the_sdk_dxc_dlls():
+    stage = _read(os.path.join(TOOLS, "stage.ps1"))
+    assert "[switch] $DownloadLicenseTexts" in stage and "--restore-texts" in stage and "--download" in stage
+    # windeployqt6 deploys these two from the Windows SDK (like the D3D compiler it is already told to skip);
+    # nothing owns them and the app has no D3D12 code, so they are not shipped
+    assert 'dxcompiler.dll' in stage and 'dxil.dll' in stage and "Remove-Item" in stage

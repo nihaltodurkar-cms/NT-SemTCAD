@@ -27,6 +27,9 @@
 # -RecreateRuntime: delete and re-create the -RuntimeEnv env from the spec.
 # -NoVerify: skip check_runtime.py on the staged runtime + backend.
 # -NoLicenses: skip gen_licenses.py (P5-S4). The installer build refuses a stage without the bundle.
+# -DownloadLicenseTexts: when a package's extracted conda cache dir AND tarball are both gone (`conda clean`),
+#   re-download that package to restore its licence text -- verified against the sha256/md5 conda recorded.
+#   Without it only local tarballs are used (gen_licenses.py --restore-texts); nothing touches the network.
 # -Check <npz>: after staging, run the staged app's --selftest on <npz> with a
 #   PATH holding only C:\Windows directories -- proof that nothing is picked up
 #   from the conda envs.
@@ -43,6 +46,7 @@ param(
     [switch] $NoRuntime,
     [switch] $NoVerify,
     [switch] $NoLicenses,
+    [switch] $DownloadLicenseTexts,
     [switch] $NoPin,
     [switch] $RecreateRuntime,
     [string] $RuntimeEnv = "tcad-runtime",
@@ -138,6 +142,20 @@ Copy-Item $exe $Out
     --release --no-translations --no-system-d3d-compiler `
     --no-opengl-sw --no-compiler-runtime --dir $Out (Join-Path $Out "tcad_desktop.exe") | Out-Null
 if ($LASTEXITCODE) { throw "windeployqt6 failed" }
+
+# windeployqt6 also deploys the DirectX Shader Compiler (dxcompiler.dll, dxil.dll) from the Windows SDK,
+# the same way it deploys the D3D compiler that --no-system-d3d-compiler above already skips. No tcad-gui
+# package owns them (P5-S4's licence gate reported both as unowned), they are Microsoft binaries whose
+# redistribution terms nobody has reviewed, and the app has no use for them: it is Qt Widgets plus VTK's
+# OpenGL widget, with no Qt RHI / Direct3D 12 code. So they are not shipped. Removed by name rather than by
+# a windeployqt flag whose spelling varies between Qt versions; if the app ever needs them, they need a
+# reviewed license_policy.json entry, not a silent copy.
+foreach ($dx in @("dxcompiler.dll", "dxil.dll")) {
+    Get-ChildItem $Out -Recurse -Filter $dx -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -Force $_.FullName
+        Write-Host "not shipping $($_.Name) (Windows SDK DXC deployed by windeployqt6; nothing owns it, the app does not use it)"
+    }
+}
 
 # 4. The DLL closure: walk every staged PE file's imports; any import that lives
 #    in tcad-gui's Library\bin (VTK, ADS, TBB, the MSVC runtime, ...) is copied
@@ -279,7 +297,9 @@ if (-not $DevBackend -and -not $NoRuntime) {
     #     every problem listed, on a package/DLL with no licence entry, GPL/AGPL in the base runtime, or a
     #     GPL-only Qt module. stdlib-only, so the staged interpreter runs it.
     if (-not $NoLicenses) {
-        & (Join-Path $rt "python.exe") (Join-Path $PSScriptRoot "gen_licenses.py") --stage $Out --gui-env $gui
+        $licArgs = @("--stage", $Out, "--gui-env", $gui, "--restore-texts")
+        if ($DownloadLicenseTexts) { $licArgs += "--download" }
+        & (Join-Path $rt "python.exe") (Join-Path $PSScriptRoot "gen_licenses.py") @licArgs
         Assert-Exit "gen_licenses.py (the licence bundle)"
     }
     $stagedRuntime = $true

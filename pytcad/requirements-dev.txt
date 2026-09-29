@@ -1,3 +1,4 @@
 -r requirements.txt
 pytest>=8.0
 pytest-xdist>=3.5
+zstandard>=0.22   # gui/tests/test_desktop_licenses.py builds real .conda packages (zstd); Python 3.14 has compression.zstd
