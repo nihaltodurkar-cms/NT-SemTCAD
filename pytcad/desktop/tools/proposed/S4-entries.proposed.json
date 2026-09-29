@@ -1,5 +1,5 @@
 {
-  "_STATUS": "PROPOSAL v2 -- NOT APPLIED. license_policy.json and the gate are unchanged. <ANGLE-BRACKET> and CONFIRM values are for a person / for s4_evidence.ps1 output.",
+  "_STATUS": "PROPOSAL v3 -- NOT APPLIED. Re-pinned to the authoritative staged conda-meta identities (user-confirmed) and re-verified against the conda-forge archives. license_policy.json and the gate are unchanged.",
   "_gate_changes_this_would_need_NOT_MADE": [
     "reviewed: enforce an optional 'version' and 'text_sha256' pin (today an entry is keyed by NAME ONLY, so a version bump would silently inherit the review; an unknown key such as 'version' would be accepted and IGNORED, which is why the entries below carry the pin in `basis` and not as a field)",
     "supplemental_texts: new policy section; vendored files under desktop/tools/notices/upstream/; accepted for that ONE package only if its installed version (and build where given) equals the pin AND the file's sha256 matches; otherwise the package still fails 'no licence text'",
@@ -9,30 +9,30 @@
   "reviewed": {
     "tk": {
       "class": "permissive",
-      "reason": "Tcl/Tk licence (SPDX TCL): permits use, copying, modification and distribution for any purpose, with no royalty, provided existing copyright notices are retained and the licence notice is included verbatim in distributions. The text ships in the package and is copied into licenses/texts/ by the generator.",
-      "basis": "PACKAGE TEXT: info/licenses/tcl9.0.4/license.terms (sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) in the conda-forge archive of this package; read by <REVIEWER> on <DATE>. Pulled in by python 3.14.7 -> tk -> libtk -> libtcl. Package: tk|libtk|libtcl 9.0.4 build h230c182_1 as seen in current conda-forge -- CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)."
-    },
-    "libtk": {
-      "class": "permissive",
-      "reason": "Tcl/Tk licence (SPDX TCL): permits use, copying, modification and distribution for any purpose, with no royalty, provided existing copyright notices are retained and the licence notice is included verbatim in distributions. The text ships in the package and is copied into licenses/texts/ by the generator.",
-      "basis": "PACKAGE TEXT: info/licenses/tcl9.0.4/license.terms (sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) in the conda-forge archive of this package; read by <REVIEWER> on <DATE>. Pulled in by python 3.14.7 -> tk -> libtk -> libtcl. Package: tk|libtk|libtcl 9.0.4 build h230c182_1 as seen in current conda-forge -- CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)."
-    },
-    "libtcl": {
-      "class": "permissive",
-      "reason": "Tcl/Tk licence (SPDX TCL): permits use, copying, modification and distribution for any purpose, with no royalty, provided existing copyright notices are retained and the licence notice is included verbatim in distributions. The text ships in the package and is copied into licenses/texts/ by the generator.",
-      "basis": "PACKAGE TEXT: info/licenses/tcl9.0.4/license.terms (sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) in the conda-forge archive of this package; read by <REVIEWER> on <DATE>. Pulled in by python 3.14.7 -> tk -> libtk -> libtcl. Package: tk|libtk|libtcl 9.0.4 build h230c182_1 as seen in current conda-forge -- CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)."
+      "reason": "Tcl/Tk licence (SPDX TCL): permits use, copying, modification and distribution for any purpose, with no royalty, provided existing copyright notices are retained and the licence notice is included verbatim in distributions. tk 8.6.13 bundles Tcl and Tk in one package; the licence text ships in the package and is copied into licenses/texts/ by the generator.",
+      "basis": "PACKAGE TEXT: info/licenses/tcl8.6.13/license.terms (2255 B, sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) inside tk 8.6.13 build h967ab96_4 (win-64 conda-forge archive sha256 f19618a3a82cc483dacf1c70a30367ee7b0c7e71b90f1f80e14feff44fbd3688, matches repodata). The same file is installed as Library/lib/tk8.6/license.terms. Only the package 'tk' exists in the staged inventory (no separate libtk/libtcl). Read by <REVIEWER> on <DATE>. NOT COVERED by this text: the third-party DLLs this package installs (Library/bin/zlib1.dll, lib/sqlite3.40.0/sqlite3400t.dll, tdbc*/itcl/thread extensions) -- see S4-PROPOSAL.md item 6.",
+      "pin_for_G2": {
+        "version": "8.6.13",
+        "build": "h967ab96_4",
+        "text_sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"
+      }
     },
     "tzdata": {
       "class": "permissive",
       "reason": "IANA time-zone database, dedicated to the public domain ('Unless specified below, all files in the tz code and data (including this LICENSE file) are in the public domain'). The only carve-out, BSD-3-Clause for date.c, newstrftime.3 and strftime.c, applies to files this package does not install (606 installed paths, all share/zoneinfo/* data). The text ships in the package.",
-      "basis": "PACKAGE TEXT: info/licenses/LICENSE (sha256 0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf) in tzdata 2026c build h151e31d_0 as seen in current conda-forge -- CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment). Installed-file check: info/paths.json of that build lists no date.c / newstrftime.3 / strftime.c -- re-check for the build in use. Pulled in by python 3.14.7 -> tzdata. Read by <REVIEWER> on <DATE>."
+      "basis": "PACKAGE TEXT: info/licenses/LICENSE (252 B, sha256 0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf) inside tzdata 2026c build h151e31d_0 (noarch conda-forge archive sha256 b928c30ddcb0e3f544c6eade8352737e6e610e263276b90232db6a578ef899d8). Installed-file check on that build's info/paths.json: 606 paths, none named date.c / newstrftime.3 / strftime.c. Read by <REVIEWER> on <DATE>.",
+      "pin_for_G2": {
+        "version": "2026c",
+        "build": "h151e31d_0",
+        "text_sha256": "0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf"
+      }
     }
   },
   "supplemental_texts": {
     "libsqlite": {
       "version": "3.53.4",
       "build": "hf5d6505_1",
-      "confirm": "CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)",
+      "confirm": "Identity confirmed by the staged conda-meta inventory. Conda licence string: 'blessing'.",
       "text": {
         "file": "notices/upstream/libsqlite/blessing.txt",
         "sha256": "fa1f26185c2210e7b6e333829a03b8ca6a4180b36381d4b1b6dc1c09077c2f87"
@@ -43,22 +43,28 @@
       "reviewed_by": "<REVIEWER> on <DATE>"
     },
     "libwinpthread": {
-      "version": "9.0.0.6454.b4445ee52.1",
-      "build": "h57928b3_0",
-      "confirm": "CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)",
+      "STATUS": "TEXT NOT ESTABLISHED -- no entry can be written yet",
+      "version": "12.0.0.r4.gg4f2fc60ca",
+      "build": "h57928b3_10",
+      "confirm": "Identity confirmed by the staged conda-meta inventory. Archive sha256 0fccf2d17026255b6e10ace1f191d0a2a18f2d65088fd02430be17c701f8ffe0 (matches repodata); ships only Library/bin/libwinpthread-1.dll, no info/licenses.",
+      "conda_licence": "MIT AND BSD-3-Clause-Clear",
+      "recipe_declares_license_files": [
+        "mingw-w64-libraries/winpthreads/COPYING",
+        "COPYING.MinGW-w64/COPYING.MinGW-w64.txt"
+      ],
       "text": {
-        "file": "notices/upstream/libwinpthread/COPYING",
-        "sha256": "63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177"
+        "file": "notices/upstream/libwinpthread/COPYING (+ COPYING.MinGW-w64.txt)",
+        "sha256": "<REQUIRED: from mingw-w64 commit 4f2fc60ca>"
       },
-      "source": "UPSTREAM TEXT: mingw-w64 winpthreads/COPYING (2883 B), as published by the mingw-w64 project (read from its GitHub mirror). NO copy exists in any conda package (archive sha256 e94e8659...5d28 has none). NOTE: obtained through the session's web proxy, outside the session's GitHub scope; please verify it against the SourceForge original or an MSYS2 libwinpthread package before applying.",
-      "basis_type": "upstream text (weakest of the four: unverifiable from the conda archives)",
-      "reason": "Upstream COPYING carries TWO notices: mingw-w64 MIT terms and a BSD-3-Clause-style notice for parts derived from Lockless Inc.'s pthreads library. conda-forge's 'MIT' understates it; the whole file must ship.",
+      "source": "REQUIRED and not yet obtained: the two files above AT SOURCE COMMIT 4f2fc60ca of mingw-w64 (the 'gg4f2fc60ca' in the version). Unverified reference only: texts/UNVERIFIED-reference/libwinpthread-COPYING.mingw-w64-master-mirror (sha256 63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177), fetched from a mirror's master branch, NOT that commit.",
+      "basis_type": "upstream text at the exact source commit (pending)",
+      "reason": "Package ships no licence file although its recipe declares two; conda's expression is 'MIT AND BSD-3-Clause-Clear'. The whole of both files must ship once verified.",
       "reviewed_by": "<REVIEWER> on <DATE>"
     },
     "pyamg": {
       "version": "5.3.0",
-      "build": "py314hbac2fa4_1 (build _2 ships the file; _1 does not)",
-      "confirm": "CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)",
+      "build": "py314hbac2fa4_1",
+      "confirm": "Identity confirmed by the staged conda-meta inventory. Archive sha256 744eb20e5b148e9cff9a011ca9cacc9e242595e03f28332e6ce12e324cc3407c; ships no info/licenses. Text taken from the sibling build _2 (do not swap builds).",
       "text": {
         "file": "notices/upstream/pyamg/LICENSE.txt",
         "sha256": "853c14468ce2622c0e58310ca0823ee10d342897b17d28b8616a4f92fccc106c"
@@ -71,7 +77,7 @@
     "libfreetype6": {
       "version": "2.14.3",
       "build": "hdbac1cb_2",
-      "confirm": "CONFIRM against s4_evidence.ps1 section C (exact version/build/archive sha256 in YOUR environment)",
+      "confirm": "NOT in the user's confirmed inventory list: version/build below are from conda-forge only -- CONFIRM against the staged conda-meta before use.",
       "text": {
         "file": "notices/upstream/libfreetype6/FTL.TXT",
         "sha256": "5a5ee54c5001bbad1cdc1a57cc3dd4c42199b2da09d39c7ee41fab002d02967f"

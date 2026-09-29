@@ -4,10 +4,12 @@ Nothing here is applied. `license_policy.json`, `gen_licenses.py`, `stage.ps1` a
 holds the exact policy JSON; `texts/` holds the exact texts (`texts/SHA256SUMS`). Every hash below was recomputed from
 the file on disk when this was written.
 
-**Unverified in this document** (the Windows log was reported as a summary, not pasted): the exact version/build/archive
-sha256 of each package in YOUR environment. Every entry pins the version/build seen in current conda-forge and must be
-checked against `s4-evidence.txt` section C / the `gen_licenses-restore.log` before applying. A mismatch means the text
-below may not be that build's text.
+**Identities (v3, 2026-09-29):** re-pinned to the staged conda-meta inventory you confirmed: libsqlite 3.53.4 hf5d6505_1,
+libwinpthread 12.0.0.r4.gg4f2fc60ca h57928b3_10, pyamg 5.3.0 py314hbac2fa4_1, tk 8.6.13 h967ab96_4, tzdata 2026c h151e31d_0,
+vc 14.5 ha367084_41, vc14_runtime / vcomp14 14.51.36247 habf1de7_41. v1/v2 were WRONG for libwinpthread (cited 9.0.0.6454…/_0)
+and tk (cited 9.0.4/h230c182_1, and libtk/libtcl, which are not in the stage — those entries are removed). Each identity was
+re-verified this time by downloading the exact conda-forge archive and comparing its sha256 with conda-forge's repodata.
+`libfreetype6` is NOT in the list you confirmed: its pin is still from conda-forge only and must be confirmed.
 
 ## Gate changes these proposals need (one change set, all currently unmade)
 
@@ -20,7 +22,7 @@ below may not be that build's text.
 | G5 | tests in `gui/tests/test_desktop_licenses.py` | Mutation-checked: wrong sha → still FAIL; wrong version/build → still FAIL; missing vendored file → FAIL; supplemental never applies when the archive HAS a text; `reviewed` pin mismatch → FAIL; metapackage rule does not excuse a package with files; `--verify-bundle` re-checks supplemental hashes. |
 
 ## 1. libsqlite — supplemental text
-- **Package:** libsqlite 3.53.4 build hf5d6505_1 (CONFIRM). Archive has no `info/licenses`; licence string public-domain.
+- **Package (identity confirmed):** libsqlite 3.53.4 build hf5d6505_1, archive sha256 `0a45d7c0f20146fff787a106f8fa187872e309c70975ff8f0936e188914c26ad`. No `info/licenses`; conda licence string `blessing`.
 - **Source:** lines 1–9 of `Library/include/sqlite3.h` in the package's own `libsqlite-3.53.4-hf5d6505_1.conda`
   (archive sha256 `0a45d7c0f20146fff787a106f8fa187872e309c70975ff8f0936e188914c26ad`), verbatim. Basis type: package text.
 - **File:** `notices/upstream/libsqlite/blessing.txt` (from `texts/libsqlite-blessing.txt`), 291 B,
@@ -30,25 +32,40 @@ below may not be that build's text.
   may add it as a second source; not needed for the entry.
 - **Change:** G1 + the `supplemental_texts.libsqlite` block in `S4-entries.proposed.json`; vendor the file.
 
-## 2. libwinpthread — supplemental text (weakest evidence)
-- **Package:** libwinpthread 9.0.0.6454.b4445ee52.1 build h57928b3_0 (CONFIRM). Archive (sha256 `e94e8659…5d28`) has no licence.
-- **Source:** mingw-w64 `mingw-w64-libraries/winpthreads/COPYING`, 2883 B, sha256
-  `63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177`. It has TWO notices (mingw-w64 MIT terms and a
-  BSD-3-Clause-style notice for code derived from Lockless Inc.); conda's `MIT` understates it, so the whole file ships.
-- **Evidence gap:** this came through the session's web proxy from a GitHub mirror, and no conda package carries it.
-  Required before applying: a person compares it byte-for-byte (same sha256) with the SourceForge original or the
-  `COPYING` in an MSYS2 `mingw-w64-x86_64-libwinpthread` source package for the same 9.0.0 release, and records that.
-  If it cannot be verified, ship nothing supplemental and instead drop the DLL from the runtime (not proposed).
-- **Change:** G1 + `supplemental_texts.libwinpthread`; vendor `notices/upstream/libwinpthread/COPYING`.
+## 2. libwinpthread 12.0.0.r4.gg4f2fc60ca (h57928b3_10) — text NOT ESTABLISHED
+- **Package facts (verified):** archive sha256 `0fccf2d17026255b6e10ace1f191d0a2a18f2d65088fd02430be17c701f8ffe0` (equals
+  repodata); installs only `Library/bin/libwinpthread-1.dll`; no `info/licenses`. Conda licence: **`MIT AND BSD-3-Clause-Clear`**
+  (the earlier draft's "MIT + BSD-3-Clause-style" wording is superseded). It is built by conda-forge's `m2w64-sysroot`
+  recipe (version `12.0.0.r4.gg4f2fc60ca`), whose `about.json` declares two licence files that never reached the package:
+  `mingw-w64-libraries/winpthreads/COPYING` and `COPYING.MinGW-w64/COPYING.MinGW-w64.txt`.
+- **Searched for an authoritative copy of those two files at source commit `4f2fc60ca`, and did not find one:**
+  - not in `libwinpthread` builds _8, _9, _10, nor in `winpthreads-devel` _10 (same recipe/version): none has `info/licenses`;
+  - the only other conda-forge package (`mingw-w64-ucrt-x86_64-libwinpthread-git`) is a different commit (`r2.ggc561118da`) and
+    uses a non-standard archive layout I could not read — it would not be evidence for this commit anyway;
+  - SourceForge (project's own git) answered 404 for the commit path and 403 for git; MSYS2 repos 403. The GitHub mirror is
+    outside this session's scope and I did not use it this time.
+- **The earlier file is demoted, not used:** `texts/UNVERIFIED-reference/libwinpthread-COPYING.mingw-w64-master-mirror`
+  (sha256 `63263614cdd29f2f93cba85e992f041b31f9fc7b4033692f31269489a8a1b177`) came from a mirror's master branch, not this
+  commit, and there is a second required file I never had (COPYING.MinGW-w64.txt). It shows what to expect (an MIT-style
+  notice plus a Lockless Inc. BSD-3-Clause-style one), not what to ship.
+- **Evidence required (you, from any clone of mingw-w64, e.g. `git clone https://git.code.sf.net/p/mingw-w64/mingw-w64`):**
+  ```
+  git -C mingw-w64 cat-file -t 4f2fc60ca            # must print: commit  (this is the version's 'g4f2fc60ca')
+  git -C mingw-w64 show 4f2fc60ca:mingw-w64-libraries/winpthreads/COPYING       > COPYING
+  git -C mingw-w64 show 4f2fc60ca:COPYING.MinGW-w64/COPYING.MinGW-w64.txt       > COPYING.MinGW-w64.txt
+  (Get-FileHash COPYING, COPYING.MinGW-w64.txt -Algorithm SHA256)
+  ```
+  Send back both hashes (and the contents if they differ from the reference). Note the DLL itself is built by
+  conda-forge; the honest statement is "source at that commit + conda's declared licence", which is what these give.
+- **Change:** G1 entry with BOTH files (each with its own sha256), pinned to version+build; `S4-entries.proposed.json` carries a
+  `STATUS: TEXT NOT ESTABLISHED` stub with `<REQUIRED>` hashes. Nothing can be applied for this package until then.
 
-## 3. pyamg — supplemental text
-- **Package:** pyamg 5.3.0 build py314hbac2fa4_1 (CONFIRM: the sibling `_2` build ships the text, `_1` does not).
-- **Source:** `info/licenses/LICENSE.txt` of `pyamg-5.3.0-py314hbac2fa4_2.conda` (archive sha256
+## 3. pyamg 5.3.0 (py314hbac2fa4_1) — supplemental text
+- **Package (verified):** archive sha256 `744eb20e5b148e9cff9a011ca9cacc9e242595e03f28332e6ce12e324cc3407c`, conda licence `MIT`, no `info/licenses`.
+- **Source:** `info/licenses/LICENSE.txt` of the SAME release's sibling build `pyamg-5.3.0-py314hbac2fa4_2.conda` (archive sha256
   `426c45101c21854d54060536685b91421fd5e8073f75c50423b44f6cbbcd5a46`), 1088 B, sha256
-  `853c14468ce2622c0e58310ca0823ee10d342897b17d28b8616a4f92fccc106c`; the same file the project publishes (MIT).
-- **Rationale:** same release, licence declared MIT in this build's about.json; only the text file is missing from `_1`.
-  Do NOT swap to build `_2` instead (all 9 compiled `.pyd` differ between the builds). If your runtime already has `_2`,
-  the mechanical restore should have found the text — check the log before applying anything.
+  `853c14468ce2622c0e58310ca0823ee10d342897b17d28b8616a4f92fccc106c` (`texts/pyamg-LICENSE.txt`); the project's own MIT LICENSE.txt.
+- **Rationale:** same release, only the text file is missing from `_1`. Do NOT swap builds (the compiled `.pyd` differ).
 - **Change:** G1 + `supplemental_texts.pyamg`; vendor `notices/upstream/pyamg/LICENSE.txt`.
 
 ## 4. libfreetype6 — supplemental text + required credit line
@@ -63,7 +80,7 @@ below may not be that build's text.
 - **Change:** G1 + G4 + `supplemental_texts.libfreetype6`; vendor `notices/upstream/libfreetype6/FTL.TXT`.
 
 ## 5. vc — structural zero-file / metapackage handling
-- **Fact:** `vc` (conda-forge) is a metapackage: it pins `vc14_runtime` and installs no files, so its archive has no
+- **Fact (verified against repodata):** `vc` 14.5 build ha367084_41 (archive sha256 `35444c55…b79c`, licence `BSD-3-Clause`, depends `vc14_runtime >=14.51.36247`) is a metapackage: it installs no files, so its archive has no
   licence text and nothing of it ships. (Confirm in your conda-meta: `files: []`, and its licence string.)
 - **Proposal (G3):** in `component()`, if the conda-meta record has a `files` key that is an EMPTY list, the "no licence
   text" problem is not raised; the row is marked `metapackage`, the licence string is still classified and still gated,
@@ -72,33 +89,35 @@ below may not be that build's text.
 - **Safety properties for G5:** a package with ≥1 file and no text still fails; a record with no `files` key (unknown)
   still fails; a metapackage whose licence string is unclassifiable still fails.
 
-## 6. tk / libtk / libtcl — reviewed entries (TCL)
-- **Package text:** `info/licenses/tcl9.0.4/license.terms`, 2255 B, sha256
-  `c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16` (copy: `texts/tcl-license.terms`). Versions
-  tk|libtk|libtcl 9.0.4 build h230c182_1 (CONFIRM).
-- **Text says:** permission to "use, copy, modify, distribute, and license this software … for any purpose, provided that
-  existing copyright notices are retained in all copies and that this notice is included verbatim in any distributions",
-  no royalty. Class `permissive`.
-- **Proposed entries:** three `reviewed` blocks in `S4-entries.proposed.json` (tk, libtk, libtcl), keyed by name, each with
-  class, reason, and a basis naming the file + sha256 + exact package build. With G2 the version and `text_sha256` become
-  enforced fields instead of prose.
-- **Also required:** the reviewer name/date placeholders `<REVIEWER>` / `<DATE>` filled by a person.
+## 6. tk 8.6.13 (h967ab96_4) — reviewed entry (TCL)
+- **Identity (verified):** win-64 archive sha256 `f19618a3a82cc483dacf1c70a30367ee7b0c7e71b90f1f80e14feff44fbd3688` (equals
+  repodata), conda licence `TCL`. One package bundling Tcl and Tk: there is no `libtk`/`libtcl` in your stage, so the earlier
+  three entries collapse to ONE (`tk`).
+- **Text (the 8.6.13 package's own):** `info/licenses/tcl8.6.13/license.terms`, 2255 B, sha256
+  `c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16`; also installed as `Library/lib/tk8.6/license.terms`.
+  I compared it byte-for-byte with the 9.0.4 file used in v1/v2: identical — the hash did not change, but this entry now
+  rests on the 8.6.13 archive, not the 9.0.4 one.
+- **Text says:** permission to use, copy, modify, distribute and license "for any purpose, provided that existing copyright
+  notices are retained in all copies and that this notice is included verbatim in any distributions", no royalty → `permissive`.
+- **New finding — NOT covered by that text:** this package installs third-party DLLs of its own: `Library/bin/zlib1.dll`,
+  `Library/lib/sqlite3.40.0/sqlite3400t.dll`, and the tdbc/itcl/thread extensions (1103 paths in all). `license.terms` is the
+  Tcl/Tk notice. Evidence required before the entry is applied: for `zlib1.dll` and `sqlite3400t.dll`, whether they are staged
+  (they are under `runtime\Library\bin` and `Library\lib\sqlite3.40.0`), whether another staged package owns a same-named
+  file, and their licences (zlib licence text; SQLite blessing). Otherwise the notices would claim less than ships.
+- **Entry:** one `reviewed.tk` block in `S4-entries.proposed.json`, pin `{version 8.6.13, build h967ab96_4, text_sha256 c0a69a2b…79f16}` (enforced only once G2 exists).
 
-## 7. tzdata — reviewed entry (LicenseRef-Public-Domain)
-- **Package text:** `info/licenses/LICENSE`, 252 B, sha256
-  `0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf` (`texts/tzdata-LICENSE`). tzdata 2026c build
-  h151e31d_0 (CONFIRM).
+## 7. tzdata 2026c (h151e31d_0) — reviewed entry (LicenseRef-Public-Domain)
+- **Identity (verified now, noarch archive):** sha256 `b928c30ddcb0e3f544c6eade8352737e6e610e263276b90232db6a578ef899d8`;
+  `info/licenses/LICENSE` 252 B, sha256 `0613408568889f5739e5ae252b722a2659c02002839ad970a63dc5e9174b27cf`
+  (`texts/tzdata-LICENSE`); `info/paths.json` lists 606 paths and NO `date.c`, `newstrftime.3` or `strftime.c` (checked
+  by name in this archive — the remaining check is only that your staged conda-meta `files` agrees).
 - **Text says:** "Unless specified below, all files in the tz code and data (including this LICENSE file) are in the public
-  domain"; date.c, newstrftime.3, strftime.c are BSD-3-Clause if present.
-- **Rationale:** the conda package installs data only (`share/zoneinfo/*`, 606 paths in the build examined), none of the
-  three BSD files. Class `permissive`. **Evidence still required:** the installed file list of YOUR build
-  (`conda-meta/tzdata-*.json` `files`) checked for those three names — a one-line check; if any is present the entry
-  must change.
+  domain"; the BSD 3-clause carve-out is for those three files, absent here. Class `permissive`.
 
 ## 8. vc14_runtime / vcomp14 — evidence required (no entry proposed)
 Not obtainable from the cloud session; a person with the VS 2026 installation must supply, and the entry stays unwritten
 until they do:
-1. **Edition and licence:** the exact Visual Studio 2026 edition (you reported Community) and its Software License Terms,
+1. **Edition and licence:** the exact Visual Studio 2026 edition (you reported Community); staged identities vc14_runtime/vcomp14 14.51.36247 habf1de7_41, archive sha256s `4e4cb599…48f8` / `731e0433…44d1` and its Software License Terms,
    "Distributable Code" section: document URL, section title, retrieval date, file sha256.
 2. **The list:** the REDIST list that section references (online list or `redist.txt`) for MSVC 14.51, saved as a file,
    with URL/section, fed to `redist_table.py --redist-list … --source-url … --source-section …`. Required output: every
@@ -114,6 +133,5 @@ until they do:
    With G2, pinned to version 14.51.x + the sha256 of each staged DLL is preferable to a name-only entry.
 
 ## Order and what would remain
-Applying items 1–7 (with G1–G5) leaves ONLY item 8 open. Item 2 additionally waits on the byte-level check of the mingw-w64
-COPYING. After any apply: rerun `gen_licenses.py` on the real stage, then S2/S3 gates for the rebuilt stage — S4 closes only
+Applying items 1, 3–7 (with G1–G5) leaves items 2 (libwinpthread text) and 8 (Microsoft) open, plus the tk third-party-DLL question in item 6. Item 2 (libwinpthread) is NOT ready: it needs the two mingw-w64 files at commit 4f2fc60ca (item 2). After any apply: rerun `gen_licenses.py` on the real stage, then S2/S3 gates for the rebuilt stage — S4 closes only
 on zero FAILs and a valid bundle on Windows.
