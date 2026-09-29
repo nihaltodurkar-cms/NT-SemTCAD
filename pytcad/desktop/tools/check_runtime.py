@@ -62,6 +62,8 @@ LOCAL_PACKAGES = ("backend_service", "gui", "pytcad", "workbench")
 # Site hooks some hosts install; not part of the runtime under test.
 IGNORED_MODULES = ("sitecustomize", "usercustomize")
 CHILD_FLAG = "TCAD_CHECK_RUNTIME_CHILD"
+# The command-line arguments that name a path (parse_args makes them absolute).
+PATH_ARGS = ("backend", "runtime", "reference", "emit_reference", "scratch", "json")
 
 
 # -- results -----------------------------------------------------------------
@@ -578,6 +580,13 @@ def emit_reference(rep, outdir, backend, env, names, scratch, runtime):
                 rep.add("FAIL", "emit", f"{name}: {type(exc).__name__}: {exc}")
     finally:
         rpc.close()
+    # Do not claim a reference that is not on disk: --reference needs exactly these files.
+    wanted = [os.path.join(outdir, "versions.json")] + [os.path.join(outdir, "results", f"{n}.npz") for n in names]
+    absent = [f for f in wanted if not os.path.isfile(f)]
+    if absent:
+        rep.add("FAIL", "emit", "not written: " + ", ".join(absent))
+    else:
+        rep.add("PASS", "emit", f"reference complete: {len(wanted)} files in {outdir}")
 
 
 # -- driver ------------------------------------------------------------------
@@ -605,7 +614,16 @@ def parse_args(argv):
     ap.add_argument("--no-scrub", action="store_true", help="inherit the caller's environment")
     ap.add_argument("--json", metavar="FILE", help="also write the report as JSON")
     ap.add_argument("--scratch", help="scratch directory (default: a temp dir, removed after)")
-    return ap.parse_args(argv)
+    args = ap.parse_args(argv)
+    # Every path the caller gave is relative to the CALLER's directory. main() later
+    # chdirs into the backend (what `python -m` in cwd=backend does), so resolve them
+    # here, first: a relative --emit-reference used to be written under the backend
+    # directory, and a relative --reference was then looked up there too.
+    for name in PATH_ARGS:
+        value = getattr(args, name)
+        if value:
+            setattr(args, name, os.path.abspath(value))
+    return args
 
 
 def maybe_reexec(args, argv):

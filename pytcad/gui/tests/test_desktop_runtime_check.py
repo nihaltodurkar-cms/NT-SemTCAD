@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -52,10 +53,10 @@ def _read(path):
         return fh.read()
 
 
-def _run(*args, timeout=600):
+def _run(*args, timeout=600, cwd=None):
     """check_runtime.py as a subprocess (it re-launches itself scrubbed)."""
     p = subprocess.run([sys.executable, SCRIPT, "--backend", ROOT, *args],
-                       capture_output=True, text=True, encoding="utf-8", timeout=timeout)
+                       capture_output=True, text=True, encoding="utf-8", timeout=timeout, cwd=cwd)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -301,3 +302,137 @@ def test_a_backend_without_the_extension_or_packages_fails_the_layout_gate(tmp_p
                         "--no-scrub"], capture_output=True, text=True, encoding="utf-8", timeout=300)
     out = p.stdout + p.stderr
     assert p.returncode == 1 and _line(out, "FAIL", "layout"), out
+
+
+# -- regression: the reference mechanism and relative paths ----------------------------
+#
+# `stage.ps1 -EmitReference .\build\ref` printed "reference written" but the later
+# `-Reference .\build\ref` found no versions.json. Cause: check_runtime.py chdirs into the
+# backend BEFORE it resolved --emit-reference / --reference with abspath, so a relative path
+# meant "under the backend directory" -- the reference was written there (pytcad\build\ref),
+# not where the user ran the command, and -Reference then looked for it under the STAGED
+# backend. stage.ps1 confirmed only the exit status, so nothing noticed.
+
+def test_parse_args_makes_every_path_argument_absolute_before_any_chdir(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    args = cr.parse_args(["--backend", "b", "--runtime", "r", "--reference", "ref", "--emit-reference",
+                          "out/ref", "--scratch", "s", "--json", "j.json"])
+    for name in cr.PATH_ARGS:
+        value = getattr(args, name)
+        assert os.path.isabs(value) and value.startswith(str(tmp_path)), (name, value)
+    assert set(cr.PATH_ARGS) == {"backend", "runtime", "reference", "emit_reference", "scratch", "json"}
+    assert cr.parse_args(["--backend", "b"]).reference is None            # unset stays unset
+
+
+def test_a_relative_emit_reference_lands_in_the_callers_directory_not_the_backends(tmp_path):
+    code, out = _run("--examples", "none", "--emit-reference", os.path.join("rel", "ref"), cwd=tmp_path)
+    assert code == 0 and _line(out, "PASS", "emit"), out
+    assert (tmp_path / "rel" / "ref" / "versions.json").is_file(), out
+    assert not os.path.exists(os.path.join(ROOT, "rel")), "the reference was written under the backend directory"
+    assert "reference complete" in out
+
+
+def test_a_relative_reference_is_read_from_the_callers_directory(tmp_path):
+    ref = tmp_path / "ref"
+    code, out = _run("--examples", "none", "--emit-reference", str(ref))
+    assert code == 0 and (ref / "versions.json").is_file(), out
+    # the consuming run: the SAME relative spelling, from the directory that holds it
+    code, out = _run("--examples", "none", "--reference", "ref", cwd=tmp_path)
+    assert not _line(out, "FAIL", "reference"), out
+    assert _line(out, "PASS", "reference") and "versions match" in out, out
+    # ... and from a different directory it is (correctly) not found there
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    code, out = _run("--examples", "none", "--reference", "ref", cwd=other)
+    assert code == 1 and _line(out, "FAIL", "reference") and "versions.json not found" in out, out
+
+
+def test_emit_does_not_claim_success_for_files_it_did_not_write(tmp_path):
+    rep = cr.Report()
+    cr.emit_reference(rep, str(tmp_path / "ref"), ROOT, dict(os.environ), ["no_such_example"], str(tmp_path), None)
+    assert rep.failed
+    rows = [r["detail"] for r in rep.rows if r["status"] == "FAIL"]
+    assert any("not written" in d and "no_such_example.npz" in d for d in rows), rows
+    assert not any(r["status"] == "PASS" and "reference complete" in r["detail"] for r in rep.rows)
+
+
+PWSH = shutil.which("pwsh")
+needs_pwsh = pytest.mark.skipif(PWSH is None, reason="PowerShell 7 (pwsh) is not installed")
+STAGE_PS1 = os.path.join(TOOLS, "stage.ps1")
+
+
+def _stage_function(name, expr, cwd):
+    """Evaluate `expr` after defining stage.ps1's function `name` (extracted by AST: the
+    script's body would run a real staging), from the directory `cwd`."""
+    script = (f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{STAGE_PS1}',[ref]$null,[ref]$null);"
+              "foreach($f in $ast.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){"
+              f"if($f.Name -eq '{name}'){{Invoke-Expression $f.Extent.Text}}}};"
+              f"Set-Location '{cwd}'; ConvertTo-Json -Compress -InputObject ({expr})")
+    p = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert p.returncode == 0, p.stdout + p.stderr
+    return json.loads(p.stdout)
+
+
+@needs_pwsh
+def test_stage_script_resolves_user_paths_against_the_callers_location(tmp_path):
+    rel = os.path.join(".", "build", "ref")
+    got = _stage_function("Resolve-UserPath", f"Resolve-UserPath '{rel}'", tmp_path)
+    assert os.path.normcase(got) == os.path.normcase(str(tmp_path / "build" / "ref"))
+    absolute = str(tmp_path / "already" / "abs")
+    assert _stage_function("Resolve-UserPath", f"Resolve-UserPath '{absolute}'", tmp_path) == absolute
+    assert _stage_function("Resolve-UserPath", "Resolve-UserPath ''", tmp_path) == ""
+    up = _stage_function("Resolve-UserPath", "Resolve-UserPath '%s'" % os.path.join("..", "x"), tmp_path)
+    assert os.path.normcase(up) == os.path.normcase(str(tmp_path.parent / "x"))
+
+
+@needs_pwsh
+def test_stage_script_rejects_a_reference_without_versions_json_before_doing_any_work(tmp_path):
+    (tmp_path / "ref").mkdir()                     # exists, but is not an -EmitReference directory
+    p = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-File", STAGE_PS1, "-Reference", "ref"],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120, cwd=tmp_path)
+    out = p.stdout + p.stderr
+    assert p.returncode != 0 and "no versions.json" in out and "-EmitReference" in out, out
+    assert "build.ps1" not in out                  # it stopped before the (Windows-only) build
+
+
+def _fake_dev_env(tmp_path):
+    """A stub `conda` and a `tcad-dev` env whose python.exe is this interpreter: enough for
+    stage.ps1's -EmitReference branch, which only asks conda where tcad-dev is."""
+    dev = tmp_path / "envs" / "tcad-dev"
+    dev.mkdir(parents=True)
+    py = dev / "python.exe"
+    py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+    py.chmod(0o755)
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    conda = bindir / "conda"
+    conda.write_text('#!/bin/sh\nif [ "$1" = "env" ]; then echo \'{"envs": ["%s"]}\'; exit 0; fi\nexit 1\n' % dev)
+    conda.chmod(0o755)
+    return bindir
+
+
+@needs_pwsh
+@needs_core
+@pytest.mark.skipif(os.name == "nt", reason="uses shell-script stand-ins for conda and python.exe")
+def test_stage_emit_reference_then_reference_roundtrip_from_a_foreign_directory(tmp_path):
+    """The reported failure end to end: run stage.ps1 from a directory that is NOT the backend's
+    (the repo's parent, as `.\\pytcad\\desktop\\tools\\stage.ps1` invocations are), with a relative path."""
+    bindir = _fake_dev_env(tmp_path)
+    work = tmp_path / "work"
+    work.mkdir()
+    env = dict(os.environ, PATH=str(bindir) + os.pathsep + os.environ["PATH"])
+    p = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-File", STAGE_PS1, "-EmitReference",
+                        os.path.join(".", "build", "ref")],
+                       capture_output=True, text=True, encoding="utf-8", timeout=900, cwd=work, env=env)
+    out = p.stdout + p.stderr
+    assert p.returncode == 0, out
+    ref = work / "build" / "ref"
+    assert (ref / "versions.json").is_file(), out
+    for name in cr.EXAMPLES:
+        assert (ref / "results" / f"{name}.npz").is_file(), (name, out)
+    assert not os.path.exists(os.path.join(ROOT, "build", "ref")), "written under the backend directory"
+    assert "reference written to" in out and str(ref) in out, out
+    # ... and the file the consumer needs is exactly what the consuming check reads
+    code, cout = _run("--examples", "diode_1d", "--reference", "build/ref", cwd=work)
+    assert _line(cout, "PASS", "reference") and not _line(cout, "FAIL", "reference"), cout

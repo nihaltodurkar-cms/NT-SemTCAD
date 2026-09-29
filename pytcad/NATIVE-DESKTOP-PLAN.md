@@ -6201,6 +6201,25 @@ Windows and reported:
 Not reported, hence NOT recorded here: the pinned spec that `conda env create` solved, the MKL/PARDISO
 path, per-example times, total staged size, DLL count. Add them from the console output if wanted.
 
+#### 26.6.5 Bug found on Windows: the reference mechanism (fixed)
+`stage.ps1 -EmitReference .\build\ref` reported success, but the next `-Reference .\build\ref` failed
+with "versions.json not found" (all other gates passed: 11 passed, 1 failed; runtime 857.1 MB, backend
+84 MB, Python 3.14.7, PARDISO and the three examples fine, as reported by the user). Cause:
+`check_runtime.py` changes into the backend directory (what `python -m` in `cwd=backend` does) BEFORE it
+resolved `--emit-reference` and `--reference` with `abspath`, so a relative path meant "under the backend
+directory". The reference was written to `<repo>\pytcad\build\ref`, not where the command was run, and
+`-Reference` then looked under the STAGED `backend\`. `stage.ps1` printed "reference written" on the exit
+status alone. Reproduced from another working directory before the fix, then fixed in three places:
+`check_runtime.py` makes every path argument absolute in `parse_args` (`PATH_ARGS`), before any chdir, and
+its emit run only reports success if `versions.json` and every example result exist; `stage.ps1` resolves
+`-Out`, `-Check`, `-Reference` and `-EmitReference` against PowerShell's current location
+(`Resolve-UserPath`), checks that `versions.json` exists after emitting, and rejects a `-Reference` without
+one before the build starts. Runtime, tolerance (rtol 1e-6) and numerics are untouched. Seven regression
+tests in `gui/tests/test_desktop_runtime_check.py` fail on the pre-fix code and pass now, including
+`stage.ps1 -EmitReference` run end to end from a foreign directory (with stand-ins for `conda` and
+`python.exe`, Linux/pwsh only). The Windows re-run of `-EmitReference` then `-Reference` is still the
+confirmation that counts.
+
 ### 26.7 Windows-only gates (S1/S2 reported done in 26.6.4; the original list is kept)
 1. S1: `stage.ps1 -DevBackend -Check <a.npz>` (scrubbed PATH); the desktop test binary
    (`test_backend`, incl. `manifestPathsResolveRelativeToTheApp`); record file/DLL counts and MB here.

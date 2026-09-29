@@ -54,6 +54,19 @@ $build = Join-Path $root "build\desktop"
 if (-not $Out) { $Out = Join-Path $root "dist\TCAD" }
 $checkRuntime = Join-Path $PSScriptRoot "check_runtime.py"
 
+# A path the user typed is relative to WHERE THEY RAN THE COMMAND, not to this script, the repo
+# or a child process's working directory (check_runtime.py runs from the backend directory).
+# Resolve it once, here, against PowerShell's current location; the directory need not exist.
+function Resolve-UserPath([string] $p) {
+    if (-not $p) { return "" }
+    if (-not [System.IO.Path]::IsPathRooted($p)) { $p = Join-Path (Get-Location).Path $p }
+    return [System.IO.Path]::GetFullPath($p)
+}
+$Out = Resolve-UserPath $Out
+$Check = Resolve-UserPath $Check
+$Reference = Resolve-UserPath $Reference
+$EmitReference = Resolve-UserPath $EmitReference
+
 function Get-CondaEnvPath([string] $name) {
     return ((conda env list --json | Out-String) | ConvertFrom-Json).envs |
         Where-Object { (Split-Path $_ -Leaf) -eq $name } | Select-Object -First 1
@@ -77,8 +90,16 @@ if ($EmitReference) {
     if (-not $dev) { throw "conda env 'tcad-dev' not found" }
     & (Join-Path $dev "python.exe") $checkRuntime --backend $root --runtime $dev --emit-reference $EmitReference
     Assert-Exit "check_runtime.py --emit-reference"
+    # Assert-Exit only sees the exit status: confirm the files -Reference will need exist.
+    $written = Join-Path $EmitReference "versions.json"
+    if (-not (Test-Path $written)) { throw "check_runtime.py exited 0 but wrote no $written" }
     Write-Host "reference written to $EmitReference"
     exit 0
+}
+
+# -Reference names a directory -EmitReference wrote: fail now, not after the build and the pack.
+if ($Reference -and -not (Test-Path (Join-Path $Reference "versions.json"))) {
+    throw "-Reference $Reference has no versions.json: run stage.ps1 -EmitReference <dir> first, then pass that same directory"
 }
 
 # 1. Release build (build.ps1 does the MSVC + tcad-gui setup).
