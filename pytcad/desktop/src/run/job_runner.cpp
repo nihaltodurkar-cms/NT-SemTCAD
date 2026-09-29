@@ -1,5 +1,7 @@
 #include "job_runner.hpp"
 
+#include "backend/backend_client.hpp"   // pythonProcessEnvironment
+
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -18,8 +20,6 @@ namespace {
 QString normalizedPath(const QString& p) {
     return QDir::cleanPath(QDir::fromNativeSeparators(QFileInfo(p).absoluteFilePath())).toLower();
 }
-
-QString normalizedDir(const QString& d) { return QDir::cleanPath(QDir::fromNativeSeparators(d)).toLower(); }
 
 // A job object holding the run's process (and so every process it
 // starts), killed as a whole on cancel and when its handle closes. The

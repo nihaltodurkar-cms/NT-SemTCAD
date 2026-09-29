@@ -39,8 +39,6 @@ bool waitFor(const std::function<bool()>& done, int ms) {
 // the app's own runtime dir kept off PATH) -- so the "direct" bare
 // subprocess measurement below is a fair comparison, not penalized (or
 // flattered) by a different environment than what JobRunner actually uses.
-QString normalizedDir(const QString& d) { return QDir::cleanPath(QDir::fromNativeSeparators(d)).toLower(); }
-
 QProcessEnvironment runnerEnv(const QString& python, const QStringList& stripFromPath) {
     QProcessEnvironment env = pythonProcessEnvironment(python, stripFromPath);
     env.insert("PYTHONUNBUFFERED", "1");
