@@ -5924,7 +5924,7 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 coded, Windows gates pending)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 compiled, clean-machine gate pending)
 
 User: "start P5". §9's P5 bullet list is the scope; this section turns it
 into slices and gates, from the tree as it stands today. **Status (see
@@ -6243,7 +6243,7 @@ completed and all three references matched (§26.6.4).
 4. Then S3 (installer) onward is unblocked. **Done for items 1-3 as far as §26.6.4 reports; the fields it lists as
    not reported remain unrecorded.** The remaining Windows gates are S3's (§26.8).
 
-### 26.8 P5-S3 status (2026-09-30): installer -- coded; NEVER COMPILED OR RUN; every Windows gate pending
+### 26.8 P5-S3 status (2026-09-30): installer -- compiled (reported); clean-machine install/uninstall gate PENDING
 
 **Implemented (files in the tree):**
 
@@ -6299,10 +6299,12 @@ or executed-function checking, NOT an install:**
   caught by exactly the test written for it.
 - Both `.ps1` files parse with 0 errors under PowerShell 7.4.
 
-**NOT verified -- Windows-only, and the largest risk is that `tcad.iss` has never been compiled by
-Inno Setup, so a syntax or directive error there is entirely possible:**
-1. `make_installer.ps1` end to end: `ISCC.exe` compiling `tcad.iss` (Inno 6.3+ for `x64compatible`;
-   the 857.1 MB runtime of 26.6.4), and the resulting `TCAD-0.1.0-unsigned-setup.exe`'s size.
+**Windows-only, status:** item 1's compile step is now DONE -- the user reported that `make_installer.ps1`
+compiled `tcad.iss` with Inno Setup successfully (installer size and SHA-256 were not reported, so are not
+recorded). Nothing has been installed by the author, and the result of the clean-machine gate
+(`verify_install.json` from Windows Sandbox) has not been reported yet. Still NOT verified:**
+1. ~~`make_installer.ps1` end to end: `ISCC.exe` compiling `tcad.iss`~~ -- DONE, reported (Inno 6.3+ for
+   `x64compatible`; the 857.1 MB runtime of 26.6.4). Not recorded: the installer's size and SHA-256.
 2. The S3 gate: `verify_install.ps1` in Windows Sandbox -- install, the three examples through the
    installed runtime, the installed exe's scrubbed-PATH `--selftest`, uninstall, and a file-list/registry
    diff that must be empty. Untested specifics: the Inno uninstaller re-launches itself and returns at
