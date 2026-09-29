@@ -521,6 +521,8 @@ user sign-off (CLAUDE.md workflow).
   - §10 is 100% ticked;
   - the P3/P4 end-to-end flows pass;
   - the user signs off.
+- **Qt elimination (added 2026-09-30, user requirement, §27):** the final application and package contain NO Qt --
+  no Qt DLLs, plugins, ADS, or Qt-linking VTK module -- verified by `desktop/tools/check_no_qt.py` on `dist\TCAD`.
 - Then remove `gui/qml/`, the QML-only controllers and their tests.
   `gui/services/` stays, as the backend's implementation.
 
@@ -6677,3 +6679,47 @@ NOT changed: `license_policy.json`, the S4 gate, any MSVC policy. Cloud checks: 
 `test_desktop_ucrt_exclusion.py` pass; its 10 PowerShell tests SKIPPED (no `pwsh` here), so the patch's logic is
 not re-executed in this session. Pending on Windows: rebuild with `-ExcludeUcrt`, exact removed-file diff, full S2 gates
 (+ `-Reference`), `s4_evidence.ps1` re-run, size/file count.
+
+
+## 27. Qt elimination -- explicit P6 requirement (2026-09-30; dependency chain traced, NOTHING REMOVED YET)
+
+User requirement: "I do not want Qt anywhere in the final TCAD desktop application or package." This is broader than
+§21 (PySide6/QML, already removed): it removes Qt from the NATIVE app too. It reverses the original toolkit decision
+(§0: "native C++ + Qt Widgets + VTK") and the LGPL/ADS analysis in §7.3, so it is recorded here as a decision, not an
+implementation detail.
+
+### 27.1 Why each Qt file is staged (traced 2026-09-30; PE import tables of the conda-forge packages, plus the app source)
+Method: conda-forge `qt6-main 6.11.2`, `qt6-advanced-docking-system 5.1.1`, `vtk-base 9.7.0` win-64 archives were
+downloaded and every DLL/EXE import table read (485 PE files). The user's tcad-gui env may differ in patch versions;
+the STAGED list itself was not re-read here (no Windows stage in the cloud) -- rows marked "inferred" say so.
+
+| staged file | pulled in by | evidence |
+|---|---|---|
+| Qt6Core.dll | tcad_desktop.exe directly (137 source files; QString/QProcess/QFile/QTimer...), and every other Qt DLL | app source; Qt6Gui/Widgets/OpenGL* import it |
+| Qt6Gui.dll | Qt6Widgets; ADS; vtkGUISupportQt | imports of qtadvanceddocking-qt6.dll, vtkGUISupportQt-9.7.dll |
+| Qt6Widgets.dll | the app's whole UI (91 of the app's source files include a Qt header; 27 include QWidget); ADS; vtkGUISupportQt; the `styles` plugin | source + imports |
+| Qt6OpenGL.dll, Qt6OpenGLWidgets.dll | `vtkGUISupportQt-9.7.dll` (QVTKOpenGLNativeWidget derives from QOpenGLWidget); `FieldView : public QVTKOpenGLNativeWidget` | `src/views/field/field_view.hpp:54,151`; imports of vtkGUISupportQt |
+| qtadvanceddocking-qt6.dll | `MainWindow` docking (`ads::CDockManager`) | `src/shell/main_window.{hpp,cpp}`, `app_settings.hpp`, `bench.cpp`; CMake `find_package(qtadvanceddocking-qt6)` |
+| Qt6Svg.dll (inferred) | NOT imported by the app, ADS, or VTK. Only the plugins `imageformats/qsvg.dll` and `iconengines/qsvgicon.dll` import it: windeployqt6 deploys those plugins and then their dependency | plugin import tables; no `QtSvg` in `src/` |
+| Qt6Network.dll (inferred) | NOT imported by the app, ADS, or VTK. Only plugins `tls/*` and `networkinformation/qnetworklistmanager.dll` import it: deployed by windeployqt6 | plugin import tables; no `QtNetwork`/socket use in `src/` |
+| Qt plugins (platforms/qwindows, styles/qmodernwindowsstyle, imageformats, iconengines, generic, tls, networkinformation) | `windeployqt6` in `stage.ps1` step 3, because the exe links Qt6Widgets | `stage.ps1` lines ~194-200 |
+
+VTK: conda-forge `vtk-base` has a HARD package dependency on `qt6-main` (repodata), because it ships `vtkGUISupportQt` and
+`vtkRenderingQt`. But the VTK rendering libraries the app needs (e.g. `vtkRenderingOpenGL2`) do NOT import Qt: only
+those two modules do. The app links `GUISupportQt` explicitly (`CMakeLists.txt` `find_package(VTK ... GUISupportQt)`). So VTK reaches the STAGE
+only through that one module; the conda dependency stays in the BUILD env (`tcad-gui`) unless VTK is built from
+source with Qt off. The Python runtime env (`tcad-runtime.yml`) contains no Qt (spec: python, numpy, scipy, mkl, pyamg).
+
+### 27.2 What the requirement forces (not a linkage tweak)
+- 137 source files / ~23,000 lines (`desktop/src`), ~5,000 of them Qt-free; every panel, editor, dock, dialog, plot, the
+  UndoStack shell, and 12 QtTest files are written on Qt Widgets. Removing Qt means REPLACING the GUI toolkit and re-running
+  the P1-P4 gates on the replacement -- a rewrite of the UI layer, not a build-flag change.
+- The 3D/2D view needs a non-Qt render host: VTK must render into a native (Win32) window or an offscreen framebuffer.
+- Needs a decision: which toolkit replaces Qt (open, §27.3). Nothing below is started.
+
+### 27.3 Gate and state
+- **Gate (built, not wired):** `desktop/tools/check_no_qt.py <dist\TCAD>`: file names, plugin dirs, binary content (Qt DLL
+  references incl. vtkGUISupportQt/vtkRenderingQt), conda records/depends, licence manifest. Tests: `gui/tests/test_desktop_no_qt.py`
+  (fake trees, mutation-checked). It is deliberately NOT in `stage.ps1` yet: the current app is Qt, so a real stage fails it
+  by design; wiring it in (stage.ps1 + verify_install.ps1) is the last step of the purge.
+- **State:** Qt still present everywhere in the native app. P5/S4 (licences) and P6 parity are unaffected until the toolkit is chosen.
