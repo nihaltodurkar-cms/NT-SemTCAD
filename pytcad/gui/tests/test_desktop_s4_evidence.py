@@ -175,6 +175,12 @@ def test_the_script_reports_the_staged_ucrt_and_msvc_files_and_changes_nothing(t
     assert staged == ["msvcp140.dll", "plugins/msvcp140_1.dll", "runtime/Library/bin/vcruntime140.dll",
                       "runtime/msvcp140.dll", "runtime/vcomp140.dll", "runtime/vcruntime140.dll"]      # every location of every copy, strays included
     assert "not Windows" in B["note"] and all(r["inVsRedistFolder"] is False for r in B["comparison"])
+    # rows carry the Visual Studio copy's own facts (null when there is none) and each staged file's hash
+    assert all({"vsPath", "vsVersion", "vsSha256", "stagedSha256"} <= set(r) and r["vsVersion"] is None for r in B["comparison"])
+    # a missing redist*.txt is reported as "n/a, not false" and says REDIST authorisation is NOT established
+    assert "n/a, NOT false" in B["redistTxtNote"] and "redist_table.py" in B["redistTxtNote"]
+    assert all(r["inRedistTxt"] is None for r in B["comparison"])
+    assert "inRedistTxt=n/a" in _read(str(out / "s4-evidence.txt"))
     assert "authoritative REDIST list" in B["authority"]
     assert [(c["name"], c["where"]) for c in d["C_packages"]].count(("ucrt", "runtime")) == 1
     txt = _read(str(out / "s4-evidence.txt"))

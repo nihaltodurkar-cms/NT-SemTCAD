@@ -81,7 +81,9 @@ function Compare-Redist($staged, $vsFiles, [string[]] $redistTxtNames) {
         $n = [System.IO.Path]::GetFileName($s.path).ToLowerInvariant()
         $v = $byName[$n]
         $rows += [pscustomobject]@{
-            file = $n; stagedAt = $s.path; version = $s.fileVersion; signature = $s.signature
+            file = $n; stagedAt = $s.path; version = $s.fileVersion; signature = $s.signature; stagedSha256 = $s.sha256
+            vsPath = $(if ($v) { $v.path } else { $null }); vsVersion = $(if ($v) { $v.fileVersion } else { $null })
+            vsSha256 = $(if ($v) { $v.sha256 } else { $null })
             inVsRedistFolder = [bool]$v
             sameHashAsVs = [bool]($v -and $v.sha256 -eq $s.sha256)
             sameVersionAsVs = [bool]($v -and $v.fileVersion -eq $s.fileVersion)
@@ -197,6 +199,7 @@ if ($vswhere -and (Test-Path $vswhere)) {
 } else { $B.note = "no Visual Studio installation read (not Windows, or vswhere not found)" }
 $B.comparison = Compare-Redist $stagedFacts $vsFiles $redistTxtNames
 $B.redistTxtNames = $redistTxtNames
+$B.redistTxtNote = $(if ($redistTxtNames.Count) { "$($redistTxtNames.Count) DLL names read from $($B.redistTxt.Count) redist*.txt file(s)" } else { "NO redist*.txt (or none naming a DLL) was found under the Visual Studio installation: inRedistTxt is n/a, NOT false. REDIST-list authorisation is therefore not established by this script; supply the list to redist_table.py." })
 $B.authority = "This compares the staged files with the copies in YOUR Visual Studio installation. The authoritative REDIST list is the online list referenced from the 'Distributable Code' section of the Microsoft Software License Terms for your edition; check each 'file' below against it."
 $report.B_msvc = $B
 
@@ -225,7 +228,8 @@ $txt += "OS: $($A.os.product) $($A.os.displayVersion) build $($A.os.build); syst
 foreach ($l in $A.loaded) { $txt += "  loaded  $($l.program)  $($l.module)  <- $($l.path)  fromStage=$($l.fromStage) $($l.note)" }
 $txt += ""; $txt += "== B. MSVC runtime"; $txt += "Visual Studio: $($B.vs.displayName) $($B.vs.installationVersion) ($($B.vs.productDisplayVersion)) at $($B.vs.installationPath)"
 $txt += "redist.txt files: " + ($B.redistTxt -join "; "); $txt += "redist versions in VS: " + ($B.vs.redistVersions -join ", "); $txt += $B.note
-foreach ($r in $B.comparison) { $txt += ("  {0,-28} v{1,-16} sig={2,-9} inVsRedistFolder={3} sameHash={4} sameVersion={5} inRedistTxt={6}" -f $r.file, $r.version, $r.signature, $r.inVsRedistFolder, $r.sameHashAsVs, $r.sameVersionAsVs, $r.inRedistTxt) }
+foreach ($r in $B.comparison) { $txt += ("  {0,-28} v{1,-16} sig={2,-9} inVsRedistFolder={3} sameHash={4} sameVersion={5} inRedistTxt={6}" -f $r.file, $r.version, $r.signature, $r.inVsRedistFolder, $r.sameHashAsVs, $r.sameVersionAsVs, $(if ($null -eq $r.inRedistTxt) { "n/a" } else { $r.inRedistTxt })) }
+$txt += $B.redistTxtNote
 $txt += $B.authority; $txt += ""; $txt += "== C. packages"
 foreach ($c in $C) { $txt += "  [$($c.where)] $($c.name) $($c.version) $($c.build)  licence=$($c.licence)  files=$($c.filesInstalled)  texts=$($c.texts.Count)" }
 $txt | Set-Content -Encoding UTF8 (Join-Path $Out "s4-evidence.txt")

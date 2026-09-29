@@ -6604,3 +6604,53 @@ Windows (read-only; run after `stage.ps1`, no need to re-stage):
 powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\s4_evidence.ps1 -Stage .\dist\TCAD
 # writes build\s4-evidence\s4-evidence.txt and .json -- paste the .txt
 ```
+
+#### 26.9.4 S4 evidence back from Windows (reported) -- ucrt patch prepared, MSVC REDIST authorisation NOT yet established
+
+**Reported by the user from `s4_evidence.ps1` (not observed by the author):**
+- **ucrt:** `tcad_desktop.exe` loads `System32\ucrtbase.dll`, not a staged copy; Windows 10/11's system-UCRT behaviour is
+  therefore confirmed for the app. (Not reported: the staged `python.exe`'s loaded modules, the OS build, or the count of
+  app-dir UCRT copies.)
+- **MSVC runtime:** every staged MSVC runtime DLL is present in the user's Visual Studio 2026 Redist installation, with
+  `sameHash=True`, `sameVersion=True` and Authenticode `Valid`. `inRedistTxt` was blank. The cause is in the script: that
+  field is `null` (not false) when no `redist*.txt` naming a DLL exists under the installation, and it printed as blank; it is
+  now printed as `n/a` with an explicit note. **So the REDIST-list authorisation is NOT established:** "the same signed Microsoft
+  file as in your Visual Studio" is evidence about WHAT the file is, not about permission to redistribute it.
+
+**ucrt: the stage-time removal, prepared and NOT applied.** `desktop/tools/proposed/ucrt-exclusion.patch` (applies cleanly:
+`git apply --check -p1`; 14 new tests pass on a scratch tree with it overlaid; the whole desktop-tool suite, 146 tests,
+passes with it) adds `stage.ps1 -ExcludeUcrt`, OFF by default so the decision and the revalidation stay deliberate:
+- **What is removed:** the 92 files listed in `desktop/tools/proposed/ucrt-92-files.txt` (46 distinct names x env root and
+  `Library\bin`: `ucrtbase.dll`, 15 `api-ms-win-crt-*`, 30 `api-ms-win-core-*`), taken from the package's OWN conda-meta list, not
+  a name pattern. Files the user's own `runtime\conda-meta\ucrt-*.json` lists are what is removed; compare before applying.
+- **conda-meta:** the record `runtime\conda-meta\ucrt-<version>-<build>.json` is deleted (for the packaged build,
+  `ucrt-10.0.26100.0-h57928b3_0.json`), so `gen_licenses.py` inventories what ships and `ucrt` and its
+  `LicenseRef-MicrosoftWindowsSDK10` blocker disappear; no other record is touched (other packages' `depends` still name ucrt,
+  which is harmless: nothing runs conda on the shipped runtime).
+- **App side:** the DLL closure skips the ucrt package's names (taken from `tcad-gui`'s record) and any copy already next to the exe
+  is deleted; afterwards the script fails if any excluded name remains anywhere in the stage.
+- **Safety:** every path is validated BEFORE anything is deleted (absolute, drive-letter, leading-slash or `..` paths are refused on
+  every OS -- a test caught that `IsPathRooted` alone is OS-dependent); a file another package also lists is KEPT and reported;
+  a second run is a no-op; never `conda remove ucrt` (it would remove `python` and `vc14_runtime` with it).
+- **Record:** `licenses\excluded-packages.json` lists what was deliberately not shipped and why.
+- **Required revalidation if applied (a runtime change):** the full S2 gate (`stage.ps1 -Reference ... -ExcludeUcrt`: all
+  `check_runtime.py` gates, the numerical reference, the scrubbed-PATH self-test), the S3 Sandbox gate (10 checks) on the rebuilt
+  installer, and a run on the OLDEST Windows 10 build to be supported.
+
+**MSVC: the table and what it still needs.** `desktop/tools/redist_table.py` (8 tests, mutation-checked) builds
+`DLL | staged version | VS version | same hash | REDIST-listed | source URL/section` from `s4-evidence.json` and a REDIST list that
+the user supplies from Microsoft's "Distributable Code" page for their Visual Studio edition, and records the list file's SHA-256
+and the required source URL and section. Without a list the column reads `NOT ESTABLISHED (no list supplied)`: it cannot guess.
+Exit status 1 if any staged DLL is off the list or differs from Visual Studio's copy. **The author could not produce the requested
+table:** Microsoft's rendered pages are unreachable from the cloud session and the docs source lives in a GitHub repository outside
+the session's scope, and the user's per-DLL rows were reported only as a summary. `s4_evidence.ps1` now also records each row's
+Visual Studio version, path and hash, so re-running it (read-only) fills the "VS version" column exactly; until then `redist_table.py`
+derives it only from a `sameVersion=True` row.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\s4_evidence.ps1 -Stage .\dist\TCAD
+python .\pytcad\desktop\tools\redist_table.py --evidence .\build\s4-evidence\s4-evidence.json `
+    --redist-list .\vs2026-redist-list.txt --source-url "<page URL>" --source-section "<section title>" --out .\build\s4-evidence\msvc-table.md
+```
+
+The TCL/tzdata `reviewed` drafts and the four supplemental-text drafts (session scratchpad `s4-proposals\PROPOSED_entries_v2.json`) are
+UNCHANGED; `license_policy.json` and the gate are unchanged. S4 stays open.
