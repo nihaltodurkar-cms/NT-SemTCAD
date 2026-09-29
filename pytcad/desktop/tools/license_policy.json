@@ -1,0 +1,27 @@
+{
+  "_comment": "Human decisions for gen_licenses.py (NATIVE-DESKTOP-PLAN.md 26.9). Everything here needs a reason and a basis; the generator refuses an entry without them. It classifies licences mechanically and stops at anything it cannot classify: add a `reviewed` entry ONLY after a person has read the package's licence.",
+  "reviewed": {
+    "mkl": {
+      "class": "proprietary-redistributable",
+      "reason": "Intel Simplified Software License: redistributable in binary form with its notice; the notice text is the package's own info/licenses file, shipped in licenses/texts/",
+      "basis": "NATIVE-DESKTOP-PLAN.md 26.1 (licensing gaps found in review)"
+    }
+  },
+  "addon_copyleft": {
+    "gmsh": {
+      "reason": "GPL-2.0-or-later; allowed only in the separate optional add-on runtime, never in the base installer",
+      "basis": "decision 26.4-4"
+    },
+    "tetgen": {
+      "reason": "wraps TetGen, AGPL-3.0; allowed only in the separate optional add-on runtime, never in the base installer",
+      "basis": "decision 26.4-4"
+    }
+  },
+  "unowned_dlls": {},
+  "embedded": [
+    {
+      "package": "nlohmann_json",
+      "reason": "header-only MIT code compiled into tcad_desktop.exe (no DLL), so it is listed explicitly (section 7.3 table)"
+    }
+  ]
+}

@@ -5924,7 +5924,7 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 compiled and installs/uninstalls; clean-diff check pending re-run)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2, S3 done on Windows; S4 in progress)
 
 User: "start P5". §9's P5 bullet list is the scope; this section turns it
 into slices and gates, from the tree as it stands today. **Status (see
@@ -6243,7 +6243,7 @@ completed and all three references matched (§26.6.4).
 4. Then S3 (installer) onward is unblocked. **Done for items 1-3 as far as §26.6.4 reports; the fields it lists as
    not reported remain unrecorded.** The remaining Windows gates are S3's (§26.8).
 
-### 26.8 P5-S3 status (2026-09-30): installer -- compiled (reported); clean-machine install/uninstall gate PENDING
+### 26.8 P5-S3 status: installer -- DONE, fully Windows-validated (final result below)
 
 **Implemented (files in the tree):**
 
@@ -6337,6 +6337,14 @@ earlier tests, which only ever diffed non-empty literal arrays, missed the norma
 **Still pending on Windows:** a re-run of the Sandbox gate, whose `clean` and `userdata` checks are the ones that
 decide whether uninstall leaves nothing behind and keeps the user's data.
 
+**FINAL S3 result (reported by the user; not observed by the author): `verify_install.json` reports `ok: true`,
+all 9 checks passing in Windows Sandbox on a clean machine:** `install`, `layout`, `runtime`, `selftest` x3
+(`diode_1d`, `mosfet_2d`, `resistor_3d`), `uninstall`, `clean` (the file-list and registry diff against the
+"before" snapshot: nothing left behind) and `userdata` (3 of 3 user files preserved). This is the run after the
+`Compare-Sets` fix above, so the two checks the crash had prevented, `clean` and `userdata`, were evaluated and
+passed. The installer's size and SHA-256, and per-check timings, were not reported and are not recorded. The
+installer, runtime and cleanup checks were not changed by the fix, so the earlier PASS results stand.
+
 Windows commands (from the repo root, `pytcad\`; Inno Setup 6.3+ installed once, outside any conda env):
 ```powershell
 # 1. The full S2 stage, as before (NOT -DevBackend)
@@ -6347,5 +6355,76 @@ powershell -ExecutionPolicy Bypass -File .\desktop\tools\make_installer.ps1 -Wri
 #    the result is dist\installer\sandbox-log\verify_install.json. Or, on a clean user account:
 powershell -ExecutionPolicy Bypass -File .\desktop\tools\verify_install.ps1 -Installer .\dist\installer\TCAD-0.1.0-unsigned-setup.exe -ToolsDir .\desktop\tools
 ```
-S4 (licence bundle) is next; its `licenses\` folder will ride in the stage and therefore in the installer
-without a change to `tcad.iss`.
+S4 (licence bundle) is §26.9; its `licenses\` folder rides in the stage and therefore in the installer without a
+change to `tcad.iss`.
+
+### 26.9 P5-S4 status (2026-09-30): licence bundle and gate -- implemented; NOT YET RUN on the real Windows runtime
+
+**Implemented (files in the tree):**
+
+| File | What |
+|---|---|
+| `desktop/tools/gen_licenses.py` | Inventories what is ACTUALLY staged and writes `<stage>\licenses\`: `THIRD_PARTY_NOTICES.txt`, `manifest.json` (with SHA-256 of every text) and `texts\<name>-<version>\` (each package's own `info\licenses\**`). Stdlib-only. `--check-only` reports without writing; `--verify-bundle <app dir>` checks an installed bundle; `--addon` is for the separate gmsh/tetgen runtime. |
+| `desktop/tools/license_policy.json` | The human decisions, each with a `reason` and `basis` (the generator refuses an entry without them): one `reviewed` entry (mkl, from §26.1), `addon_copyleft` = gmsh and tetgen only (decision 26.4-4), `unowned_dlls` (empty), `embedded` = nlohmann_json. |
+| `desktop/tools/notices/LGPL-relinking.txt` | The LGPL statement placed in the notices when an LGPL component is staged. **The engineering team's draft; not reviewed by counsel** (it says so in the file). |
+| `stage.ps1` | New step 5d runs the generator with the STAGED interpreter (`-NoLicenses` skips it). |
+| `make_installer.ps1` | Refuses a stage without `licenses\THIRD_PARTY_NOTICES.txt` and `manifest.json`, or whose bundle fails `--verify-bundle` against that stage. |
+| `verify_install.ps1` | Requires the two files after install and adds a `licenses` check (`--verify-bundle` on the INSTALLED copy): 10 checks now, not 9. |
+| `gui/tests/test_desktop_licenses.py` | 52 tests (below). |
+
+**Where components come from.** Runtime: every package in `runtime\conda-meta\*.json` (conda-pack keeps it). App:
+every staged DLL is traced to the `tcad-gui` conda package that owns it (that env's `conda-meta` `files` lists;
+`stage.ps1` copied it from there), plus the policy's `embedded` packages (`nlohmann_json` is header-only code compiled
+into `tcad_desktop.exe`, so no DLL points at it). Licence texts come from each package's extracted directory
+(`extracted_package_dir\info\licenses`); the licence string from `conda-meta` or `info\about.json`.
+
+**The gate (the plan's S4 gate, implemented).** All problems are printed at once, the exit status is 1, and any
+earlier bundle is deleted so a failed run leaves nothing plausible behind. It fails on:
+- a package with no licence string, or one the classifier cannot classify and the policy has not reviewed;
+- a package with no licence text on disk (its extracted directory must still exist);
+- **GPL/AGPL in the base runtime** -- allowed only with `--addon` AND an `addon_copyleft` policy entry (26.4-4);
+- **a staged DLL no package owns** that the policy does not list;
+- a DLL of a **GPL/commercial-only Qt module** (§7.3: Charts, Graphs, Data Visualization), by name, because
+  `qt6-main`'s own licence string covers all of Qt;
+- a runtime `.dll`/`.pyd` no conda package owns, or a pip-installed distribution.
+Classification is MECHANICAL (SPDX-style: `OR` = the licensee's least restrictive alternative, `AND` = the most
+restrictive, `WITH <exception>` on GPL = `runtime-exception`; LGPL is never read as GPL). Only a short list of
+permissive ids is recognised; everything else is `unknown` and needs a person's reviewed entry. This is an
+engineering inventory, **not legal advice**.
+
+**Verified in the cloud session (Linux, Python 3.11, PowerShell 7.4) against FAKE prefixes built with conda's
+documented `conda-meta` keys:** 52 tests in `test_desktop_licenses.py` (a clean stage yields a complete bundle with
+correct classes, DLL-to-package tracing including a plugin in a subfolder, the LGPL statement naming exactly the
+staged LGPL components, MKL's reviewed status visible, and byte-identical output on a re-run; and each refusal above,
+including all problems at once and a failed run removing a stale bundle; `--verify-bundle` catching a modified,
+deleted or missing text, a DLL or package added after the bundle, and a strong-copyleft base bundle), plus the S3
+tests updated for the new requirement (a stage without a bundle, or with a stale one, is refused). Mutation-checked:
+reading LGPL as GPL, allowing GPL in the base runtime, skipping the forbidden-Qt-module check, accepting an unowned
+DLL, and skipping the SHA-256 comparison were each caught. Writing the tests found one real gap, fixed: the
+"embedded in tcad_desktop.exe" note for `nlohmann_json` was recorded but never printed. The desktop-tool suites
+together: 105 passed, 2 skipped (compiled extension not importable here).
+
+**NOT verified -- Windows-only, and the honest expectation is that the first real run will need decisions:**
+1. The real licence strings and `conda-meta` of the staged runtime and of `tcad-gui` have never been read. I do not
+   know what they contain, or which packages (for instance a Microsoft or Intel runtime package) the classifier will
+   report as unclassifiable; each of those is a person's call, recorded as a `reviewed` policy entry with a reason.
+2. Whether each package's extracted directory still exists in your conda package cache (if `conda clean` removed it,
+   the gate reports "no licence text").
+3. That the DLL-to-package tracing resolves every staged DLL (Qt plugins copied by `windeployqt6`, the MSVC runtime,
+   TBB), and that `conda-meta` `files` lists are complete for them.
+4. The S3 tooling changes (a 10th `licenses` check in `verify_install.ps1`, the bundle requirement in
+   `make_installer.ps1`) have not been run; S1-S3 are not being redone, and `tcad.iss` is unchanged, but the Sandbox
+   gate needs one more pass to exercise the new check.
+
+Windows commands, from the repo root. The existing `dist\TCAD` stage predates S4 but already holds the runtime and
+DLLs, so the generator can be tried on it directly, without re-staging:
+```powershell
+$gui = ((conda env list --json | Out-String) | ConvertFrom-Json).envs | Where-Object { (Split-Path $_ -Leaf) -eq "tcad-gui" }
+.\dist\TCAD\runtime\python.exe .\pytcad\desktop\tools\gen_licenses.py --stage .\dist\TCAD --gui-env $gui --check-only
+```
+Paste its component table and every `FAIL` line. Then, once it reports no problems, the full pipeline:
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\stage.ps1 -Reference .\build\ref
+powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\make_installer.ps1 -WriteSandboxConfig
+# then the Windows Sandbox gate as before; verify_install.json should now list 10 checks
+```

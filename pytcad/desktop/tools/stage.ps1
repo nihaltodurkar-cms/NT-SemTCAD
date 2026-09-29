@@ -26,6 +26,7 @@
 #   instead of pinning every package to what tcad-dev has.
 # -RecreateRuntime: delete and re-create the -RuntimeEnv env from the spec.
 # -NoVerify: skip check_runtime.py on the staged runtime + backend.
+# -NoLicenses: skip gen_licenses.py (P5-S4). The installer build refuses a stage without the bundle.
 # -Check <npz>: after staging, run the staged app's --selftest on <npz> with a
 #   PATH holding only C:\Windows directories -- proof that nothing is picked up
 #   from the conda envs.
@@ -41,6 +42,7 @@ param(
     [switch] $NoBuild,
     [switch] $NoRuntime,
     [switch] $NoVerify,
+    [switch] $NoLicenses,
     [switch] $NoPin,
     [switch] $RecreateRuntime,
     [string] $RuntimeEnv = "tcad-runtime",
@@ -272,6 +274,14 @@ if (-not $DevBackend -and -not $NoRuntime) {
     New-Item -ItemType Directory -Force (Join-Path $be "gui") | Out-Null
     Copy-Item (Join-Path $root "gui\__init__.py") (Join-Path $be "gui")
     Copy-Tree (Join-Path $root "gui\services") (Join-Path $be "gui\services") @("__pycache__")
+    # 5d. The licence bundle (P5-S4), generated from what is now actually staged: every conda package
+    #     in runtime\ and every DLL next to the exe (traced to its owning tcad-gui package). Fails, with
+    #     every problem listed, on a package/DLL with no licence entry, GPL/AGPL in the base runtime, or a
+    #     GPL-only Qt module. stdlib-only, so the staged interpreter runs it.
+    if (-not $NoLicenses) {
+        & (Join-Path $rt "python.exe") (Join-Path $PSScriptRoot "gen_licenses.py") --stage $Out --gui-env $gui
+        Assert-Exit "gen_licenses.py (the licence bundle)"
+    }
     $stagedRuntime = $true
 }
 
