@@ -257,3 +257,80 @@ def test_scripts_parse_without_errors(script):
            "$e.Count")
     p = subprocess.run([PWSH, "-NoProfile", "-Command", cmd], capture_output=True, text=True, timeout=120)
     assert p.stdout.strip() == "0", p.stdout + p.stderr
+
+
+# -- regression: the verifier itself crashed in Windows Sandbox ---------------------------
+#
+# verify_install.ps1 failed AFTER a successful install, run and uninstall with
+#     Exception calling "ContainsKey" with "1" argument(s): "Key cannot be null."
+# in Compare-Sets. After a clean uninstall %LOCALAPPDATA%\Programs is empty, so Get-FileSet
+# returns an empty array, which PowerShell hands the caller as $null; piping a bare $null sends
+# ONE null object, and ContainsKey($null) throws. The earlier tests always diffed non-empty
+# literal arrays, so the empty snapshot -- the normal end state of a clean uninstall -- was
+# never exercised. Cleanup strictness is unchanged: leftovers are still reported.
+
+@needs_pwsh
+def test_compare_sets_accepts_an_empty_snapshot_the_normal_result_of_a_clean_uninstall(tmp_path):
+    args = "-Installer x"
+    empty = tmp_path / "Programs"
+    empty.mkdir()
+    missing = tmp_path / "no_such_dir"
+    # the real call shape: the OUTPUT of Get-FileSet (an empty array becomes $null) passed straight in
+    after_empty = f"Compare-Sets @('TCAD','TCAD/runtime') (Get-FileSet '{empty}')"
+    assert _ps(VERIFY, args, after_empty) == {"added": [], "removed": ["TCAD", "TCAD/runtime"]}
+    before_empty = f"Compare-Sets (Get-FileSet '{empty}') @('TCAD')"
+    assert _ps(VERIFY, args, before_empty) == {"added": ["TCAD"], "removed": []}
+    both_empty = f"Compare-Sets (Get-FileSet '{empty}') (Get-FileSet '{missing}')"
+    assert _ps(VERIFY, args, both_empty) == {"added": [], "removed": []}
+    assert _ps(VERIFY, args, "Compare-Sets $null $null") == {"added": [], "removed": []}
+
+
+@needs_pwsh
+def test_the_clean_check_still_reports_leftovers_and_vanished_entries():
+    """The fix must not weaken the cleanup diff: a leftover is `added`, a vanished entry `removed`,
+    identical snapshots are clean -- including when one side is $null."""
+    args = "-Installer x"
+    assert _ps(VERIFY, args, "Compare-Sets $null @('TCAD','TCAD/backend/__pycache__')") == \
+        {"added": ["TCAD", "TCAD/backend/__pycache__"], "removed": []}
+    assert _ps(VERIFY, args, "Compare-Sets @('a','b') @('a','b')") == {"added": [], "removed": []}
+    assert _ps(VERIFY, args, "Compare-Sets @('a','b') @('b','c')") == {"added": ["c"], "removed": ["a"]}
+    # duplicates and ordering do not matter, only membership
+    assert _ps(VERIFY, args, "Compare-Sets @('b','a','a') @('a','b')") == {"added": [], "removed": []}
+
+
+def test_compare_sets_never_pipes_a_possibly_null_snapshot():
+    """Static guard for the exact mistake: `$after | Where-Object { ...ContainsKey($_) }` pipes $null
+    as one null object. (The behaviour is covered by the executed tests above; this catches a
+    reintroduction on a machine without pwsh.)"""
+    text = _read(VERIFY)
+    body = text[text.index("function Compare-Sets"):text.index("$results = New-Object")]
+    assert not re.search(r"\$(before|after)\s*\|", body), "Compare-Sets pipes a snapshot that may be $null"
+    assert "$null -ne $x" in body
+    assert "ContainsKey($_)" not in body
+
+
+@needs_pwsh
+def test_the_verifier_survives_a_full_install_uninstall_diff_with_an_empty_end_state(tmp_path):
+    """The whole 'clean' computation of verify_install.ps1, run against a directory that goes
+    from empty -> installed -> empty (a Sandbox user's %LOCALAPPDATA%\\Programs)."""
+    programs = tmp_path / "Programs"
+    script = f"""
+. '{VERIFY}' -Installer x
+$root = '{programs}'
+$before = Get-FileSet $root                                   # absent: an empty snapshot
+New-Item -ItemType Directory -Force (Join-Path $root 'TCAD/runtime') | Out-Null
+Set-Content (Join-Path $root 'TCAD/runtime/python.exe') 'x'
+$during = Get-FileSet $root
+Remove-Item -Recurse -Force $root                              # a clean uninstall removes it all
+New-Item -ItemType Directory -Force $root | Out-Null           # ... leaving Programs itself, empty
+$after = Get-FileSet $root
+$d = Compare-Sets $before $after
+$leftover = Compare-Sets $before $during
+ConvertTo-Json -Compress -InputObject ([ordered]@{{ clean = $d; installed = $leftover }})
+"""
+    p = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script],
+                       capture_output=True, text=True, encoding="utf-8", timeout=120)
+    assert p.returncode == 0, p.stdout + p.stderr
+    got = json.loads(p.stdout)
+    assert got["clean"] == {"added": [], "removed": []}
+    assert sorted(x.replace("\\", "/") for x in got["installed"]["added"]) == ["TCAD", "TCAD/runtime", "TCAD/runtime/python.exe"]
