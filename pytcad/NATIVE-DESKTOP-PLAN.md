@@ -6186,20 +6186,30 @@ the evidenced pins; conda-forge only; stage.ps1 never installs into a dev env), 
 a 1% tampered result, a changed `record__meta`), plus real subprocess runs of the script. The
 example/reference/tamper test needs the compiled `_core` and skips without it.
 
-#### 26.6.4 Windows results for S2 (reported by the user; not observed by the author)
-After the include fix (`job_runner.cpp` now includes `backend/backend_client.hpp`; §26.5's build
-error C3861 was that missing include, not the conda env), the user ran the full S2 staging on
-Windows and reported:
-- **15/15 runtime gates passed** (`check_runtime.py` on the staged `runtime\` + `backend\`);
-- **the scrubbed-PATH `--selftest` passed** (`stage.ps1 -Check`, PATH = Windows directories only),
-  which is also S1's own gate (a staged folder that runs with the conda envs off PATH and opens a
-  result file);
-- **staged `runtime\` = 857.1 MB**;
-- **numerical reference difference vs tcad-dev = 0.00e+00** (rtol 1e-6 was the bound; the two
-  agree exactly).
+#### 26.6.4 Windows results for S2 -- FINAL (reported by the user after running on Windows; not observed by the author)
+S2 is fully Windows-validated. After the two fixes found on Windows (§26.5's missing include in
+`job_runner.cpp`; §26.6.5's relative-path reference bug), the full staging with the tcad-dev reference
+(`stage.ps1 -EmitReference`, then `stage.ps1 -Reference ... -Check <npz>`) reported:
 
-Not reported, hence NOT recorded here: the pinned spec that `conda env create` solved, the MKL/PARDISO
-path, per-example times, total staged size, DLL count. Add them from the console output if wanted.
+| Measure | Result |
+|---|---|
+| `check_runtime.py` gates on the staged `runtime\` + `backend\` | **15 of 15 passed, 0 warnings** |
+| scrubbed-PATH `--selftest` (`-Check`; PATH = Windows dirs only) | **passed** (this is also S1's own gate) |
+| numerical reference vs tcad-dev: `diode_1d`, `mosfet_2d`, `resistor_3d` | **all three match, max relative difference 0.00e+00** (bound rtol 1e-6) |
+| staged `runtime\` | **857.1 MB** |
+| staged `backend\` | **84 MB** |
+| interpreter | **Python 3.14.7** |
+| MKL PARDISO; the three examples | **pass** (as gates) |
+
+Two earlier Windows runs are superseded by this one and kept only as history: the first (before §26.6.5)
+gave 11 passed / 1 failed, the failing gate being the reference lookup, with every other gate passing.
+The **84 MB backend and Python 3.14.7** figures in the table come from that earlier report (the final
+report did not restate them; the runtime was unchanged, 857.1 MB in both).
+
+Not reported, hence NOT recorded here (add from the console output if wanted): the spec `conda env create`
+actually solved, the `mkl_rt` path PARDISO loaded, per-example wall times, the total staged size, the DLL
+count. "0.00e+00" means the runtime reproduced tcad-dev's example results exactly, which is what identical
+pinned binaries should give; it is a result for these three examples, not a proof for every device.
 
 #### 26.6.5 Bug found on Windows: the reference mechanism (fixed)
 `stage.ps1 -EmitReference .\build\ref` reported success, but the next `-Reference .\build\ref` failed
@@ -6217,10 +6227,10 @@ its emit run only reports success if `versions.json` and every example result ex
 one before the build starts. Runtime, tolerance (rtol 1e-6) and numerics are untouched. Seven regression
 tests in `gui/tests/test_desktop_runtime_check.py` fail on the pre-fix code and pass now, including
 `stage.ps1 -EmitReference` run end to end from a foreign directory (with stand-ins for `conda` and
-`python.exe`, Linux/pwsh only). The Windows re-run of `-EmitReference` then `-Reference` is still the
-confirmation that counts.
+`python.exe`, Linux/pwsh only). **Confirmed on Windows:** the re-run of `-EmitReference` then `-Reference`
+completed and all three references matched (§26.6.4).
 
-### 26.7 Windows-only gates (S1/S2 reported done in 26.6.4; the original list is kept)
+### 26.7 Windows-only gates (S1 and S2 DONE, §26.6.4; the list is kept as the record of what they covered)
 1. S1: `stage.ps1 -DevBackend -Check <a.npz>` (scrubbed PATH); the desktop test binary
    (`test_backend`, incl. `manifestPathsResolveRelativeToTheApp`); record file/DLL counts and MB here.
 2. S2: `stage.ps1 -EmitReference` once, then a full `stage.ps1 -Reference` -- which exercises
@@ -6230,7 +6240,8 @@ confirmation that counts.
 3. Record here: the pinned spec, the staged `runtime\` size, `pardiso` path, the per-example times,
    and the `reference` max relative difference against tcad-dev (rtol 1e-6 was chosen in advance, not
    measured; if the honest number is larger, say why before loosening it).
-4. Then S3 (installer) onward is unblocked.
+4. Then S3 (installer) onward is unblocked. **Done for items 1-3 as far as §26.6.4 reports; the fields it lists as
+   not reported remain unrecorded.** The remaining Windows gates are S3's (§26.8).
 
 ### 26.8 P5-S3 status (2026-09-30): installer -- coded; NEVER COMPILED OR RUN; every Windows gate pending
 
@@ -6266,6 +6277,10 @@ installer ships none of them).
    and the user's own project/result files.
 3. **Unsigned name** (`-unsigned`) by default, per decision 26.4-2; the signtool step is S6.
 4. **Only the base installer.** The separate gmsh/tetgen add-on installer (decision 26.4-4) is not built.
+5. **Bytecode is shipped, not excluded.** `stage.ps1` runs `check_runtime.py` on the staged runtime, so the
+   stage holds `.pyc` files, and the installer ships them (no `Excludes`): a faster first launch than
+   recompiling numpy/scipy per user, and `UninstallDelete` removes them. Revisit only if the installer size
+   matters more than first-start time.
 
 **Verified in the cloud session (Linux, PowerShell 7.4, Python 3.11) -- everything below is static
 or executed-function checking, NOT an install:**
