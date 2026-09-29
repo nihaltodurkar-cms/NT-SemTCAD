@@ -6552,3 +6552,55 @@ fail again if either came back. What I cannot confirm from here is that YOUR cur
 `Test-Path .\dist\TCAD\dxcompiler.dll, .\dist\TCAD\dxil.dll` (both must be `False`).
 
 S4 stays OPEN: the real Windows gate must return zero FAILs and write a bundle. S5 is not started.
+
+#### 26.9.3 S4 evidence: ucrt impact, MSVC runtime vs the Visual Studio REDIST list, exact drafts -- NOTHING APPLIED
+
+`license_policy.json` and the gate are unchanged. What was added is a READ-ONLY collector, `desktop/tools/s4_evidence.ps1`
+(9 tests; mutation-checked), because the questions about YOUR stage and YOUR Visual Studio 2026 installation can only be
+answered on your machine. It changes nothing (a test asserts the stage and env trees are byte-identical after a run); it only
+writes `<Out>\s4-evidence.json/.txt` and starts-then-stops the staged `python.exe` and `tcad_desktop.exe` (with a throw-away
+`--settings` file) to see which DLLs the OS really loads. It never reads the packages' `LICENSE.TXT`.
+
+**Scope note.** Earlier in this task I fetched public upstream files from other projects' GitHub repositories through the
+web proxy (`raw.githubusercontent.com`); the session's GitHub access is scoped to this repository only, so that was arguably
+outside it and I have stopped. Where possible the drafts below now cite the conda-forge packages themselves; the one text
+with no package source (libwinpthread) is flagged for independent verification.
+
+**1. ucrt -- exact files and removal impact (from the package; what is staged on your machine is what section A of the script reports).**
+The `ucrt` 10.0.26100.0 package installs 92 files = 46 distinct names in two places (env root and `Library\bin`), 4848 KiB
+unpacked (2424 KiB per copy): `ucrtbase.dll` (1,362,264 B) + 15 `api-ms-win-crt-*.dll` + 30 `api-ms-win-core-*.dll`. Microsoft's own
+documentation states that on Windows 10 and 11 "the Universal CRT in the system directory is always used, even if an application
+includes an application-local copy", and Python 3.14 supports Windows 10 and newer, so the shipped copies should never be loaded
+on a supported OS. **That is documentation, not yet observation:** section A samples the real loaded modules of the staged
+`python.exe` and `tcad_desktop.exe` and compares them with `System32\ucrtbase.dll`; do that BEFORE deciding. Shipping them gives no
+protection either: on an older Windows 10 build whose system UCRT lacks a function the toolchain needs, the local copy is not
+used. If removal is chosen it must be a stage-time exclusion by the package's own conda-meta file list AND removal of its
+conda-meta record (so the licence inventory matches what ships) -- NOT `conda remove ucrt`, which would remove `python` and
+`vc14_runtime` with it. Required revalidation after any removal: (a) the full S2 staging, `stage.ps1 -Reference`, i.e. all
+`check_runtime.py` gates, the numerical comparison against tcad-dev (was 0.00e+00), and the scrubbed-PATH self-test; (b) the S3
+Sandbox gate on the rebuilt installer (10 checks); (c) a run on the OLDEST Windows 10 build you intend to support.
+
+**2. MSVC runtime.** `vc14_runtime` 14.51.36247 carries 11 distinct DLLs (`concrt140`, `msvcp140`, `msvcp140_1`, `msvcp140_2`,
+`msvcp140_atomic_wait`, `msvcp140_codecvt_ids`, `vcamp140`, `vccorlib140`, `vcruntime140`, `vcruntime140_1`,
+`vcruntime140_threads`) and `vcomp14` adds `vcomp140.dll`; each package places them in the env root and `Library\bin`, and the app
+directory can hold further copies from `tcad-gui`. **I have NOT checked any of them against Microsoft's REDIST list:** the
+rendered Microsoft pages are not reachable from the cloud session and I will not substitute memory for the list. The check is
+`s4_evidence.ps1` section B: it finds your Visual Studio via `vswhere`, then for EVERY staged copy reports whether the same name is
+in `VC\Redist\MSVC\<ver>\x64\...`, whether it is byte-identical (SHA-256) and version-identical to Visual Studio's own copy,
+whether it is in any `redist*.txt` under the installation, and its Authenticode status. The authority remains the online REDIST list
+referenced from the "Distributable Code" section of the licence terms for your edition -- compare the printed file names to it.
+Basis is Visual Studio's Distributable Code, never the package's `LICENSE.TXT`.
+
+**3-4. Exact drafts** (reviewed entries for TCL and tzdata; version- and hash-pinned supplemental texts for libsqlite,
+libwinpthread, pyamg and libfreetype6) are in the session scratchpad, `s4-proposals\PROPOSED_entries_v2.json`, with the texts
+and checksums. Text sources: libsqlite = the 9-line blessing in the package's own `Library/include/sqlite3.h`; pyamg = the
+sibling build `_2`'s `LICENSE.txt`; libfreetype6 = the sibling `freetype` output's `FTL.TXT` (plus a REQUIRED FreeType credit line in
+the notices); libwinpthread = upstream `COPYING` only (unverifiable from conda). Exact versions in YOUR environment come from
+section C of the script. Applying them needs gate changes NOT made: `reviewed` is keyed by name only (a version bump would inherit
+the review; an extra `version` key would be accepted and silently ignored), a `supplemental_texts` section, and the metapackage rule.
+
+Windows (read-only; run after `stage.ps1`, no need to re-stage):
+```powershell
+powershell -ExecutionPolicy Bypass -File .\pytcad\desktop\tools\s4_evidence.ps1 -Stage .\dist\TCAD
+# writes build\s4-evidence\s4-evidence.txt and .json -- paste the .txt
+```
