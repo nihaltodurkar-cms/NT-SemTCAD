@@ -215,10 +215,177 @@ def _key(rel):
 
 # -- building the inventory --------------------------------------------------------------
 
-def component(meta, source, policy, addon):
+# -- restoring licence texts that the local package cache no longer has -----------------------------------
+#
+# conda-meta records where a package was extracted (extracted_package_dir, in the pkgs cache) and where it
+# came from (url + md5/sha256, package_tarball_full_path). `conda clean` deletes the extracted dirs and/or
+# the tarballs, after which info/licenses is gone even though the package is installed. The licence texts
+# live in the package ARCHIVE, so they can be restored mechanically: from the local tarball if it is still
+# there, else (only with --download) from the recorded url, verified against the recorded checksum.
+
+def _zst_reader(raw):
+    """A binary stream over a zstd-compressed file object: the stdlib's compression.zstd (Python 3.14+),
+    else the `zstandard` package. (The staged runtime is Python 3.14.)"""
+    try:
+        from compression import zstd                    # noqa: PLC0415  (3.14+)
+        return zstd.ZstdFile(raw)
+    except ImportError:
+        pass
+    try:
+        import zstandard                                 # noqa: PLC0415
+        return zstandard.ZstdDecompressor().stream_reader(raw)
+    except ImportError:
+        raise RuntimeError("reading a .conda package needs Python 3.14+ (compression.zstd) or the "
+                           "`zstandard` package; this interpreter has neither") from None
+
+
+def _safe_member(name):
+    n = name.replace("\\", "/")
+    parts = n.split("/")
+    return bool(n) and not n.startswith("/") and ".." not in parts and not re.match(r"^[A-Za-z]:", n)
+
+
+def _wanted_member(name):
+    n = name.replace("\\", "/")
+    return n == "info/about.json" or n.startswith("info/licenses/")
+
+
+def extract_info(archive, dest):
+    """Extract ONLY info/licenses/** and info/about.json from a conda package (.conda or .tar.bz2) into
+    `dest`, refusing any member whose path escapes it. Returns the number of files written."""
+    import tarfile
+    import zipfile
+
+    def take(tf):
+        n = 0
+        for m in tf:
+            if not (m.isfile() and _wanted_member(m.name)):
+                continue
+            if not _safe_member(m.name):
+                raise ValueError(f"unsafe path in package archive: {m.name}")
+            target = os.path.join(dest, *m.name.replace("\\", "/").split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as out:
+                out.write(tf.extractfile(m).read())
+            n += 1
+        return n
+
+    if archive.endswith(".tar.bz2"):
+        with tarfile.open(archive, "r:bz2") as tf:
+            return take(tf)
+    if archive.endswith(".conda"):
+        with zipfile.ZipFile(archive) as z:
+            inner = sorted(n for n in z.namelist() if n.startswith("info-") and n.endswith(".tar.zst"))
+            if not inner:
+                raise ValueError(f"{os.path.basename(archive)} has no info-*.tar.zst member")
+            with z.open(inner[0]) as raw:
+                with _zst_reader(raw) as dec:
+                    with tarfile.open(fileobj=dec, mode="r|") as tf:
+                        return take(tf)
+    raise ValueError(f"unrecognised package archive type: {archive}")
+
+
+def _verify_download(path, meta):
+    """Compare the file with the checksum conda recorded. Returns None if it matches, else why not."""
+    want = (meta.get("sha256") or "").lower()
+    if want:
+        return None if sha256_file(path) == want else "sha256 does not match conda-meta"
+    want = (meta.get("md5") or "").lower()
+    if want:
+        h = hashlib.md5()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return None if h.hexdigest() == want else "md5 does not match conda-meta"
+    return "conda-meta records no sha256/md5, so the download cannot be verified"
+
+
+class Retriever:
+    """Restores info/licenses for packages whose extracted directory is gone. `cache` holds
+    <name>-<version>-<build>/info/licenses (kept, so a second run needs neither tarball nor network)."""
+
+    def __init__(self, cache, download=False):
+        self.cache = cache
+        self.download = download
+
+    def restore(self, meta):
+        """(directory holding info/licenses, how) on success, else (None, why not)."""
+        key = f"{meta['name']}-{meta.get('version', '?')}-{meta.get('build', '')}"
+        dest = os.path.join(self.cache, key)
+        if license_text_files(dest):
+            return dest, "restored earlier (licence-text cache)"
+        tb = meta.get("package_tarball_full_path") or ""
+        source = None
+        if tb and os.path.isfile(tb):
+            source, how = tb, "restored from the local package tarball"
+        elif self.download:
+            url = meta.get("url") or ""
+            if not url:
+                return None, "no local tarball and conda-meta records no download url"
+            os.makedirs(os.path.join(self.cache, "_download"), exist_ok=True)
+            source = os.path.join(self.cache, "_download", os.path.basename(url))
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url, timeout=300) as resp, open(source, "wb") as out:
+                    shutil.copyfileobj(resp, out)
+            except Exception as exc:                     # noqa: BLE001 -- any network/IO failure is a reason
+                self._drop(source)
+                return None, f"download of {url} failed: {type(exc).__name__}: {exc}"
+            bad = _verify_download(source, meta)
+            if bad:
+                self._drop(source)
+                return None, f"download of {url} refused: {bad}"
+            how = f"downloaded from {url} (checksum verified against conda-meta)"
+        else:
+            return None, ("the extracted directory and the tarball are both gone; re-run with --download to "
+                          "fetch the package again (checksum-verified)")
+        try:
+            extract_info(source, dest)
+        except Exception as exc:                         # noqa: BLE001
+            shutil.rmtree(dest, ignore_errors=True)
+            return None, f"could not read {os.path.basename(source)}: {type(exc).__name__}: {exc}"
+        finally:
+            if "_download" in source:
+                self._drop(source)                        # only the texts are kept
+        if not license_text_files(dest):
+            return None, ("the package archive itself contains no info/licenses: upstream shipped no licence "
+                          "text with this package")
+        return dest, how
+
+    @staticmethod
+    def _drop(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+
+
+class Diag:
+    """What the human needs to see beyond the flat problem list."""
+
+    def __init__(self):
+        self.unclassified = {}          # licence string -> [packages]
+        self.no_text = []               # (package, cause, remedy)
+        self.text_source = {}           # package -> how its texts were obtained
+
+
+def component(meta, source, policy, addon, retriever=None, diag=None):
     """One inventory row and its problems for a conda package."""
     name, version = meta["name"], meta.get("version", "?")
+    diag = diag or Diag()
     pkgdir = package_dir(meta)
+    texts = license_text_files(pkgdir)
+    text_from = "conda package cache"
+    cause = None
+    if not texts:
+        cause = ("its extracted package directory no longer exists" if not pkgdir
+                 else f"package directory {pkgdir} has no info/licenses")
+        if retriever:
+            restored, how = retriever.restore(meta)
+            if restored:
+                pkgdir, texts, text_from, cause = restored, license_text_files(restored), how, None
+            else:
+                cause += f"; {how}"
     expr = license_string(meta, pkgdir)
     cls, why = classify(expr)
     problems = []
@@ -229,6 +396,7 @@ def component(meta, source, policy, addon):
     if not expr and not reviewed:
         problems.append(f"{who}: no licence string in conda-meta or info/about.json")
     elif cls == "unknown":
+        diag.unclassified.setdefault(expr, []).append(who)
         problems.append(f"{who}: licence '{expr}' cannot be classified -- add a reviewed entry with a reason to "
                         f"license_policy.json if it is acceptable")
     elif cls == "strong-copyleft":
@@ -239,12 +407,15 @@ def component(meta, source, policy, addon):
                             f"addon_copyleft policy entry)")
         else:
             why = f"add-on copyleft: {allowed['reason']} ({allowed['basis']})"
-    texts = license_text_files(pkgdir)
     if not texts:
-        problems.append(f"{who}: no licence text on disk ({'package dir ' + pkgdir + ' has no info/licenses' if pkgdir else 'its extracted package directory no longer exists -- restore it, e.g. reinstall the package'})")
+        diag.no_text.append((who, cause))
+        problems.append(f"{who}: no licence text ({cause})")
+    else:
+        diag.text_source[name] = text_from
     row = {"name": name, "version": version, "build": meta.get("build", ""), "channel": str(meta.get("channel", "")),
            "url": meta.get("url", ""), "license": expr, "class": cls, "why": why, "source": source,
-           "_texts": texts, "texts": []}
+           "_texts": texts, "texts": [],
+           "texts_from": text_from}
     return row, problems
 
 
@@ -270,8 +441,9 @@ def staged_dlls(stage):
     return sorted(out)
 
 
-def build_inventory(stage, gui_env, policy, addon):
+def build_inventory(stage, gui_env, policy, addon, retriever=None, diag=None):
     rows, problems, dll_owner = [], [], {}
+    diag = diag if diag is not None else Diag()
     seen = set()
 
     def add(meta, source):
@@ -279,7 +451,7 @@ def build_inventory(stage, gui_env, policy, addon):
         if key in seen:
             return
         seen.add(key)
-        row, probs = component(meta, source, policy, addon)
+        row, probs = component(meta, source, policy, addon, retriever, diag)
         rows.append(row)
         problems.extend(probs)
 
@@ -427,6 +599,8 @@ def write_bundle(stage, out, rows, dll_owner, policy_path, addon):
         provided = sorted(k for k, v in dll_owner.items() if r["name"] in v)
         if provided:
             lines.append("    provides: " + ", ".join(p.replace("\\", "/") for p in provided))
+        if r.get("texts_from", "conda package cache") != "conda package cache":
+            lines.append(f"    text-src: {r['texts_from']}")
         for t in r["texts"]:
             lines.append(f"    text    : licenses/{t['file']}")
         lines.append("")
@@ -478,6 +652,39 @@ def verify_bundle(app):
 
 # -- CLI ---------------------------------------------------------------------------------
 
+def print_diagnosis(diag, retriever):
+    """The problem list says WHAT failed; this says WHY, grouped, and what only a person can decide."""
+    if diag.no_text:
+        by_cause = {}
+        for who, cause in diag.no_text:
+            kind = ("extracted directory gone" if "no longer exists" in cause else
+                    "extracted directory has no info/licenses" if "has no info/licenses" in cause else "other")
+            if "upstream shipped no licence" in cause:
+                kind = "archive itself has no licence text (upstream)"
+            elif "download" in cause and ("failed" in cause or "refused" in cause):
+                kind = "download failed or refused"
+            by_cause.setdefault(kind, []).append(who)
+        print("\nLICENCE TEXTS MISSING -- by cause:")
+        for kind, names in sorted(by_cause.items()):
+            print(f"  {kind}: {len(names)}")
+            for n in names[:40]:
+                print(f"      {n}")
+        if retriever is None:
+            print("  -> mechanical fix: re-run with --restore-texts (local tarballs) and, if those are gone too, "
+                  "--download (re-fetches each package, verified against the sha256/md5 in conda-meta)")
+        elif not retriever.download:
+            print("  -> the tarballs are gone too: re-run with --download")
+        if any(k.startswith("archive itself") for k in by_cause):
+            print("  -> a package whose ARCHIVE has no licence text cannot be fixed mechanically: that is a human "
+                  "decision (find the upstream text, or drop the package)")
+    if diag.unclassified:
+        print("\nHUMAN DECISIONS NEEDED -- licences the classifier will not classify on its own:")
+        for lic, who in sorted(diag.unclassified.items()):
+            print(f"  '{lic}': {', '.join(sorted(set(who)))}")
+        print("  -> for each, a person reads the package's licence text and, if acceptable, adds a `reviewed` entry "
+              "(class, reason, basis) to desktop/tools/license_policy.json")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--stage", help="the stage.ps1 output directory")
@@ -486,6 +693,13 @@ def main(argv=None):
     ap.add_argument("--out", help="default: <stage>/licenses")
     ap.add_argument("--addon", action="store_true", help="the add-on runtime: policy addon_copyleft packages are allowed")
     ap.add_argument("--check-only", action="store_true", help="report the inventory and problems; write nothing")
+    ap.add_argument("--restore-texts", action="store_true",
+                    help="for a package whose extracted directory is gone, restore info/licenses from its local "
+                         "tarball into --text-cache (never touches the network)")
+    ap.add_argument("--download", action="store_true",
+                    help="implies --restore-texts; if the tarball is gone too, download the package from the url "
+                         "recorded in conda-meta and verify it against the recorded sha256/md5 first")
+    ap.add_argument("--text-cache", help="where restored texts are kept (default: <pytcad>/build/license-cache)")
     ap.add_argument("--verify-bundle", metavar="APP_DIR", help="verify an installed/staged app's licence bundle and exit")
     args = ap.parse_args(argv)
 
@@ -504,8 +718,14 @@ def main(argv=None):
     except (OSError, ValueError) as exc:
         print(f"FAIL  policy {policy_path}: {exc}")
         return 1
+    retriever = None
+    if args.restore_texts or args.download:
+        cache = os.path.abspath(args.text_cache) if args.text_cache else \
+            os.path.abspath(os.path.join(TOOLS, "..", "..", "build", "license-cache"))
+        retriever = Retriever(cache, download=args.download)
+    diag = Diag()
     rows, problems, dll_owner = build_inventory(stage, os.path.abspath(args.gui_env) if args.gui_env else None,
-                                                policy, args.addon)
+                                                policy, args.addon, retriever, diag)
     print(f"{'source':8} {'class':28} {'component':34} licence")
     for r in rows:
         print(f"{r['source']:8} {r['class']:28} {(r['name'] + ' ' + str(r['version']))[:34]:34} {r['license']}")
@@ -517,6 +737,7 @@ def main(argv=None):
         stale = os.path.abspath(args.out) if args.out else os.path.join(stage, "licenses")
         if os.path.isdir(stale) and not args.check_only:
             shutil.rmtree(stale)
+        print_diagnosis(diag, retriever)
         print(f"\n{len(problems)} licence problem(s) in {len(rows)} components: no bundle written")
         return 1
     if args.check_only:
