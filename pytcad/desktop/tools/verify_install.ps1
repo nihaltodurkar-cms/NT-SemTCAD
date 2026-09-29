@@ -35,14 +35,19 @@ function Get-FileSet([string] $root) {
         ForEach-Object { $_.FullName.Substring($base.Length).TrimStart('\', '/') } | Sort-Object)
 }
 
-# What appeared and what disappeared between two snapshots.
+# What appeared and what disappeared between two snapshots. Either snapshot may be EMPTY, and an
+# empty array returned by a function reaches the caller as $null (PowerShell unrolls it): after a
+# clean uninstall %LOCALAPPDATA%\Programs is empty, so the "after" snapshot is $null. Piping a bare
+# $null sends ONE null object down the pipeline, and ContainsKey($null) throws "Key cannot be null"
+# (found in Windows Sandbox). So: foreach (zero iterations on $null), and never look up a null.
 function Compare-Sets([string[]] $before, [string[]] $after) {
-    $b = @{}; foreach ($x in $before) { $b[$x] = $true }
-    $a = @{}; foreach ($x in $after) { $a[$x] = $true }
-    return [ordered]@{
-        added   = @($after  | Where-Object { -not $b.ContainsKey($_) })
-        removed = @($before | Where-Object { -not $a.ContainsKey($_) })
-    }
+    $b = @{}; foreach ($x in $before) { if ($null -ne $x) { $b[$x] = $true } }
+    $a = @{}; foreach ($x in $after) { if ($null -ne $x) { $a[$x] = $true } }
+    $added = New-Object System.Collections.ArrayList
+    foreach ($x in $after) { if (($null -ne $x) -and -not $b.ContainsKey($x)) { [void]$added.Add($x) } }
+    $removed = New-Object System.Collections.ArrayList
+    foreach ($x in $before) { if (($null -ne $x) -and -not $a.ContainsKey($x)) { [void]$removed.Add($x) } }
+    return [ordered]@{ added = @($added); removed = @($removed) }
 }
 
 $results = New-Object System.Collections.ArrayList
@@ -131,7 +136,7 @@ try {
         Record "clean" (($left.Count -eq 0) -and ($gone.Count -eq 0)) $(if ($left.Count -or $gone.Count) { "left behind: " + ($left | Select-Object -First 10 | Out-String).Trim() + " | vanished: " + ($gone | Select-Object -First 10 | Out-String).Trim() } else { "file lists and registry identical to before" })
 
         # userdata
-        $kept = @($sentinel, (Join-Path $settingsDir "sentinel.txt"), (Join-Path $runsDir "sentinel.txt")) | Where-Object { Test-Path $_ }
+        $kept = @(@($sentinel, (Join-Path $settingsDir "sentinel.txt"), (Join-Path $runsDir "sentinel.txt")) | Where-Object { Test-Path $_ })
         Record "userdata" ($kept.Count -eq 3) "$($kept.Count) of 3 user files survived the uninstall"
     }
 } catch {

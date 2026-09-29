@@ -5924,7 +5924,7 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 compiled, clean-machine gate pending)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2 done on Windows; S3 compiled and installs/uninstalls; clean-diff check pending re-run)
 
 User: "start P5". §9's P5 bullet list is the scope; this section turns it
 into slices and gates, from the tree as it stands today. **Status (see
@@ -6311,6 +6311,31 @@ recorded). Nothing has been installed by the author, and the result of the clean
    once (the script polls for the folder to vanish, up to 180 s); Windows Sandbox's GPU/OpenGL for the
    `--selftest`; the "before" snapshot on a real user profile.
 3. Whether the installed app also opens a file passed as argv[1] from "Open with".
+
+**First Windows Sandbox run (reported by the user from `verify_install.json`; S3 is NOT yet passed -- it
+needs `ok: true`):**
+
+| Check | Result |
+|---|---|
+| `install` (silent, per-user) | PASS |
+| `layout` (files, Start menu, Add/Remove entry, Open-with keys, no default association) | PASS |
+| `runtime` (`check_runtime.py` on the INSTALLED runtime + backend) | PASS |
+| `selftest`: `diode_1d`, `mosfet_2d`, `resistor_3d` (installed exe, PATH = Windows dirs) | PASS, PASS, PASS |
+| `uninstall` (exit 0, install folder removed) | PASS |
+| `script` | **FAIL**: `Exception calling "ContainsKey" with "1" argument(s): "Key cannot be null."` at `verify_install.ps1` line 43 |
+
+The failure was in the verifier, not the installer or runtime. After a clean uninstall
+`%LOCALAPPDATA%\Programs` is empty, so `Get-FileSet` returned an empty array; PowerShell hands an empty array to
+the caller as `$null`, and `Compare-Sets` piped it (`$after | Where-Object { ... ContainsKey($_) }`), which sends one
+null object, so `ContainsKey($null)` threw. It fired at the end-of-run diff, so the **`clean` (file-list and registry
+diff) and `userdata` checks were never evaluated** -- there is no result for them yet. Fixed in `Compare-Sets`
+(`foreach`, which runs zero times on `$null`, and null entries are skipped) and in the `$kept` list, with the
+comparison itself unchanged: leftovers are still reported as `added`, vanished entries as `removed`. Four
+regression tests in `gui/tests/test_desktop_installer.py` fail on the old script (the empty-snapshot shapes, that
+leftovers are still reported, a static no-pipe guard, and a full empty -> installed -> empty run) and pass now; the
+earlier tests, which only ever diffed non-empty literal arrays, missed the normal end state of a clean uninstall.
+**Still pending on Windows:** a re-run of the Sandbox gate, whose `clean` and `userdata` checks are the ones that
+decide whether uninstall leaves nothing behind and keeps the user's data.
 
 Windows commands (from the repo root, `pytcad\`; Inno Setup 6.3+ installed once, outside any conda env):
 ```powershell
