@@ -6666,3 +6666,14 @@ with PATH = Windows directories only and once with the caller's PATH; the `tcad_
 30 s, quotes its arguments (`ConvertTo-ArgString`), and states WHY when it has nothing (exited early with code N /
 no access / none matched). Verified here: pure logic and refusal paths. Not verified here: the Windows run itself.
 The Python UCRT result is therefore still PENDING the user's re-run of `s4_evidence.ps1`.
+
+#### 26.9.6 S4: UCRT exclusion APPLIED to stage.ps1 (Windows revalidation pending)
+
+Evidence (reported by the user): staged Python 3.14.7 and `tcad_desktop.exe` both load `C:\WINDOWS\System32\ucrtbase.dll`
+(fromStage=false); `VCRUNTIME140.dll` still loads from the staged runtime, so the MSVC runtime stays. The prepared
+patch (`desktop/tools/proposed/ucrt-exclusion.patch`) is applied unchanged: `stage.ps1 -ExcludeUcrt` (opt-in switch)
+removes the conda `ucrt` package files and its conda-meta record from the stage and writes `licenses\excluded-packages.json`.
+NOT changed: `license_policy.json`, the S4 gate, any MSVC policy. Cloud checks: the 4 non-PowerShell tests of
+`test_desktop_ucrt_exclusion.py` pass; its 10 PowerShell tests SKIPPED (no `pwsh` here), so the patch's logic is
+not re-executed in this session. Pending on Windows: rebuild with `-ExcludeUcrt`, exact removed-file diff, full S2 gates
+(+ `-Reference`), `s4_evidence.ps1` re-run, size/file count.
