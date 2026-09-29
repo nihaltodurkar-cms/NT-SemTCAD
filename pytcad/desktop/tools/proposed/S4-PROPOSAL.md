@@ -94,16 +94,14 @@ re-verified this time by downloading the exact conda-forge archive and comparing
   repodata), conda licence `TCL`. One package bundling Tcl and Tk: there is no `libtk`/`libtcl` in your stage, so the earlier
   three entries collapse to ONE (`tk`).
 - **Text (the 8.6.13 package's own):** `info/licenses/tcl8.6.13/license.terms`, 2255 B, sha256
-  `c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16`; also installed as `Library/lib/tk8.6/license.terms`.
+  `c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16`; (`Library/lib/tk8.6/license.terms` is a different file: Tk's own text.)
   I compared it byte-for-byte with the 9.0.4 file used in v1/v2: identical — the hash did not change, but this entry now
   rests on the 8.6.13 archive, not the 9.0.4 one.
-- **Text says:** permission to use, copy, modify, distribute and license "for any purpose, provided that existing copyright
+- **Text says (Tcl core only):** permission to use, copy, modify, distribute and license "for any purpose, provided that existing copyright
   notices are retained in all copies and that this notice is included verbatim in any distributions", no royalty → `permissive`.
-- **New finding — NOT covered by that text:** this package installs third-party DLLs of its own: `Library/bin/zlib1.dll`,
-  `Library/lib/sqlite3.40.0/sqlite3400t.dll`, and the tdbc/itcl/thread extensions (1103 paths in all). `license.terms` is the
-  Tcl/Tk notice. Evidence required before the entry is applied: for `zlib1.dll` and `sqlite3400t.dll`, whether they are staged
-  (they are under `runtime\Library\bin` and `Library\lib\sqlite3.40.0`), whether another staged package owns a same-named
-  file, and their licences (zlib licence text; SQLite blessing). Otherwise the notices would claim less than ships.
+- **Bundled third-party components: ESTABLISHED in `TK-BUNDLED-EVIDENCE.md`.** `license.terms` (Tcl's) does not cover them: zlib 1.2.13,
+  SQLite 3.40.0, itcl 4.2.3, tdbc/tdbcpostgres 1.1.5 and thread 2.8.8 each have their own notice, and Tk's own `license.terms` (which I earlier
+  mis-identified as the same file) differs from Tcl's. Seven further texts are needed; the tk entry is on HOLD until the gate can carry them.
 - **Entry:** one `reviewed.tk` block in `S4-entries.proposed.json`, pin `{version 8.6.13, build h967ab96_4, text_sha256 c0a69a2b…79f16}` (enforced only once G2 exists).
 
 ## 7. tzdata 2026c (h151e31d_0) — reviewed entry (LicenseRef-Public-Domain)

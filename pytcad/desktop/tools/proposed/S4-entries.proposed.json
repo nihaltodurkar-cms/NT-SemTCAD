@@ -10,12 +10,13 @@
     "tk": {
       "class": "permissive",
       "reason": "Tcl/Tk licence (SPDX TCL): permits use, copying, modification and distribution for any purpose, with no royalty, provided existing copyright notices are retained and the licence notice is included verbatim in distributions. tk 8.6.13 bundles Tcl and Tk in one package; the licence text ships in the package and is copied into licenses/texts/ by the generator.",
-      "basis": "PACKAGE TEXT: info/licenses/tcl8.6.13/license.terms (2255 B, sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) inside tk 8.6.13 build h967ab96_4 (win-64 conda-forge archive sha256 f19618a3a82cc483dacf1c70a30367ee7b0c7e71b90f1f80e14feff44fbd3688, matches repodata). The same file is installed as Library/lib/tk8.6/license.terms. Only the package 'tk' exists in the staged inventory (no separate libtk/libtcl). Read by <REVIEWER> on <DATE>. NOT COVERED by this text: the third-party DLLs this package installs (Library/bin/zlib1.dll, lib/sqlite3.40.0/sqlite3400t.dll, tdbc*/itcl/thread extensions) -- see S4-PROPOSAL.md item 6.",
+      "basis": "PACKAGE TEXT: info/licenses/tcl8.6.13/license.terms (2255 B, sha256 c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16) inside tk 8.6.13 build h967ab96_4 (win-64 conda-forge archive sha256 f19618a3a82cc483dacf1c70a30367ee7b0c7e71b90f1f80e14feff44fbd3688, matches repodata). (Library/lib/tk8.6/license.terms is a DIFFERENT file: Tk's own text, sha256 2cde822b93ca16ae535c954b7dfe658b4ad10df2a193628d1b358f1765e8b198.) Only the package 'tk' exists in the staged inventory (no separate libtk/libtcl). Read by <REVIEWER> on <DATE>. NOT COVERED by this text: the third-party DLLs this package installs (Library/bin/zlib1.dll, lib/sqlite3.40.0/sqlite3400t.dll, tdbc*/itcl/thread extensions) -- see TK-BUNDLED-EVIDENCE.md: they need their own texts (zlib, SQLite blessing, itcl, tdbc, tdbcpostgres, thread, plus Tk's).",
       "pin_for_G2": {
         "version": "8.6.13",
         "build": "h967ab96_4",
         "text_sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16"
-      }
+      },
+      "_STATUS": "HOLD -- do not apply: the package's TCL text covers the Tcl core only. See TK-BUNDLED-EVIDENCE.md (seven further texts needed)."
     },
     "tzdata": {
       "class": "permissive",
