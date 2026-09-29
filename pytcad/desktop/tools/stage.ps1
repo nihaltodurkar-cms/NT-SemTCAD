@@ -1,29 +1,85 @@
 # Stage a self-contained copy of the native desktop app (NATIVE-DESKTOP-PLAN.md
-# section 26, P5-S1): the Release build, every DLL it actually loads (found by
-# walking PE imports, not from a hand-written list), the Qt plugins
-# windeployqt6 selects, and a desktop_runtime.json whose paths are RELATIVE to
-# the exe (resolveManifestPath in backend_client.cpp).
+# section 26): the Release build, every DLL it actually loads (found by walking
+# PE imports, not from a hand-written list), the Qt plugins windeployqt6
+# selects, a desktop_runtime.json whose paths are RELATIVE to the exe
+# (resolveManifestPath in backend_client.cpp) -- and, since P5-S2, the slim
+# Python runtime (runtime\) and the backend sources (backend\) it runs.
 #
-#   powershell -ExecutionPolicy Bypass -File desktop\tools\stage.ps1 [-Out <dir>] [-DevBackend] [-Check <a.npz>]
+#   powershell -ExecutionPolicy Bypass -File desktop\tools\stage.ps1 `
+#       [-Out <dir>] [-Reference <dir>] [-Check <a.npz>] [-DevBackend] [-NoRuntime]
+#       [-NoBuild] [-NoVerify] [-RuntimeEnv <name>] [-NoPin] [-RecreateRuntime]
+#   powershell -ExecutionPolicy Bypass -File desktop\tools\stage.ps1 -EmitReference <dir>
 #
-# -DevBackend: until the slim Python runtime (P5-S2) exists, point
-#   backend_python/backend_root at this machine's tcad-dev env and source tree
-#   (absolute paths). Without it the manifest names runtime\python.exe and
-#   backend\, which S2 fills in.
+# -EmitReference <dir>: run desktop\tools\check_runtime.py with the tcad-dev
+#   interpreter and write versions.json + the three example results into <dir>;
+#   then exit. Do this once; -Reference <dir> compares the staged runtime to it.
+# -Reference <dir>: pass the -EmitReference directory to the verification, so it
+#   compares versions (python, numpy, scipy, pyamg, mkl, BLAS) and the numerical
+#   results of the three examples with tcad-dev. Without it the comparison is
+#   reported as NOT done.
+# -DevBackend: skip the runtime and point backend_python/backend_root at this
+#   machine's tcad-dev env and source tree (absolute paths) -- the S1 staging.
+# -NoRuntime: stage the app only; the manifest still names runtime\ and backend\.
+# -RuntimeEnv: the conda env packed into runtime\ (default tcad-runtime). Never
+#   tcad-dev, tcad-gui or tcad-cpp: the script refuses those names.
+# -NoPin: create the runtime from desktop\tools\tcad-runtime.yml as written
+#   instead of pinning every package to what tcad-dev has.
+# -RecreateRuntime: delete and re-create the -RuntimeEnv env from the spec.
+# -NoVerify: skip check_runtime.py on the staged runtime + backend.
 # -Check <npz>: after staging, run the staged app's --selftest on <npz> with a
 #   PATH holding only C:\Windows directories -- proof that nothing is picked up
 #   from the conda envs.
+#
+# Prerequisite (once): conda-pack in the `base` env --
+#   conda install -n base -c conda-forge conda-pack
+# NEVER into tcad-dev or the runtime env (CLAUDE.md: a compiler installed into
+# tcad-dev once broke PySide6 through channel/ABI side effects).
 param(
     [string] $Out = "",
     [switch] $DevBackend,
     [string] $Check = "",
-    [switch] $NoBuild
+    [switch] $NoBuild,
+    [switch] $NoRuntime,
+    [switch] $NoVerify,
+    [switch] $NoPin,
+    [switch] $RecreateRuntime,
+    [string] $RuntimeEnv = "tcad-runtime",
+    [string] $Reference = "",
+    [string] $EmitReference = ""
 )
 $ErrorActionPreference = "Stop"
 $desktop = Split-Path -Parent $PSScriptRoot
 $root = Split-Path -Parent $desktop
 $build = Join-Path $root "build\desktop"
 if (-not $Out) { $Out = Join-Path $root "dist\TCAD" }
+$checkRuntime = Join-Path $PSScriptRoot "check_runtime.py"
+
+function Get-CondaEnvPath([string] $name) {
+    return ((conda env list --json | Out-String) | ConvertFrom-Json).envs |
+        Where-Object { (Split-Path $_ -Leaf) -eq $name } | Select-Object -First 1
+}
+
+# Native commands do not stop the script under $ErrorActionPreference; check.
+function Assert-Exit([string] $what) {
+    if ($LASTEXITCODE) { throw "$what failed (exit $LASTEXITCODE)" }
+}
+
+# UTF-8 WITHOUT a byte-order mark (Set-Content -Encoding utf8 writes one on
+# Windows PowerShell 5.1; a parser reading the manifest or conda reading the
+# spec should not have to tolerate it).
+function Write-TextFile([string] $path, [string[]] $lines) {
+    [System.IO.File]::WriteAllLines($path, $lines, (New-Object System.Text.UTF8Encoding $false))
+}
+
+# 0. The reference run: tcad-dev's own interpreter, the repo's source tree.
+if ($EmitReference) {
+    $dev = Get-CondaEnvPath "tcad-dev"
+    if (-not $dev) { throw "conda env 'tcad-dev' not found" }
+    & (Join-Path $dev "python.exe") $checkRuntime --backend $root --runtime $dev --emit-reference $EmitReference
+    Assert-Exit "check_runtime.py --emit-reference"
+    Write-Host "reference written to $EmitReference"
+    exit 0
+}
 
 # 1. Release build (build.ps1 does the MSVC + tcad-gui setup).
 if (-not $NoBuild) {
@@ -43,8 +99,7 @@ foreach ($line in (cmd /c "`"$vcvars`" >nul && set")) {
         try { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process") } catch { }
     }
 }
-$gui = (conda env list --json | ConvertFrom-Json).envs |
-    Where-Object { (Split-Path $_ -Leaf) -eq "tcad-gui" } | Select-Object -First 1
+$gui = Get-CondaEnvPath "tcad-gui"
 if (-not $gui) { throw "conda env 'tcad-gui' not found" }
 $guibin = Join-Path $gui "Library\bin"
 
@@ -91,22 +146,144 @@ while ($queue.Count) {
     }
 }
 
-# 5. Manifest: relative paths (the installed layout) or, with -DevBackend, this
-#    machine's backend until P5-S2's runtime exists.
+# 5. The Python runtime (runtime\) and the backend sources (backend\) -- P5-S2.
+function New-PinnedRuntimeSpec([string] $BaseYml, [string] $OutYml, [string] $EnvName) {
+    # tcad-runtime.yml names the packages; the VERSIONS come from tcad-dev's own
+    # `conda list`, so the shipped numerics are the ones the suite is verified
+    # against. A pip-installed entry (channel "pypi") is pinned by version only,
+    # for conda-forge to resolve; a missing one falls back to the base spec.
+    if (-not (Get-CondaEnvPath "tcad-dev")) {
+        throw "conda env 'tcad-dev' not found: cannot pin the runtime to it (use -NoPin for tcad-runtime.yml as written)"
+    }
+    $listing = conda list -n tcad-dev --json | Out-String     # one string: robust to line-per-record output
+    Assert-Exit "conda list -n tcad-dev"
+    $installed = $listing | ConvertFrom-Json
+    $base = [ordered]@{}
+    $inDeps = $false
+    foreach ($l in (Get-Content $BaseYml)) {
+        if ($l -match '^dependencies:') { $inDeps = $true; continue }
+        if ($inDeps -and $l -match '^\s+-\s+(\S+)\s*$') { $base[($matches[1] -split '=')[0]] = $matches[1] }
+    }
+    $names = @($base.Keys) + @("libblas")      # libblas: the BLAS variant (MKL) numpy/scipy link
+    $lines = @("name: $EnvName", "channels:", "  - conda-forge", "  - nodefaults", "dependencies:")
+    foreach ($n in $names) {
+        $rec = $installed | Where-Object { $_.name -eq $n } | Select-Object -First 1
+        if ($rec -and $rec.channel -eq "pypi") {
+            $spec = "$n=$($rec.version)"
+            Write-Warning "$n is pip-installed in tcad-dev; pinned to $($rec.version) by version only"
+        } elseif ($rec) {
+            $spec = "$n=$($rec.version)=$($rec.build_string)"
+        } elseif ($base.Contains($n)) {
+            $spec = $base[$n]
+            Write-Warning "$n not found in tcad-dev's conda list; using the spec from tcad-runtime.yml ($spec)"
+        } else {
+            Write-Warning "$n not found in tcad-dev's conda list; not pinned"
+            continue
+        }
+        $lines += "  - $spec"
+    }
+    Write-TextFile $OutYml $lines
+    Write-Host "runtime spec pinned to tcad-dev -> $OutYml"
+    $lines | ForEach-Object { Write-Host "    $_" }
+}
+
+function Copy-Tree([string] $src, [string] $dst, [string[]] $xd = @()) {
+    $rc = @($src, $dst, "/E", "/NFL", "/NDL", "/NJH", "/NJS", "/NP", "/XF", "*.pyc")
+    if ($xd.Count) { $rc += "/XD"; $rc += $xd }
+    & robocopy @rc | Out-Null
+    if ($LASTEXITCODE -ge 8) { throw "robocopy $src failed (exit $LASTEXITCODE)" }
+    $global:LASTEXITCODE = 0
+}
+
+$stagedRuntime = $false
+if (-not $DevBackend -and -not $NoRuntime) {
+    if (@("tcad-dev", "tcad-gui", "tcad-cpp") -contains $RuntimeEnv) {
+        throw "-RuntimeEnv $RuntimeEnv is a development env; the runtime must be its own env (default tcad-runtime)"
+    }
+    New-Item -ItemType Directory -Force $build | Out-Null
+
+    # 5a. The runtime env, created from the spec if it does not exist yet.
+    if ((Get-CondaEnvPath $RuntimeEnv) -and $RecreateRuntime) {
+        conda env remove -n $RuntimeEnv -y
+        Assert-Exit "conda env remove -n $RuntimeEnv"
+    }
+    if (-not (Get-CondaEnvPath $RuntimeEnv)) {
+        $spec = Join-Path $PSScriptRoot "tcad-runtime.yml"
+        if (-not $NoPin) {
+            $pinned = Join-Path $build "tcad-runtime.pinned.yml"
+            New-PinnedRuntimeSpec $spec $pinned $RuntimeEnv
+            $spec = $pinned
+        }
+        conda env create -n $RuntimeEnv -f $spec
+        Assert-Exit "conda env create -n $RuntimeEnv"
+    } else {
+        Write-Host "reusing conda env '$RuntimeEnv' (-RecreateRuntime rebuilds it from the spec)"
+    }
+
+    # 5b. conda-pack it into runtime\ (a tar.gz, unpacked with the OS's tar.exe),
+    #     then conda-unpack rewrites the build-time prefixes for the new location.
+    conda run -n base conda-pack --version | Out-Null
+    if ($LASTEXITCODE) {
+        throw "conda-pack is not installed in the base env: conda install -n base -c conda-forge conda-pack (never into tcad-dev or $RuntimeEnv)"
+    }
+    $tgz = Join-Path $build "tcad-runtime.tar.gz"
+    conda run -n base conda-pack -n $RuntimeEnv -o $tgz --force
+    Assert-Exit "conda-pack -n $RuntimeEnv"
+    $rt = Join-Path $Out "runtime"
+    New-Item -ItemType Directory -Force $rt | Out-Null
+    & tar.exe -xzf $tgz -C $rt
+    Assert-Exit "tar -xzf $tgz"
+    $unpack = Join-Path $rt "Scripts\conda-unpack.exe"
+    if (-not (Test-Path $unpack)) { throw "conda-pack produced no Scripts\conda-unpack.exe in $rt" }
+    & $unpack
+    Assert-Exit "conda-unpack"
+
+    # 5c. The backend: the packages the app launches, and nothing else. The
+    #     compiled extension (pytcad\_core*.pyd, gitignored) must already be built.
+    $ext = Get-ChildItem (Join-Path $root "pytcad") -Filter "_core*.pyd" -ErrorAction SilentlyContinue
+    if (-not $ext) {
+        throw "no pytcad\_core*.pyd in $root\pytcad -- build it first (CLAUDE.md, 'The C++ engine'); Device1D and every compiled kernel need it"
+    }
+    $be = Join-Path $Out "backend"
+    Copy-Tree (Join-Path $root "pytcad") (Join-Path $be "pytcad") @("__pycache__", "benchmarks")
+    Copy-Tree (Join-Path $root "workbench") (Join-Path $be "workbench") @("__pycache__")
+    Copy-Tree (Join-Path $root "backend_service") (Join-Path $be "backend_service") @("__pycache__")
+    New-Item -ItemType Directory -Force (Join-Path $be "gui") | Out-Null
+    Copy-Item (Join-Path $root "gui\__init__.py") (Join-Path $be "gui")
+    Copy-Tree (Join-Path $root "gui\services") (Join-Path $be "gui\services") @("__pycache__")
+    $stagedRuntime = $true
+}
+
+# 6. Manifest: relative paths (the installed layout) or, with -DevBackend, this
+#    machine's backend.
 if ($DevBackend) {
-    $dev = (conda env list --json | ConvertFrom-Json).envs |
-        Where-Object { (Split-Path $_ -Leaf) -eq "tcad-dev" } | Select-Object -First 1
+    $dev = Get-CondaEnvPath "tcad-dev"
     $manifest = [ordered]@{ backend_python = (Join-Path $dev "python.exe"); backend_root = $root; runtime_bin = "" }
 } else {
     $manifest = [ordered]@{ backend_python = "runtime\python.exe"; backend_root = "backend"; runtime_bin = "" }
 }
-$manifest | ConvertTo-Json | Set-Content -Encoding utf8 (Join-Path $Out "desktop_runtime.json")
+Write-TextFile (Join-Path $Out "desktop_runtime.json") (($manifest | ConvertTo-Json) -split "`r?`n")
 
 $files = Get-ChildItem $Out -Recurse -File
 $mb = [math]::Round((($files | Measure-Object Length -Sum).Sum / 1MB), 1)
 Write-Host "staged $($files.Count) files ($mb MB, $copied DLLs from tcad-gui) -> $Out"
+if ($stagedRuntime) {
+    $rtmb = [math]::Round(((Get-ChildItem (Join-Path $Out "runtime") -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), 1)
+    Write-Host "  runtime\ $rtmb MB (record this in NATIVE-DESKTOP-PLAN.md section 26)"
+}
 
-# 6. Optional check with a scrubbed PATH (Windows directories only).
+# 7. The runtime gates: import closure, add-ons absent, extension, PARDISO,
+#    backend handshake, the three examples, and (with -Reference) tcad-dev parity.
+#    check_runtime.py re-launches itself with a scrubbed environment.
+if ($stagedRuntime -and -not $NoVerify) {
+    $argv = @($checkRuntime, "--backend", (Join-Path $Out "backend"), "--runtime", (Join-Path $Out "runtime"))
+    if ($Reference) { $argv += @("--reference", $Reference) }
+    & (Join-Path $Out "runtime\python.exe") @argv
+    Assert-Exit "check_runtime.py on the staged runtime"
+    Write-Host "runtime gates passed"
+}
+
+# 8. Optional check with a scrubbed PATH (Windows directories only).
 if ($Check) {
     $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
     & (Join-Path $Out "tcad_desktop.exe") --selftest $Check

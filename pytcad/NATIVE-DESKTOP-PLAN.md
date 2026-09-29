@@ -5924,11 +5924,13 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, PROPOSED)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1 and S2 coded, Windows gates outstanding)
 
-User: "start P5". Nothing in this section is built yet. §9's P5 bullet
-list is the scope; this section turns it into slices and gates, from
-the tree as it stands today.
+User: "start P5". §9's P5 bullet list is the scope; this section turns it
+into slices and gates, from the tree as it stands today. **Status (see
+§26.5 and §26.6): S1 and S2 are implemented in the tree; no Windows gate of
+either has been run or recorded. S3-S6 are not started.** The 26.1-26.4
+text below is the plan as written on 2026-09-29 and is left as it was.
 
 ### 26.1 Review findings (from the tree, before any P5 code)
 
@@ -6067,3 +6069,130 @@ The options as they were put:
    verified against) or embeddable CPython + PyPI wheels (smaller, but
    PyPI numpy/scipy use OpenBLAS, so MKL would be an extra `mkl` wheel
    and the numerics would differ from the tested env).
+
+### 26.5 P5-S1 status (2026-09-29): coded; its gates have no recorded result
+
+What is in the tree (commit 7029ec8, verified by reading it, not by running it):
+- `resolveManifestPath` (`desktop/src/backend/backend_client.{hpp,cpp}`): a relative
+  `desktop_runtime.json` path resolves against the exe's directory; an absolute one
+  (dev builds) and an empty one pass through.
+- `pythonProcessEnvironment` (same files): prepends a conda-style prefix's own DLL
+  directories to a Python child's PATH (the fix for the 0xC06D007F abort of a
+  non-activated interpreter). The installed conda-pack runtime needs it too.
+- `manifestPathsResolveRelativeToTheApp` in `desktop/tests/test_backend.cpp`.
+- `desktop/tools/stage.ps1`: Release build, `windeployqt6`, the DLL closure by
+  `dumpbin /dependents`, a relative manifest, and `-Check <npz>` (the staged
+  `--selftest` with a PATH of only the Windows directories).
+
+Not done, and NOT claimed: no run of `stage.ps1 -DevBackend -Check <npz>`, no run of
+the C++ `test_backend` binary, and therefore no staged size or DLL count. Those
+are S1's own gate and remain **Windows-only gates** (§26.7). P3-S7..S9 are still
+"LANDED, uncommitted" in §18-§19 (the user's call, per §26.1).
+
+Two S1 housekeeping changes made with S2: `pytcad/0.26` was deleted (15 lines of
+`pip install scikit-image` output, committed by accident in 7d4467b -- an unquoted
+`scikit-image>0.26` became a shell redirect; nothing referenced it), and
+`stage.ps1` now writes the manifest as UTF-8 without a byte-order mark (Windows
+PowerShell 5.1's `Set-Content -Encoding utf8` adds one, and
+`resolveBackendConfig` silently falls back to other sources when the manifest
+fails to parse).
+
+### 26.6 P5-S2 status (2026-09-29): slim Python runtime -- coded; cloud-verified in part
+
+**Implemented (files in the tree):**
+
+| File | What |
+|---|---|
+| `desktop/tools/tcad-runtime.yml` | The runtime's package list: conda-forge only (`nodefaults`), `python=3.14`, `numpy=2.5.3`, `scipy=1.18.1`, `mkl`, `pyamg`. gmsh, scikit-image and tetgen are absent (decision 26.4-4). Only the three pins the repository evidences are written down (§26.6.1); nothing is invented. |
+| `desktop/tools/stage.ps1` | New steps 5-7 (below), new switches `-NoRuntime -NoVerify -NoPin -RecreateRuntime -RuntimeEnv -Reference -EmitReference`; `-DevBackend` keeps the S1 behaviour. |
+| `desktop/tools/check_runtime.py` | The verification script (gates below). Stdlib-only until the gates import the backend; re-launches itself in a scrubbed environment. |
+| `gui/tests/test_desktop_runtime_check.py` | 18 tests of the script's logic and of the spec files (§26.6.3). |
+
+`stage.ps1`, when not `-DevBackend`/`-NoRuntime`:
+1. **Env.** If the `tcad-runtime` conda env does not exist: read `conda list -n tcad-dev --json`
+   and generate `build\tcad-runtime.pinned.yml` -- the package names from `tcad-runtime.yml`
+   plus `libblas` (the BLAS variant numpy/scipy link), each pinned to tcad-dev's version and
+   build string (version only for a pip-installed one; the base spec if tcad-dev lacks it) --
+   then `conda env create -n tcad-runtime -f` that. `-NoPin` uses `tcad-runtime.yml` as written.
+   The script refuses `tcad-dev`, `tcad-gui` and `tcad-cpp` as `-RuntimeEnv`, and no line of it
+   executes `conda install/update` (a test enforces both -- the compiler incident, CLAUDE.md).
+2. **Pack.** `conda run -n base conda-pack -n tcad-runtime -o build\tcad-runtime.tar.gz`,
+   unpacked with the OS `tar.exe` into `<Out>\runtime\`, then `Scripts\conda-unpack.exe`.
+   conda-pack must already be in `base` (the script says so and stops otherwise).
+3. **Backend.** Refuses to continue without `pytcad\_core*.pyd`. Copies `pytcad\pytcad`
+   (minus `benchmarks\`, `__pycache__`, `*.pyc`), `workbench`, `backend_service`, and from `gui`
+   only `__init__.py` and `services\` (never `gui\tests`).
+4. **Manifest** (relative paths, BOM-free) and size report.
+5. **Verify** (skipped by `-NoVerify`): `<Out>\runtime\python.exe desktop\tools\check_runtime.py
+   --backend <Out>\backend --runtime <Out>\runtime [--reference <dir>]`; any FAIL stops the script.
+6. `-Check` (S1's scrubbed-PATH `--selftest`) runs last, as before.
+
+`check_runtime.py` gates (PASS/FAIL/WARN/SKIP each; exit 1 on any FAIL):
+`layout` (packages + `_core*.pyd`), `interpreter` (this python IS the runtime's), `addons`
+(gmsh/skimage/tetgen NOT importable; `--addon` inverts it for the add-on runtime), `closure`
+(the five modules the app launches -- `backend_service.server`, and `gui.services.` `solver_runner`,
+`moscap_runner`, `compact_runner`, `process_runner` -- plus every `gui.*`/`workbench.*`/`pytcad.*`
+module `server.py` imports, found by AST so it follows the file; all must import, and every loaded
+module must resolve inside the runtime or backend), `extension` (`pytcad._core` imports, from the
+backend), `pardiso` (MKL PARDISO loads, from inside the runtime), `handshake` (a real
+`python -m backend_service`: `system.ping/info/warmup`, and `info.prefix` is this runtime),
+`examples` (`diode_1d`, `mosfet_2d`, `resistor_3d`: built by the RPC, job text by the RPC, run
+through `python -m gui.services.solver_runner`, result validated by
+`solver_backend.validate_result`), `reference` (versions of python/numpy/scipy/pyamg/mkl/BLAS and
+the example results vs a directory written by `--emit-reference` under tcad-dev; float arrays
+within rtol 1e-6 of their own scale, everything else exact, `record__meta` compared except its
+timestamp), and a size line. Children run with PATH = the runtime's own directories + the OS's,
+`PYTCAD_PARDISO_THREADS=1` unless set (any fixed count reproduces run to run).
+
+**Deviations from §26.3's S2 text, on purpose:**
+- Versions are pinned at staging time from tcad-dev's `conda list`, not typed into the yml: the
+  repository records only Python 3.14, numpy 2.5.3 and scipy 1.18.1 (from the pip log in the
+  removed `pytcad/0.26`); it records no mkl or pyamg version.
+- Five entry modules, not four (`compact_runner` is the Compact Model dock's, §25), plus the AST walk.
+- `backend\examples\` (the repo's `examples/*.py` scripts) is not staged: nothing the app launches
+  reads them (the app's examples come from `gui.services.examples` through `examples.build`).
+- conda-pack output is a tar.gz unpacked with `tar.exe`, not a directory format.
+
+#### 26.6.1 What the in-repo evidence for the pins is
+`python=3.14` -- the scikit-image wheel pip resolved for tcad-dev was tagged `cp314`;
+`numpy=2.5.3`, `scipy=1.18.1` -- the same log's "already satisfied" lines. mkl, pyamg, libblas:
+unrecorded, hence generated from tcad-dev (`stage.ps1`) and enforced by `check_runtime.py --reference`.
+
+#### 26.6.2 Verified in the cloud session (Linux x86-64, Python 3.11.15 -- NOT the Windows target)
+A scratch venv (numpy 2.4.6, scipy 1.17.1, pyamg 5.3.0, MKL from PyPI), `pytcad._core` built
+from this tree with `-DTCAD_WITH_PETSC=OFF`, a scratch copy of the backend laid out as `backend\`:
+- `check_runtime.py --emit-reference` then `check_runtime.py --reference`: 15 result rows PASS,
+  0 FAIL. `closure`: 46 modules import, third-party loaded = numpy, pyamg, scipy (matches §26.1's
+  measurement). `pardiso`: loaded from the venv's `libmkl_rt.so.3`. `handshake`: protocol 1.
+  `examples`: diode_1d 0.5 s, mosfet_2d 1.7 s, resistor_3d 0.6 s, each a valid schema-v3 result.
+  `reference`: max relative difference 0.00e+00 -- **two runs of the same runtime, so this proves the
+  comparison machinery, not that the Windows runtime matches tcad-dev.**
+- Running the script on the repo as-is (the checked-in Linux `_core` needs a `libpetsc` that is not
+  installed here): `layout`, `addons`, `closure`, `handshake` PASS; `extension` and `pardiso` FAIL,
+  which is the correct verdict.
+- Bugs the script had before it was run against something real, all fixed: it followed venv symlinks
+  in the interpreter check, counted `__main__` as an outside module, and passed a dict where
+  `validate_result` wants a path; the comparison also needed to ignore `record__meta.created_utc`.
+- `stage.ps1` parses cleanly under PowerShell 7.4 (AST parse, 0 errors), and its
+  `New-PinnedRuntimeSpec` was executed against a stub `conda` (a conda entry -> `name=ver=build`, a
+  pip entry -> `name=ver`, a missing one -> the base spec; BOM-free output).
+
+#### 26.6.3 Tests
+`gui/tests/test_desktop_runtime_check.py`: 18 tests -- spec-file checks (no gmsh/tetgen/scikit-image; only
+the evidenced pins; conda-forge only; stage.ps1 never installs into a dev env), environment scrubbing,
+`is_within`, the AST import walk on the real `server.py`, and each gate with a case where it must FAIL
+(add-on present, extension missing, wrong interpreter, module outside the roots, version mismatch,
+a 1% tampered result, a changed `record__meta`), plus real subprocess runs of the script. The
+example/reference/tamper test needs the compiled `_core` and skips without it.
+
+### 26.7 Windows-only gates still to run (NOT run; nothing below is claimed)
+1. S1: `stage.ps1 -DevBackend -Check <a.npz>` (scrubbed PATH); the desktop test binary
+   (`test_backend`, incl. `manifestPathsResolveRelativeToTheApp`); record file/DLL counts and MB here.
+2. S2: `stage.ps1 -EmitReference` once, then a full `stage.ps1 -Reference` -- which exercises
+   `conda env create` from the generated pinned spec (does it solve on conda-forge for Python 3.14 +
+   tcad-dev's mkl/libblas builds?), `conda-pack`, `tar.exe`, `conda-unpack.exe`, `robocopy`, and every
+   `check_runtime.py` gate with the real MKL and the real `_core*.pyd`.
+3. Record here: the pinned spec, the staged `runtime\` size, `pardiso` path, the per-example times,
+   and the `reference` max relative difference against tcad-dev (rtol 1e-6 was chosen in advance, not
+   measured; if the honest number is larger, say why before loosening it).
+4. Then S3 (installer) onward is unblocked.

@@ -1,0 +1,45 @@
+# The slim Python runtime the installed desktop app ships (NATIVE-DESKTOP-PLAN.md
+# section 26.3, P5-S2). It is packed with conda-pack into <install>\runtime\ by
+# desktop\tools\stage.ps1. tcad-dev (3.2 GB: tests, pyvista/VTK, dev tools) is
+# NOT shippable; this holds only what the backend loads.
+#
+# What is pinned here, and why -- nothing below is a guess:
+#   python=3.14  the tcad-dev interpreter: the scikit-image wheel pip resolved
+#                for it in pytcad/0.26 (since removed) was tagged cp314.
+#   numpy=2.5.3, scipy=1.18.1
+#                the versions that same pip log reports as already satisfied in
+#                C:\...\envs\tcad-dev\Lib\site-packages.
+# The rest is deliberately left as a bare name, because the repository records
+# no version for it (mkl, pyamg) and inventing one would be exactly the drift
+# this file exists to prevent. stage.ps1 therefore does NOT create the env from
+# this file as written: it reads `conda list -n tcad-dev --json` and generates
+# a spec with EVERY entry below pinned to what tcad-dev has (version and build
+# string; version only for a pip-installed one), plus libblas -- the BLAS
+# variant (MKL) numpy and scipy were built against. `-NoPin` uses this file
+# unchanged. Either way, desktop\tools\check_runtime.py --reference compares
+# python/numpy/scipy/pyamg/mkl/BLAS and the example results against tcad-dev,
+# so a runtime that does not match fails a gate instead of shipping.
+#
+# Deliberately absent (decision 26.4-4): gmsh (GPL-2.0+), tetgen (wraps AGPL-3.0
+# TetGen) and scikit-image, which the 3D process geometry needs with them. They
+# are soft-imported per job (requirements.txt), so the base installer works
+# without them and says "not available in this build"; the optional add-on
+# installer adds them into runtime\ with their notices. check_runtime.py fails
+# the core runtime if any of them is importable.
+#
+# `nodefaults`: only conda-forge. Mixing in the `defaults` channel switched
+# libhwloc's binary and broke PySide6 in tcad-dev once (CLAUDE.md, "No C++
+# compiler..."); the same channel discipline applies here.
+#
+# Never install conda-pack into this env or into tcad-dev: it goes into `base`
+# or a throwaway env (`conda install -n base -c conda-forge conda-pack`).
+name: tcad-runtime
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.14
+  - numpy=2.5.3
+  - scipy=1.18.1
+  - mkl
+  - pyamg
