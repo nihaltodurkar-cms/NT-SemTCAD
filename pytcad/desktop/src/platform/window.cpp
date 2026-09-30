@@ -139,6 +139,19 @@ LRESULT Window::handle(UINT msg, WPARAM wp, LPARAM lp) {
         }
         case WM_ERASEBKGND:
             return 1;
+        case WM_GETOBJECT:  // N2f: UI Automation asks for this window's provider
+            if (handlers.on_get_object)
+                if (auto r = handlers.on_get_object(wp, lp)) return *r;
+            break;
+        case WM_SETCURSOR:  // N2c: the widget under the pointer chooses the cursor
+            if (LOWORD(lp) == HTCLIENT && handlers.on_set_cursor && handlers.on_set_cursor()) return TRUE;
+            break;
+        case WM_CAPTURECHANGED:  // capture taken away (Alt+Tab, a dialog): no button is held for us any more
+            if (reinterpret_cast<HWND>(lp) != hwnd_ && buttons_down_) {
+                buttons_down_ = 0;
+                if (handlers.on_capture_lost) handlers.on_capture_lost();
+            }
+            return 0;
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC dc = BeginPaint(hwnd_, &ps);

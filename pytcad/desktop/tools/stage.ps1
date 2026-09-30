@@ -33,6 +33,11 @@
 #   removed from runtime\ by the package's own conda-meta file list, its conda-meta record is deleted so the licence
 #   inventory matches what ships, and the app-side copies from tcad-gui are neither copied nor kept. A RUNTIME CHANGE:
 #   re-run the full S2 gate (stage.ps1 -Reference ...) and the S3 Sandbox gate. Off by default.
+# -ExcludeMsvcRuntime: do not ship the conda `vc14_runtime` and `vcomp14` packages (the MSVC C++ runtime:
+#   vcruntime140*.dll, msvcp140*.dll, concrt140.dll, vcomp140.dll, ...), runtime AND app side, by the same mechanism
+#   as -ExcludeUcrt. Their licence forbids redistributing them from the conda package; the installer instead runs
+#   Microsoft's own vc_redist.x64.exe (make_installer.ps1 -VcRedist, decision NATIVE-DESKTOP-PLAN.md 26.9.7). The
+#   staged tree then needs that runtime installed on the machine (System32). A RUNTIME CHANGE, as -ExcludeUcrt.
 # -DownloadLicenseTexts: when a package's extracted conda cache dir AND tarball are both gone (`conda clean`),
 #   re-download that package to restore its licence text -- verified against the sha256/md5 conda recorded.
 #   Without it only local tarballs are used (gen_licenses.py --restore-texts); nothing touches the network.
@@ -54,6 +59,7 @@ param(
     [switch] $NoLicenses,
     [switch] $DownloadLicenseTexts,
     [switch] $ExcludeUcrt,
+    [switch] $ExcludeMsvcRuntime,
     [switch] $NoPin,
     [switch] $RecreateRuntime,
     [string] $RuntimeEnv = "tcad-runtime",
@@ -223,8 +229,13 @@ function Get-Imports([string] $file) {
     }
     return $names
 }
-$excludedDlls = @{}
-if ($ExcludeUcrt) { foreach ($n in (Get-CondaPackageFileNames $gui "ucrt")) { $excludedDlls[$n] = $true } }
+$msvcPackages = @("vc14_runtime", "vcomp14")
+$ucrtDlls = @{}; $msvcDlls = @{}; $excludedDlls = @{}
+if ($ExcludeUcrt) { foreach ($n in (Get-CondaPackageFileNames $gui "ucrt")) { $ucrtDlls[$n] = $true; $excludedDlls[$n] = $true } }
+if ($ExcludeMsvcRuntime) {
+    foreach ($p in $msvcPackages) { foreach ($n in (Get-CondaPackageFileNames $gui $p)) { $msvcDlls[$n] = $true; $excludedDlls[$n] = $true } }
+    if (-not $msvcDlls.Count) { throw "-ExcludeMsvcRuntime: tcad-gui has no vc14_runtime/vcomp14 conda-meta record to take the DLL names from" }
+}
 $queue = New-Object System.Collections.Queue
 Get-ChildItem $Out -Recurse -Include *.exe, *.dll | ForEach-Object { $queue.Enqueue($_.FullName) }
 $seen = @{}
@@ -235,7 +246,7 @@ while ($queue.Count) {
         $key = $dll.ToLowerInvariant()
         if ($seen.ContainsKey($key)) { continue }
         $seen[$key] = $true
-        if ($excludedDlls.ContainsKey($key)) { continue }              # -ExcludeUcrt: the OS supplies these
+        if ($excludedDlls.ContainsKey($key)) { continue }              # -ExcludeUcrt/-ExcludeMsvcRuntime: the OS supplies these
         if (Test-Path (Join-Path $Out $dll)) { continue }
         $src = Join-Path $guibin $dll
         if (Test-Path $src) {
@@ -246,9 +257,10 @@ while ($queue.Count) {
     }
 }
 
-# -ExcludeUcrt, app side: anything windeployqt6 or the closure left next to the exe that the ucrt package owns.
+# -ExcludeUcrt/-ExcludeMsvcRuntime, app side: anything windeployqt6 or the closure left next to the exe that an
+# excluded package owns.
 $ucrtAppRemoved = @()
-if ($ExcludeUcrt) {
+if ($excludedDlls.Count) {
     foreach ($f in (Get-ChildItem $Out -Recurse -File -Filter "*.dll" -ErrorAction SilentlyContinue)) {
         $top = ($f.FullName.Substring($Out.Length).TrimStart('\', '/') -split '[\\/]')[0]
         if ($top -in @("runtime", "backend", "licenses")) { continue }
@@ -363,14 +375,33 @@ if (-not $DevBackend -and -not $NoRuntime) {
     Copy-Tree (Join-Path $root "gui\services") (Join-Path $be "gui\services") @("__pycache__")
     # 5c'. -ExcludeUcrt, runtime side: remove the ucrt package by its own file list and drop its conda-meta record,
     #      then prove nothing it owned is left anywhere in the staged tree.
-    $excluded = $null
+    $excluded = @()
     if ($ExcludeUcrt) {
-        $excluded = Remove-CondaPackage $rt "ucrt"
-        if (-not $excluded) { throw "-ExcludeUcrt: no ucrt package in $rt\conda-meta (already excluded, or not in this runtime)" }
-        Write-Host ("excluded ucrt {0}: removed {1} runtime files ({2} listed but absent, {3} kept as shared); {4} app-dir copies not shipped" -f $excluded.version, $excluded.removed.Count, $excluded.missing.Count, $excluded.keptShared.Count, $ucrtAppRemoved.Count)
-        $left = @(Get-ChildItem $Out -Recurse -File -Filter "*.dll" | Where-Object { $excludedDlls.ContainsKey($_.Name.ToLowerInvariant()) })
-        if ($left.Count) { throw ("-ExcludeUcrt: still staged: " + (($left | Select-Object -First 5 | ForEach-Object { $_.FullName }) -join "; ")) }
+        $x = Remove-CondaPackage $rt "ucrt"
+        if (-not $x) { throw "-ExcludeUcrt: no ucrt package in $rt\conda-meta (already excluded, or not in this runtime)" }
+        $x | Add-Member reason "app-local Universal CRT: the OS always loads its own UCRT on Windows 10/11 (NATIVE-DESKTOP-PLAN.md 26.9.3)"
+        $excluded += $x
     }
+    if ($ExcludeMsvcRuntime) {
+        foreach ($p in $msvcPackages) {
+            $x = Remove-CondaPackage $rt $p
+            if (-not $x -and $p -eq "vc14_runtime") { throw "-ExcludeMsvcRuntime: no vc14_runtime package in $rt\conda-meta (already excluded, or not in this runtime)" }
+            if ($x) {
+                $x | Add-Member reason "MSVC runtime: its licence does not permit redistribution from the conda package; the installer runs Microsoft's vc_redist.x64.exe instead (NATIVE-DESKTOP-PLAN.md 26.9.7)"
+                $excluded += $x
+            }
+        }
+    }
+    foreach ($x in $excluded) {
+        Write-Host ("excluded {0} {1}: removed {2} runtime files ({3} listed but absent, {4} kept as shared)" -f $x.name, $x.version, $x.removed.Count, $x.missing.Count, $x.keptShared.Count)
+    }
+    if ($excluded.Count) { Write-Host "$($ucrtAppRemoved.Count) app-dir copies of excluded packages not shipped" }
+    # AFTER every removal, so one package's check never sees the other's files still waiting to be removed
+    $staged = @(Get-ChildItem $Out -Recurse -File -Filter "*.dll" | ForEach-Object { $_ })
+    $left = @($staged | Where-Object { $ucrtDlls.ContainsKey($_.Name.ToLowerInvariant()) })
+    if ($left.Count) { throw ("-ExcludeUcrt: still staged: " + (($left | Select-Object -First 5 | ForEach-Object { $_.FullName }) -join "; ")) }
+    $left = @($staged | Where-Object { $msvcDlls.ContainsKey($_.Name.ToLowerInvariant()) })
+    if ($left.Count) { throw ("-ExcludeMsvcRuntime: still staged: " + (($left | Select-Object -First 5 | ForEach-Object { $_.FullName }) -join "; ")) }
     # 5d. The licence bundle (P5-S4), generated from what is now actually staged: every conda package
     #     in runtime\ and every DLL next to the exe (traced to its owning tcad-gui package). Fails, with
     #     every problem listed, on a package/DLL with no licence entry, GPL/AGPL in the base runtime, or a
@@ -381,13 +412,15 @@ if (-not $DevBackend -and -not $NoRuntime) {
         & (Join-Path $rt "python.exe") (Join-Path $PSScriptRoot "gen_licenses.py") @licArgs
         Assert-Exit "gen_licenses.py (the licence bundle)"
     }
-    if ($excluded) {                                             # a record of what was deliberately not shipped
+    if ($excluded.Count) {                                       # a record of what was deliberately not shipped
         New-Item -ItemType Directory -Force (Join-Path $Out "licenses") | Out-Null
-        $rec = [ordered]@{ package = $excluded.name; version = $excluded.version; build = $excluded.build
-            reason = "app-local Universal CRT: the OS always loads its own UCRT on Windows 10/11 (NATIVE-DESKTOP-PLAN.md 26.9.3)"
-            runtimeFilesRemoved = $excluded.removed; runtimeFilesListedButAbsent = $excluded.missing; keptBecauseSharedWithAnotherPackage = $excluded.keptShared
-            condaMetaRecordsRemoved = $excluded.metaRemoved; appDirCopiesNotShipped = $ucrtAppRemoved }
-        Write-TextFile (Join-Path $Out "licenses\excluded-packages.json") (($rec | ConvertTo-Json -Depth 4) -split "`r?`n")
+        $recs = @($excluded | ForEach-Object {
+            $mine = @{}; foreach ($n in (Get-CondaPackageFileNames $gui $_.name)) { $mine[$n] = $true }
+            [ordered]@{ package = $_.name; version = $_.version; build = $_.build; reason = $_.reason
+                runtimeFilesRemoved = $_.removed; runtimeFilesListedButAbsent = $_.missing; keptBecauseSharedWithAnotherPackage = $_.keptShared
+                condaMetaRecordsRemoved = $_.metaRemoved
+                appDirCopiesNotShipped = @($ucrtAppRemoved | Where-Object { $mine.ContainsKey([System.IO.Path]::GetFileName($_).ToLowerInvariant()) }) } })
+        Write-TextFile (Join-Path $Out "licenses\excluded-packages.json") ((ConvertTo-Json -InputObject $recs -Depth 4) -split "`r?`n")
     }
     $stagedRuntime = $true
 }

@@ -23,6 +23,15 @@
 ; The app is added to the per-user "Open with" list for both instead (task "openwith").
 ; A real association needs a dedicated project extension: a file-format decision, not an
 ; installer one (NATIVE-DESKTOP-PLAN.md 26.8).
+;
+; The Microsoft Visual C++ runtime is NOT in the stage (stage.ps1 -ExcludeMsvcRuntime: its conda
+; package's licence does not allow redistributing it; decision 26.9.7). Instead Microsoft's own
+; vc_redist.x64.exe is embedded (make_installer.ps1 passes /DVcRedist=<path> and the version the
+; stage needs as /DVcMajor /DVcMinor /DVcBld) and run BEFORE any file is installed, only when the
+; machine's runtime (HKLM ...\VC\Runtimes\x64) is missing or older. It installs machine-wide, so
+; that one step asks for administrator approval (UAC); a machine that already has a current runtime
+; never sees a prompt. If it fails, setup stops with nothing installed. Uninstall leaves the runtime
+; in place: it is a shared system component other programs use.
 
 #ifndef AppVersion
   #error AppVersion is not defined: pass /DAppVersion=x.y.z (desktop\tools\make_installer.ps1 does)
@@ -66,6 +75,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
 
 [Files]
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+#ifdef VcRedist
+Source: "{#VcRedist}"; DestName: "vc_redist.x64.exe"; Flags: dontcopy
+#endif
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"
@@ -88,3 +100,46 @@ Filename: "{app}\{#AppExe}"; Description: "Launch {#AppName}"; Flags: nowait pos
 Type: filesandordirs; Name: "{app}\runtime"
 Type: filesandordirs; Name: "{app}\backend"
 Type: dirifempty; Name: "{app}"
+
+#ifdef VcRedist
+#ifndef VcMajor
+  #error VcRedist needs VcMajor/VcMinor/VcBld: the runtime version the stage was built against
+#endif
+[Code]
+const
+  VcKey = 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64';
+
+// True when the machine-wide x64 VC++ runtime is installed at the required version or newer.
+function VcRuntimeIsCurrent(): Boolean;
+var
+  Installed, Major, Minor, Bld: Cardinal;
+begin
+  Result := False;
+  if not RegQueryDWordValue(HKLM64, VcKey, 'Installed', Installed) or (Installed <> 1) then Exit;
+  if not (RegQueryDWordValue(HKLM64, VcKey, 'Major', Major) and RegQueryDWordValue(HKLM64, VcKey, 'Minor', Minor)
+          and RegQueryDWordValue(HKLM64, VcKey, 'Bld', Bld)) then Exit;
+  Result := (Major > {#VcMajor}) or ((Major = {#VcMajor}) and ((Minor > {#VcMinor})
+            or ((Minor = {#VcMinor}) and (Bld >= {#VcBld}))));
+end;
+
+// Runs before any file is copied: returning a message aborts setup with nothing installed.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Result := '';
+  if VcRuntimeIsCurrent() then Exit;
+  ExtractTemporaryFile('vc_redist.x64.exe');
+  if not ShellExec('runas', ExpandConstant('{tmp}\vc_redist.x64.exe'), '/install /quiet /norestart', '',
+                   SW_SHOW, ewWaitUntilTerminated, Code) then
+    Result := 'The Microsoft Visual C++ runtime could not be installed (it needs administrator approval): '
+              + SysErrorMessage(Code)
+  else begin
+    if Code = 3010 then NeedsRestart := True
+    else if (Code <> 0) and (Code <> 1638) then   // 1638: a newer version is already installed
+      Result := Format('The Microsoft Visual C++ runtime installer failed (exit code %d).', [Code]);
+    if (Result = '') and not VcRuntimeIsCurrent() then
+      Result := 'The Microsoft Visual C++ runtime installer finished, but the runtime is still missing or older than {#VcMajor}.{#VcMinor}.{#VcBld}.';
+  end;
+end;
+#endif

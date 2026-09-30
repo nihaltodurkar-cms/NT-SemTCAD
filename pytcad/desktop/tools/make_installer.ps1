@@ -3,11 +3,16 @@
 # dist\installer\TCAD-<version>-unsigned-setup.exe, via Inno Setup (decision 26.4-1).
 #
 #   powershell -ExecutionPolicy Bypass -File desktop\tools\make_installer.ps1 `
-#       [-Stage <dir>] [-OutDir <dir>] [-Iscc <path\ISCC.exe>] [-Signed] [-WriteSandboxConfig]
+#       [-Stage <dir>] [-OutDir <dir>] [-Iscc <path\ISCC.exe>] [-VcRedist <vc_redist.x64.exe>] [-Signed] [-WriteSandboxConfig]
 #
 # -Stage: the stage.ps1 output (default dist\TCAD). Refused unless it is a complete, RELATIVE
 #   layout: a -DevBackend stage would ship this machine's absolute interpreter path; a stage
 #   holding gmsh/tetgen/scikit-image would put GPL/AGPL code in the base installer (26.4-4).
+# -VcRedist: Microsoft's vc_redist.x64.exe to embed (default: the newest one in the Visual Studio found by
+#   vswhere, VC\Redist\MSVC\*). REQUIRED when the stage was made with -ExcludeMsvcRuntime (its
+#   licenses\excluded-packages.json lists vc14_runtime): the installer then runs it when the machine's runtime
+#   is older than that package's version (decision NATIVE-DESKTOP-PLAN.md 26.9.7). Refused unless it is
+#   Authenticode-valid and at least that version.
 # -Signed: drop the "-unsigned" name suffix. Only S6 (signtool) should pass it.
 # -WriteSandboxConfig: also write <OutDir>\tcad-install-test.wsb, a Windows Sandbox config that
 #   runs desktop\tools\verify_install.ps1 (install -> run -> uninstall -> diff) on a clean machine.
@@ -18,6 +23,7 @@ param(
     [string] $Stage = "",
     [string] $OutDir = "",
     [string] $Iscc = "",
+    [string] $VcRedist = "",
     [switch] $Signed,
     [switch] $WriteSandboxConfig
 )
@@ -88,6 +94,35 @@ function New-SandboxConfig([string] $installerDir, [string] $installerName, [str
     return ($x -join "`r`n")
 }
 
+# The MSVC runtime version the stage relies on the machine for: the vc14_runtime record stage.ps1
+# -ExcludeMsvcRuntime wrote into licenses\excluded-packages.json. $null when the runtime was not excluded.
+function Get-RequiredVcRuntime([string] $stage) {
+    $f = Join-Path $stage "licenses\excluded-packages.json"
+    if (-not (Test-Path $f)) { return $null }
+    # assigned first: Windows PowerShell 5.1's ConvertFrom-Json emits a JSON array as ONE object, which @(...)
+    # would wrap again (then $r.version is every record's version at once); a variable enumerates it
+    $recs = Get-Content -Raw $f | ConvertFrom-Json
+    foreach ($r in $recs) {
+        if ($r.package -eq "vc14_runtime") { return [version]$r.version }
+    }
+    return $null
+}
+
+# vc_redist.x64.exe: the explicit path, else the highest-versioned one in the latest Visual Studio.
+function Find-VcRedist([string] $explicit) {
+    if ($explicit) {
+        if (-not (Test-Path $explicit)) { throw "-VcRedist $explicit does not exist" }
+        return (Resolve-Path $explicit).Path
+    }
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found: pass -VcRedist <vc_redist.x64.exe>" }
+    $vs = & $vswhere -latest -products * -property installationPath
+    $c = @(Get-ChildItem (Join-Path $vs "VC\Redist\MSVC") -Recurse -Filter "vc_redist.x64.exe" -ErrorAction SilentlyContinue |
+        Sort-Object { [version]$_.VersionInfo.FileVersion } -Descending)
+    if (-not $c.Count) { throw "no vc_redist.x64.exe under $vs\VC\Redist\MSVC: pass -VcRedist" }
+    return $c[0].FullName
+}
+
 function Find-Iscc([string] $explicit) {
     if ($explicit) {
         if (-not (Test-Path $explicit)) { throw "-Iscc $explicit does not exist" }
@@ -114,12 +149,25 @@ $problems = Get-StageProblems $Stage
 if ($problems.Count) {
     throw ("the stage at $Stage cannot be installed (run stage.ps1 without -DevBackend/-NoRuntime first):`n  - " + ($problems -join "`n  - "))
 }
+$vcDefines = @()
+$vcNeed = Get-RequiredVcRuntime $Stage
+if ($vcNeed) {
+    $redist = Find-VcRedist $VcRedist
+    $have = [version](Get-Item $redist).VersionInfo.FileVersion
+    $sig = (Get-AuthenticodeSignature $redist).Status
+    if ($sig -ne "Valid") { throw "$redist : Authenticode status $sig, not Valid" }
+    if ($have -lt $vcNeed) { throw "$redist is $have; the stage needs the MSVC runtime $vcNeed or newer" }
+    $vcDefines = @("/DVcRedist=$redist", "/DVcMajor=$($vcNeed.Major)", "/DVcMinor=$($vcNeed.Minor)", "/DVcBld=$($vcNeed.Build)")
+    Write-Host "embedding $redist ($have); runs at install when the machine's MSVC runtime is older than $vcNeed"
+} elseif ($VcRedist) {
+    throw "-VcRedist given, but the stage ships its own MSVC runtime (not staged with -ExcludeMsvcRuntime)"
+}
 $suffix = if ($Signed) { "" } else { "-unsigned" }
 $iscc = Find-Iscc $Iscc
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 $OutDir = (Resolve-Path $OutDir).Path
 
-& $iscc "/DAppVersion=$version" "/DStageDir=$Stage" "/DOutDir=$OutDir" "/DNameSuffix=$suffix" (Join-Path $desktop "installer\tcad.iss")
+& $iscc "/DAppVersion=$version" "/DStageDir=$Stage" "/DOutDir=$OutDir" "/DNameSuffix=$suffix" @vcDefines (Join-Path $desktop "installer\tcad.iss")
 if ($LASTEXITCODE) { throw "ISCC failed (exit $LASTEXITCODE)" }
 
 $name = "TCAD-$version$suffix-setup.exe"

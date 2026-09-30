@@ -21,6 +21,25 @@ param(
     [string] $BackendRoot = ""
 )
 $ErrorActionPreference = "Stop"
+
+# dumpbin (the import-closure walk below, and in verify_native_spike.ps1, which runs as a child and inherits this
+# environment) is on PATH only inside an MSVC developer environment. build.ps1 sets one up only in its own child
+# process, so from a plain PowerShell the staging step failed with "dumpbin is not recognized" (found 2026-09-30 on
+# Windows). Import vcvars64 here, the same vswhere route build.ps1 and stage.ps1 use, unless dumpbin is already there.
+if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) {
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vswhere)) { throw "vswhere.exe not found: install Visual Studio with the C++ workload" }
+    $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if (-not $vs) { throw "No Visual Studio install with the MSVC x64 tools" }
+    $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvars64.bat"
+    $env:PATH = (Split-Path -Parent $vswhere) + ";" + $env:PATH
+    foreach ($line in (cmd /c "`"$vcvars`" >nul && set")) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            try { [Environment]::SetEnvironmentVariable($matches[1], $matches[2], "Process") } catch { }
+        }
+    }
+    if (-not (Get-Command dumpbin -ErrorAction SilentlyContinue)) { throw "vcvars64 did not put dumpbin on PATH" }
+}
 $tools = $PSScriptRoot
 $desktop = Split-Path -Parent $tools
 $root = Split-Path -Parent $desktop
@@ -117,7 +136,13 @@ foreach ($r in $Result) {
     Record "selftest:$name" (($code -eq 0) -and $j.ok -and ($j.qt_modules_loaded.Count -eq 0)) "exit $code; $(@($j.checks).Count) checks, $($bad.Count) failed$(if ($bad.Count) { ': ' + (($bad | ForEach-Object { $_.name + ' (' + $_.detail + ')' }) -join '; ') }); backend pid $($j.backend.pid), $($j.backend.methods) methods; png: $png"
 }
 
-# 6. the N0 spike gate, unchanged, as the permanent regression
-& powershell -ExecutionPolicy Bypass -File (Join-Path $tools "verify_native_spike.ps1") -Result $Result -SkipBuild -Config $Config
+# 6. the N0 spike gate, unchanged, as the permanent regression.
+# NOT `powershell -File ... -Result $Result`: -File cannot pass an array, so -Result got only the first file and the
+# SECOND bound positionally to the spike script's -Out, which it deletes (Remove-Item -Recurse -Force $Out) and stages
+# into -- every run with two results destroyed the second result file (found 2026-09-30). -Command with each path
+# quoted passes the real array; -Out is named explicitly as well.
+$quoted = ($Result | ForEach-Object { "'" + ((Resolve-Path $_).Path -replace "'", "''") + "'" }) -join ","
+$spikeOut = Join-Path $root "dist\TCAD-native-spike"
+& powershell -ExecutionPolicy Bypass -Command "& '$((Join-Path $tools "verify_native_spike.ps1") -replace "'", "''")' -Result $quoted -Out '$($spikeOut -replace "'", "''")' -SkipBuild -Config $Config; exit `$LASTEXITCODE"
 Record "spike-gate" ($LASTEXITCODE -eq 0) "verify_native_spike.ps1 exit $LASTEXITCODE"
 Finish

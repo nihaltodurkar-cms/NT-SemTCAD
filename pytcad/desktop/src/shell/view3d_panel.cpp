@@ -57,7 +57,7 @@ View3DPanel::View3DPanel(FieldView* view, QWidget* parent) : QWidget(parent), vi
     auto* central = new QPushButton(tr("Central z-plane"), look);
     central->setObjectName("CentralZPlane");
     central->setToolTip(tr("The QML viewport's 3D view: the z-slice at nz // 2, seen along z"));
-    connect(central, &QPushButton::clicked, view_, &FieldView::showCentralZPlane);
+    connect(central, &QPushButton::clicked, view_, [v = view_] { v->showCentralZPlane(); });
     lf->addRow(central);
     col->addWidget(look);
 
@@ -122,9 +122,9 @@ View3DPanel::View3DPanel(FieldView* view, QWidget* parent) : QWidget(parent), vi
         preset_->addItem(QString::fromLatin1(volumePresetName(p)), static_cast<int>(p));
     preset_->setToolTip(tr("viewer3d.py's presets: a colour map (applied to the whole view) and a constant opacity"));
     vf->addRow(volume_, preset_);
-    connect(iso_, &QCheckBox::toggled, view_, &FieldView::setIsosurface);
-    connect(iso_level_, &QDoubleSpinBox::valueChanged, view_, &FieldView::setIsoLevel);
-    connect(volume_, &QCheckBox::toggled, view_, &FieldView::setVolume);
+    connect(iso_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setIsosurface(x); });
+    connect(iso_level_, &QDoubleSpinBox::valueChanged, view_, [v = view_](double x) { v->setIsoLevel(x); });
+    connect(volume_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setVolume(x); });
     connect(preset_, &QComboBox::currentIndexChanged, view_,
             [this](int i) { view_->setVolumePreset(static_cast<VolumePreset>(preset_->itemData(i).toInt())); });
     col->addWidget(scal);
@@ -153,9 +153,9 @@ View3DPanel::View3DPanel(FieldView* view, QWidget* parent) : QWidget(parent), vi
     vl->addRow(vector_note_);
     connect(vector_, &QComboBox::currentTextChanged, view_,
             [this](const QString& name) { view_->setVectorField(name.toStdString()); });
-    connect(glyphs_, &QCheckBox::toggled, view_, &FieldView::setGlyphs);
-    connect(spacing_, &QDoubleSpinBox::valueChanged, view_, &FieldView::setGlyphSpacing);
-    connect(streamlines_, &QCheckBox::toggled, view_, &FieldView::setStreamlines);
+    connect(glyphs_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setGlyphs(x); });
+    connect(spacing_, &QDoubleSpinBox::valueChanged, view_, [v = view_](double x) { v->setGlyphSpacing(x); });
+    connect(streamlines_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setStreamlines(x); });
     col->addWidget(vec);
 
     // -- exploded view
@@ -169,8 +169,8 @@ View3DPanel::View3DPanel(FieldView* view, QWidget* parent) : QWidget(parent), vi
     separation_->setSuffix(tr(" um"));
     el->addRow(exploded_);
     el->addRow(tr("Separation"), separation_);
-    connect(exploded_, &QCheckBox::toggled, view_, &FieldView::setExploded);
-    connect(separation_, &QDoubleSpinBox::valueChanged, view_, &FieldView::setExplodedSeparation);
+    connect(exploded_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setExploded(x); });
+    connect(separation_, &QDoubleSpinBox::valueChanged, view_, [v = view_](double x) { v->setExplodedSeparation(x); });
     col->addWidget(ex);
     col->addStretch(1);
 

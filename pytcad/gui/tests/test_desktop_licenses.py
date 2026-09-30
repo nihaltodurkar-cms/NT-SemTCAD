@@ -11,6 +11,7 @@ the real tcad-gui env. What licence strings those packages actually carry, wheth
 package directories still exist, and which of them the classifier cannot classify, is only known by
 running `stage.ps1` on Windows (NATIVE-DESKTOP-PLAN.md 26.9).
 """
+import hashlib
 import importlib.util
 import json
 import os
@@ -145,10 +146,30 @@ def test_shipped_policy_is_valid_and_only_relaxes_what_the_plan_decided():
     pol = gl.load_policy(gl.DEFAULT_POLICY)
     # decision 26.4-4: copyleft is only ever allowed for the two add-on packages
     assert set(pol["addon_copyleft"]) == {"gmsh", "tetgen"}
-    # 26.1: MKL is redistributable under the Intel licence with its notice -- the one reviewed entry
-    assert set(pol["reviewed"]) == {"mkl"} and pol["reviewed"]["mkl"]["class"] == "proprietary-redistributable"
+    # 26.1: MKL is redistributable under the Intel licence with its notice; 26.9.7: tk (TCL) and tzdata
+    # (public domain) accepted as permissive, each pinned to the one build a person read
+    assert set(pol["reviewed"]) == {"mkl", "tk", "tzdata"} and pol["reviewed"]["mkl"]["class"] == "proprietary-redistributable"
+    assert pol["reviewed"]["tk"]["pin"] == {"version": "8.6.13", "build": "h967ab96_4"}
+    assert pol["reviewed"]["tzdata"]["pin"] == {"version": "2026c", "build": "h151e31d_0"}
     assert [e["package"] for e in pol["embedded"]] == ["nlohmann_json"]
     assert not any(v["class"] == "strong-copyleft" for v in pol["reviewed"].values())
+    # 26.9.7: the Microsoft runtimes are NOT accepted by review: the MSVC one is excluded from the stage and
+    # installed by Microsoft's vc_redist, the UCRT one comes with Windows
+    assert not {"vc14_runtime", "vcomp14", "ucrt"} & set(pol["reviewed"])
+    assert set(pol["supplemental_texts"]) == {"libsqlite", "libwinpthread", "pyamg", "libfreetype6", "tk"}
+
+
+def test_every_shipped_supplemental_text_matches_its_pin():
+    pol = gl.load_policy(gl.DEFAULT_POLICY)
+    for name, e in pol["supplemental_texts"].items():
+        for t in e["texts"]:
+            p = os.path.join(TOOLS, *t["file"].split("/"))
+            assert os.path.isfile(p), (name, t["file"])
+            assert gl.text_sha256(p) == t["sha256"], (name, t["file"])
+    # FTL section 2: the FreeType credit, with the year of the version shipped
+    assert "The FreeType Project" in pol["supplemental_texts"]["libfreetype6"]["notice"]
+    # git must hand these bytes over untouched on every checkout
+    assert "* -text" in _read(os.path.join(TOOLS, "notices", "upstream", ".gitattributes"))
 
 
 def test_a_policy_entry_without_a_reason_is_refused(tmp_path):
@@ -646,3 +667,176 @@ def test_stage_script_passes_the_restore_options_and_removes_the_sdk_dxc_dlls():
     # windeployqt6 deploys these two from the Windows SDK (like the D3D compiler it is already told to skip);
     # nothing owns them and the app has no D3D12 code, so they are not shipped
     assert 'dxcompiler.dll' in stage and 'dxil.dll' in stage and "Remove-Item" in stage
+
+
+# -- 26.9.7: pins, supplemental texts, metapackages -------------------------------------------------
+
+def _policy(tmp_path, **sections):
+    pol = json.loads(_read(gl.DEFAULT_POLICY))
+    for k, v in sections.items():                                   # added to the shipped entries, not replacing them
+        pol.setdefault(k, {}).update(v)
+    p = tmp_path / "policy.json"
+    p.write_text(json.dumps(pol))
+    return p
+
+
+def _vendor(monkeypatch, tmp_path, rel, data):
+    """A fake TOOLS dir holding one vendored text; returns its pinned (LF) sha256."""
+    tools = tmp_path / "tools"
+    f = tools / "notices" / "upstream" / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_bytes(data)
+    monkeypatch.setattr(gl, "TOOLS", str(tools))
+    return hashlib.sha256(data.replace(b"\r\n", b"\n")).hexdigest()
+
+
+def _sup(sha, rel="odd/LICENSE", build="0", version="1.0", **kw):
+    e = {"pin": {"version": version, "build": build}, "reason": "archive ships no text", "basis": "test",
+         "texts": [{"file": "notices/upstream/" + rel, "sha256": sha, "source": "upstream tag v1.0"}]}
+    e.update(kw)
+    return e
+
+
+def test_a_reviewed_entry_pinned_to_another_build_must_be_re_reviewed(fake, capsys, tmp_path):
+    fake.pkg(fake.rt, "odd", "2.0", "SomeCustomTerms-1.0", files=["Lib/odd.py"])
+    rev = {"class": "permissive", "reason": "read it", "basis": "b", "pin": {"version": "2.0", "build": "0"}}
+    assert fake.run(policy=_policy(tmp_path, reviewed={"odd": rev})) == 0, _out(capsys)
+    rev["pin"]["build"] = "1"                                         # the review was of a different build
+    code = fake.run(policy=_policy(tmp_path, reviewed={"odd": rev}))
+    out = _out(capsys)
+    assert code == 1 and "odd 2.0: the reviewed policy entry is pinned to 2.0 build 1" in out
+    assert "licence 'SomeCustomTerms-1.0' cannot be classified" in out   # and the review no longer applies
+
+
+def test_a_pin_without_a_build_is_refused(tmp_path):
+    for sec in ({"reviewed": {"x": {"class": "permissive", "reason": "r", "basis": "b", "pin": {"version": "1"}}}},
+                {"supplemental_texts": {"x": _sup("0" * 64, build="")}}):
+        p = tmp_path / "p.json"
+        p.write_text(json.dumps(sec))
+        with pytest.raises(ValueError, match="pin"):
+            gl.load_policy(str(p))
+
+
+@pytest.mark.parametrize("bad", [{"file": "notices/other/x", "sha256": "0" * 64, "source": "s"},
+                                 {"file": "notices/upstream/../../x", "sha256": "0" * 64, "source": "s"},
+                                 {"file": "notices/upstream/x", "sha256": "abc", "source": "s"},
+                                 {"file": "notices/upstream/x", "sha256": "0" * 64, "source": ""}])
+def test_a_malformed_supplemental_text_is_refused(tmp_path, bad):
+    e = _sup("0" * 64)
+    e["texts"] = [bad]
+    p = tmp_path / "p.json"
+    p.write_text(json.dumps({"supplemental_texts": {"x": e}}))
+    with pytest.raises(ValueError, match="supplemental_texts"):
+        gl.load_policy(str(p))
+
+
+def test_a_supplemental_text_fills_a_package_whose_archive_has_none(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.rt, "odd", "1.0", "MIT", files=["Lib/odd.py"], texts=False)
+    _fails(fake, capsys, expect="odd 1.0: no licence text")
+    sha = _vendor(monkeypatch, tmp_path, "odd/LICENSE", b"MIT text\r\nline 2\r\n")   # a CRLF (autocrlf) checkout
+    assert fake.run(policy=_policy(tmp_path, supplemental_texts={"odd": _sup(sha)})) == 0, _out(capsys)
+    lic = fake.stage / "licenses"
+    man = json.loads(_read(str(lic / "manifest.json")))
+    row = next(c for c in man["components"] if c["name"] == "odd")
+    assert [t["source"] for t in row["texts"]] == ["upstream tag v1.0"]
+    shipped = (lic / row["texts"][0]["file"]).read_bytes()
+    assert shipped == b"MIT text\nline 2\n"                             # the pinned bytes, not the checkout's
+    assert "(vendored; from upstream tag v1.0)" in _read(str(lic / "THIRD_PARTY_NOTICES.txt"))
+    assert gl.verify_bundle(str(fake.stage)) == []
+
+
+def test_a_supplemental_text_is_added_to_the_packages_own(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.rt, "odd", "1.0", "MIT", files=["Lib/odd.py"])
+    sha = _vendor(monkeypatch, tmp_path, "odd/BUNDLED", b"bundled component terms\n")
+    assert fake.run(policy=_policy(tmp_path, supplemental_texts={"odd": _sup(sha, rel="odd/BUNDLED")})) == 0
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    row = next(c for c in man["components"] if c["name"] == "odd")
+    assert sorted(os.path.basename(t["file"]) for t in row["texts"]) == ["BUNDLED", "LICENSE.txt"]
+
+
+def test_a_supplemental_text_whose_bytes_changed_is_refused(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.rt, "odd", "1.0", "MIT", files=["Lib/odd.py"], texts=False)
+    sha = _vendor(monkeypatch, tmp_path, "odd/LICENSE", b"MIT text\n")
+    (tmp_path / "tools" / "notices" / "upstream" / "odd" / "LICENSE").write_bytes(b"MIT text, edited\n")
+    fake.run(policy=_policy(tmp_path, supplemental_texts={"odd": _sup(sha)}))
+    out = _out(capsys)
+    assert "odd 1.0: supplemental text notices/upstream/odd/LICENSE does not match its pinned sha256" in out
+    assert "odd 1.0: no licence text" in out and not (fake.stage / "licenses").exists()
+
+
+def test_a_missing_supplemental_file_is_refused(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.rt, "odd", "1.0", "MIT", files=["Lib/odd.py"], texts=False)
+    sha = _vendor(monkeypatch, tmp_path, "odd/LICENSE", b"MIT text\n")
+    os.remove(str(tmp_path / "tools" / "notices" / "upstream" / "odd" / "LICENSE"))
+    fake.run(policy=_policy(tmp_path, supplemental_texts={"odd": _sup(sha)}))
+    assert "supplemental text notices/upstream/odd/LICENSE does not exist" in _out(capsys)
+
+
+def test_a_supplemental_entry_for_another_build_does_not_apply(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.rt, "odd", "1.0", "MIT", files=["Lib/odd.py"], texts=False)
+    sha = _vendor(monkeypatch, tmp_path, "odd/LICENSE", b"MIT text\n")
+    fake.run(policy=_policy(tmp_path, supplemental_texts={"odd": _sup(sha, build="h123_2")}))
+    out = _out(capsys)
+    assert "odd 1.0: supplemental_texts entry is pinned to 1.0 build h123_2, staged is build 0" in out
+    assert "odd 1.0: no licence text" in out
+
+
+def test_a_required_acknowledgement_is_printed_in_the_notices(fake, capsys, tmp_path, monkeypatch):
+    fake.pkg(fake.gui, "libfreetype6", "2.14.3", "GPL-2.0-only OR FTL", files=["Library/bin/freetype.dll"],
+             texts=False, files_on_disk=[])
+    fake.dll("freetype.dll")
+    sha = _vendor(monkeypatch, tmp_path, "libfreetype6/FTL.TXT", b"The FreeType Project LICENSE\n")
+    e = _sup(sha, rel="libfreetype6/FTL.TXT", version="2.14.3",
+             notice="Portions of this software are copyright (c) 2026 The FreeType Project.")
+    assert fake.run(policy=_policy(tmp_path, supplemental_texts={"libfreetype6": e})) == 0, _out(capsys)
+    notices = _read(str(fake.stage / "licenses" / "THIRD_PARTY_NOTICES.txt"))
+    head = notices.split("Components\n")[0]
+    assert "Acknowledgements required" in head
+    assert "copyright (c) 2026 The FreeType Project.  (libfreetype6 2.14.3)" in head
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    assert man["dlls"]["freetype.dll"] == ["libfreetype6"]
+
+
+def test_a_metapackage_that_installs_nothing_owes_no_text(fake, capsys):
+    fake.pkg(fake.rt, "vc", "14.5", "BSD-3-Clause", files=[], texts=False)
+    assert fake.run() == 0, _out(capsys)
+    man = json.loads(_read(str(fake.stage / "licenses" / "manifest.json")))
+    vc = next(c for c in man["components"] if c["name"] == "vc")
+    assert vc["metapackage"] is True and vc["texts"] == []
+    assert "metapackage: installs no files" in _read(str(fake.stage / "licenses" / "THIRD_PARTY_NOTICES.txt"))
+    assert gl.verify_bundle(str(fake.stage)) == []
+
+
+def test_a_package_that_installs_files_is_not_a_metapackage(fake, capsys):
+    fake.pkg(fake.rt, "vc", "14.5", "BSD-3-Clause", files=["Library/bin/x.dll"], texts=False)
+    _fails(fake, capsys, expect="vc 14.5: no licence text")
+    # and a record with no `files` key at all is not read as "installs nothing"
+    meta = fake.rt / "conda-meta" / "vc-14.5-0.json"
+    m = json.loads(meta.read_text())
+    del m["files"]
+    meta.write_text(json.dumps(m))
+    _fails(fake, capsys, expect="vc 14.5: no licence text")
+
+
+def test_verification_still_requires_texts_of_a_real_component(fake, capsys):
+    assert fake.run() == 0
+    manp = fake.stage / "licenses" / "manifest.json"
+    man = json.loads(manp.read_text())
+    man["components"][0]["texts"] = []
+    manp.write_text(json.dumps(man))
+    assert any("no licence text recorded" in p for p in gl.verify_bundle(str(fake.stage)))
+
+
+def test_stage_and_installer_scripts_implement_the_msvc_decision():
+    stage = _read(os.path.join(TOOLS, "stage.ps1"))
+    assert "[switch] $ExcludeMsvcRuntime" in stage and '@("vc14_runtime", "vcomp14")' in stage
+    assert "-ExcludeMsvcRuntime: still staged" in stage and "-ExcludeUcrt: still staged" in stage
+    # both "still staged" checks run only after EVERY package removal
+    assert stage.index("$x = Remove-CondaPackage $rt $p") < stage.index("-ExcludeUcrt: still staged")
+    mk = _read(os.path.join(TOOLS, "make_installer.ps1"))
+    assert "Get-RequiredVcRuntime" in mk and "Get-AuthenticodeSignature" in mk and "-lt $vcNeed" in mk
+    assert "@vcDefines" in mk
+    iss = _read(os.path.join(ROOT, "desktop", "installer", "tcad.iss"))
+    assert "function PrepareToInstall" in iss and "'runas'" in iss and "Flags: dontcopy" in iss
+    assert "VC\\Runtimes\\x64" in iss
+    assert 'Record "vcruntime"' in _read(os.path.join(TOOLS, "verify_install.ps1"))

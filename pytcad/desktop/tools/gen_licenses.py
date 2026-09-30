@@ -32,6 +32,17 @@ Licence CLASSIFICATION is mechanical (an SPDX-ish expression: OR = the least res
 AND = the most restrictive, `X WITH <exception>` = runtime-exception). It is an engineering inventory,
 not legal advice; anything it cannot classify needs a reviewed entry in license_policy.json with a
 reason, made by a person.
+
+Policy sections beyond `reviewed` (NATIVE-DESKTOP-PLAN.md 26.9.7):
+    * `reviewed[name].pin` = {version, build}: the review applies to exactly that build; any other one
+      fails as "re-review", so a version bump never inherits a person's decision
+    * `supplemental_texts[name]` = {pin, reason, basis, texts: [{file, sha256, source}], notice?}: licence
+      texts vendored under notices/upstream/ for a package whose archive ships none (or not all of its
+      texts), ADDED to the package's own; pinned to one build, each text to its SHA-256 (of the bytes
+      with CRLF read as LF, so a git autocrlf checkout does not break the pin). `notice` is an
+      acknowledgement the licence requires in the documentation (FreeType's FTL section 2)
+    * a package whose conda-meta `files` list is present and EMPTY installs nothing (a metapackage such as
+      `vc`): it owes no text and is listed as a metapackage
 """
 import argparse
 import glob
@@ -45,6 +56,7 @@ import sys
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_POLICY = os.path.join(TOOLS, "license_policy.json")
 RELINK_TEMPLATE = os.path.join(TOOLS, "notices", "LGPL-relinking.txt")
+UPSTREAM_TEXTS = os.path.join(TOOLS, "notices", "upstream")      # supplemental_texts files live here only
 
 # rank: a smaller number is less restrictive; AND takes the max, OR the min
 RANK = {"permissive": 0, "weak-copyleft": 1, "runtime-exception": 2, "proprietary-redistributable": 3,
@@ -133,6 +145,28 @@ def load_policy(path):
         for k in ("reason", "basis"):
             if not str(e.get(k, "")).strip():
                 errs.append(f"policy reviewed[{name}]: '{k}' is required (a reviewed entry is a human decision)")
+        if "pin" in e:
+            errs += _pin_errors(f"reviewed[{name}]", e["pin"])
+    for name, e in pol.get("supplemental_texts", {}).items():
+        where = f"supplemental_texts[{name}]"
+        errs += _pin_errors(where, e.get("pin"))
+        for k in ("reason", "basis"):
+            if not str(e.get(k, "")).strip():
+                errs.append(f"policy {where}: '{k}' is required")
+        if "notice" in e and not str(e["notice"]).strip():
+            errs.append(f"policy {where}: 'notice', when given, must not be empty")
+        texts = e.get("texts")
+        if not isinstance(texts, list) or not texts:
+            errs.append(f"policy {where}: 'texts' must be a non-empty list")
+            continue
+        for t in texts:
+            f = str(t.get("file", "")).replace("\\", "/")
+            if not _safe_member(f) or not f.startswith("notices/upstream/"):
+                errs.append(f"policy {where}: text file '{f}' must be a relative path under notices/upstream/")
+            if not re.fullmatch(r"[0-9a-f]{64}", str(t.get("sha256", ""))):
+                errs.append(f"policy {where}: text '{f}' needs a 64-hex 'sha256'")
+            if not str(t.get("source", "")).strip():
+                errs.append(f"policy {where}: text '{f}' needs a 'source' (where the text was taken from)")
     for name, e in pol.get("addon_copyleft", {}).items():
         for k in ("reason", "basis"):
             if not str(e.get(k, "")).strip():
@@ -147,6 +181,46 @@ def load_policy(path):
     if errs:
         raise ValueError("; ".join(errs))
     return pol
+
+
+def _pin_errors(where, pin):
+    if not isinstance(pin, dict) or not all(str(pin.get(k, "")).strip() for k in ("version", "build")):
+        return [f"policy {where}: 'pin' must give both 'version' and 'build'"]
+    return []
+
+
+def _pin_matches(pin, meta):
+    return str(meta.get("version", "")) == str(pin["version"]) and str(meta.get("build", "")) == str(pin["build"])
+
+
+def text_sha256(path):
+    """SHA-256 of a vendored text with CRLF read as LF: the pin is of the text, not of the checkout's line
+    endings (git autocrlf turns LF into CRLF on Windows)."""
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
+
+
+def supplemental(meta, policy):
+    """(texts [(path, source)], notice, problems) from the policy's supplemental_texts entry, if any."""
+    name = meta["name"]
+    e = policy.get("supplemental_texts", {}).get(name)
+    if not e:
+        return [], None, []
+    who = f"{name} {meta.get('version', '?')}"
+    if not _pin_matches(e["pin"], meta):
+        return [], None, [f"{who}: supplemental_texts entry is pinned to {e['pin']['version']} build "
+                          f"{e['pin']['build']}, staged is build {meta.get('build', '?')} -- re-check the texts "
+                          f"against this build and re-pin"]
+    out, problems = [], []
+    for t in e["texts"]:
+        p = os.path.join(TOOLS, *t["file"].replace("\\", "/").split("/"))
+        if not os.path.isfile(p):
+            problems.append(f"{who}: supplemental text {t['file']} does not exist")
+        elif text_sha256(p) != t["sha256"]:
+            problems.append(f"{who}: supplemental text {t['file']} does not match its pinned sha256")
+        else:
+            out.append((p, t["source"]))
+    return out, e.get("notice"), problems
 
 
 # -- reading conda metadata --------------------------------------------------------------
@@ -373,6 +447,9 @@ def component(meta, source, policy, addon, retriever=None, diag=None):
     """One inventory row and its problems for a conda package."""
     name, version = meta["name"], meta.get("version", "?")
     diag = diag or Diag()
+    # installs nothing: conda-meta lists its files and the list is EMPTY (absent is not the same thing)
+    metapackage = isinstance(meta.get("files"), list) and not meta["files"]
+    sup_texts, notice, problems = supplemental(meta, policy)
     pkgdir = package_dir(meta)
     texts = license_text_files(pkgdir)
     text_from = "conda package cache"
@@ -380,7 +457,7 @@ def component(meta, source, policy, addon, retriever=None, diag=None):
     if not texts:
         cause = ("its extracted package directory no longer exists" if not pkgdir
                  else f"package directory {pkgdir} has no info/licenses")
-        if retriever:
+        if retriever and not sup_texts and not metapackage:
             restored, how = retriever.restore(meta)
             if restored:
                 pkgdir, texts, text_from, cause = restored, license_text_files(restored), how, None
@@ -388,9 +465,13 @@ def component(meta, source, policy, addon, retriever=None, diag=None):
                 cause += f"; {how}"
     expr = license_string(meta, pkgdir)
     cls, why = classify(expr)
-    problems = []
     who = f"{name} {version}"
     reviewed = policy.get("reviewed", {}).get(name)
+    if reviewed and "pin" in reviewed and not _pin_matches(reviewed["pin"], meta):
+        problems.append(f"{who}: the reviewed policy entry is pinned to {reviewed['pin']['version']} build "
+                        f"{reviewed['pin']['build']}, staged is build {meta.get('build', '?')} -- a person must "
+                        f"re-review this build")
+        reviewed = None
     if reviewed:
         cls, why = reviewed["class"], f"reviewed: {reviewed['reason']} ({reviewed['basis']})"
     if not expr and not reviewed:
@@ -407,15 +488,23 @@ def component(meta, source, policy, addon, retriever=None, diag=None):
                             f"addon_copyleft policy entry)")
         else:
             why = f"add-on copyleft: {allowed['reason']} ({allowed['basis']})"
-    if not texts:
+    if metapackage:
+        why += "; metapackage: installs no files, so no licence text is owed"
+    elif not texts and not sup_texts:
         diag.no_text.append((who, cause))
         problems.append(f"{who}: no licence text ({cause})")
     else:
-        diag.text_source[name] = text_from
+        diag.text_source[name] = text_from if texts else "supplemental_texts (vendored, pinned)"
+    if sup_texts:
+        why += f"; supplemental texts: {policy['supplemental_texts'][name]['reason']}"
     row = {"name": name, "version": version, "build": meta.get("build", ""), "channel": str(meta.get("channel", "")),
            "url": meta.get("url", ""), "license": expr, "class": cls, "why": why, "source": source,
-           "_texts": texts, "texts": [],
-           "texts_from": text_from}
+           "_texts": texts + [p for p, _s in sup_texts], "_text_src": dict(sup_texts), "texts": [],
+           "texts_from": text_from if texts else ("supplemental_texts" if sup_texts else text_from)}
+    if metapackage:
+        row["metapackage"] = True
+    if notice:
+        row["notice"] = notice
     return row, problems
 
 
@@ -553,6 +642,7 @@ def write_bundle(stage, out, rows, dll_owner, policy_path, addon):
     tdir = os.path.join(out, "texts")
     for r in rows:
         sub = os.path.join(tdir, f"{r['name']}-{r['version']}")
+        vendored = r.pop("_text_src", {})
         for src in r.pop("_texts"):
             rel = os.path.basename(src)
             dst = os.path.join(sub, rel)
@@ -561,8 +651,15 @@ def write_bundle(stage, out, rows, dll_owner, policy_path, addon):
                 n += 1
                 dst = os.path.join(sub, f"{n}-{rel}")
             os.makedirs(sub, exist_ok=True)
-            shutil.copyfile(src, dst)
-            r["texts"].append({"file": os.path.relpath(dst, out).replace("\\", "/"), "sha256": sha256_file(dst)})
+            if src in vendored:                             # the pinned bytes (LF), whatever the checkout did
+                with open(src, "rb") as fi, open(dst, "wb") as fo:
+                    fo.write(fi.read().replace(b"\r\n", b"\n"))
+            else:
+                shutil.copyfile(src, dst)
+            t = {"file": os.path.relpath(dst, out).replace("\\", "/"), "sha256": sha256_file(dst)}
+            if src in vendored:
+                t["source"] = vendored[src]
+            r["texts"].append(t)
     counts = {}
     for r in rows:
         counts[r["class"]] = counts.get(r["class"], 0) + 1
@@ -578,6 +675,11 @@ def write_bundle(stage, out, rows, dll_owner, policy_path, addon):
              "This is an engineering inventory of the components and their licences, not legal advice.", ""]
     lines.append("Summary: " + ", ".join(f"{n} {c}" for c, n in sorted(counts.items())) + f" ({len(rows)} components)")
     lines.append("")
+    acks = [r for r in rows if r.get("notice")]
+    if acks:
+        lines += ["-" * 60, "Acknowledgements required by the licences of the components below:", ""]
+        lines += [f"  {r['notice']}  ({r['name']} {r['version']})" for r in acks]
+        lines.append("")
     lgpl = [r for r in rows if "LGPL" in r["license"].upper() and r["class"] in ("weak-copyleft", "runtime-exception")]
     if lgpl:
         lines += ["-" * 60, relink_statement(lgpl).rstrip(), ""]
@@ -603,6 +705,8 @@ def write_bundle(stage, out, rows, dll_owner, policy_path, addon):
             lines.append(f"    text-src: {r['texts_from']}")
         for t in r["texts"]:
             lines.append(f"    text    : licenses/{t['file']}")
+            if t.get("source"):
+                lines.append(f"              (vendored; from {t['source']})")
         lines.append("")
     with open(os.path.join(out, "THIRD_PARTY_NOTICES.txt"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("\n".join(lines) + "\n")
@@ -624,7 +728,7 @@ def verify_bundle(app):
         man = json.load(fh)
     listed = {(c["name"], str(c["version"])) for c in man["components"]}
     for c in man["components"]:
-        if not c.get("texts"):
+        if not c.get("texts") and not c.get("metapackage"):
             problems.append(f"{c['name']}: no licence text recorded")
         for t in c.get("texts", []):
             p = os.path.join(lic, t["file"])

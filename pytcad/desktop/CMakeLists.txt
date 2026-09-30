@@ -155,6 +155,68 @@ add_executable(tcad_native
 target_link_libraries(tcad_native PRIVATE tcad_platform_win32 tcad_field_scene tcad_desktop_data ${TCAD_VTK_LIBS} psapi)
 vtk_module_autoinit(TARGETS tcad_native MODULES ${TCAD_VTK_LIBS})
 
+# -- N2b: the UI framework's portable core (section 27.7) -- NO Qt, NO Win32 -----
+# Widget tree, layouts (Box/Form/Grid/Stack: the measured Qt subset), painter interface, recording painter, style.
+add_library(tcad_ui_core STATIC
+  src/ui/core/geometry.hpp src/ui/core/painter.hpp src/ui/core/style.hpp
+  src/ui/core/recording_painter.cpp src/ui/core/recording_painter.hpp
+  src/ui/core/widget.cpp src/ui/core/widget.hpp
+  src/ui/core/layout.cpp src/ui/core/layout.hpp
+  src/ui/core/input_router.cpp src/ui/core/input_router.hpp
+  src/ui/core/edit_model.cpp src/ui/core/edit_model.hpp src/ui/core/keys.hpp
+  # N3a (NATIVE-DESKTOP-PLAN.md 27.8): the portable widget set
+  src/ui/widgets/mnemonic.cpp src/ui/widgets/mnemonic.hpp
+  src/ui/widgets/label.cpp src/ui/widgets/label.hpp
+  src/ui/widgets/button.cpp src/ui/widgets/button.hpp
+  src/ui/widgets/group_box.cpp src/ui/widgets/group_box.hpp)
+target_include_directories(tcad_ui_core PUBLIC src)
+target_compile_features(tcad_ui_core PUBLIC cxx_std_23)
+target_link_libraries(tcad_ui_core PUBLIC tcad_platform_core)  # N2c: platform/input.hpp (portable)
+add_executable(tcad_ui_core_tests tests/ui/test_ui_core.cpp tests/ui/test_ui_input.cpp tests/ui/test_ui_edit.cpp
+  tests/ui/test_ui_widgets.cpp)
+target_include_directories(tcad_ui_core_tests PRIVATE tests/platform)
+target_link_libraries(tcad_ui_core_tests PRIVATE tcad_ui_core)
+add_test(NAME tcad_ui_core_tests COMMAND tcad_ui_core_tests)
+
+# -- N2a: the UI framework's render core (section 27.7) -- NO Qt ----------------
+# D3D12 device + queue, D3D11On12, Direct2D/DirectWrite into a DXGI flip-model swap chain per window, WIC readback.
+add_library(tcad_ui_render STATIC
+  src/ui/render/render_device.cpp src/ui/render/render_device.hpp
+  src/ui/render/window_surface.cpp src/ui/render/window_surface.hpp
+  src/ui/render/image.cpp src/ui/render/image.hpp)
+target_include_directories(tcad_ui_render PUBLIC src)
+target_compile_features(tcad_ui_render PUBLIC cxx_std_23)
+target_link_libraries(tcad_ui_render PUBLIC d3d12 d3d11 dxgi dxguid d2d1 dwrite windowscodecs ole32)
+# N2b, Win32 side: Direct2D painter, DirectWrite text engine, UiWindow (a platform window + surface + widget tree).
+add_library(tcad_ui_win32 STATIC
+  src/ui/win32/dwrite_text.cpp src/ui/win32/dwrite_text.hpp
+  src/ui/win32/d2d_painter.cpp src/ui/win32/d2d_painter.hpp
+  src/ui/win32/ui_window.cpp src/ui/win32/ui_window.hpp
+  src/ui/win32/clipboard.cpp src/ui/win32/clipboard.hpp
+  src/ui/win32/tsf_text_store.cpp src/ui/win32/tsf_text_store.hpp
+  src/ui/win32/line_edit.cpp src/ui/win32/line_edit.hpp
+  src/ui/win32/uia_provider.cpp src/ui/win32/uia_provider.hpp)
+target_link_libraries(tcad_ui_win32 PUBLIC tcad_ui_core tcad_ui_render tcad_platform_win32 user32 ole32 oleaut32 uiautomationcore)
+# The gate: goldens (WARP, exact) at 100/150/200% for the N2a scene and the N2b panel, device loss, resize/DPI churn,
+# debug layer, GPU smoke, display list vs pixels, invalidation/layout coalescing, WM_PAINT.
+add_executable(tcad_ui_render_tests
+  tests/ui/test_ui_render.cpp tests/ui/test_ui_panel.cpp tests/ui/test_ui_input_win32.cpp tests/ui/ui_driver.hpp
+  tests/ui/test_ui_text.cpp tests/ui/test_ui_edit_win32.cpp tests/ui/test_ui_a11y.cpp tests/ui/test_ui_widgets_win32.cpp
+  tests/ui/render_scene.cpp tests/ui/render_scene.hpp
+  tests/ui/render_test_support.cpp tests/ui/render_test_support.hpp
+  src/native/tcad_native.manifest)
+target_include_directories(tcad_ui_render_tests PRIVATE tests/platform tests/ui)
+target_link_libraries(tcad_ui_render_tests PRIVATE tcad_ui_win32 nlohmann_json::nlohmann_json psapi version dbghelp)
+target_compile_definitions(tcad_ui_render_tests PRIVATE TCAD_UI_GOLDENS_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/ui/goldens")
+add_test(NAME tcad_ui_render_tests COMMAND tcad_ui_render_tests)
+# A visible window for looking at the render core (F5 = simulated device loss); not a gate.
+add_executable(tcad_ui_demo
+  tests/ui/ui_demo_main.cpp tests/ui/render_scene.cpp tests/ui/render_scene.hpp
+  tests/ui/ui_gallery.cpp tests/ui/ui_gallery.hpp
+  src/native/tcad_native.manifest)
+target_include_directories(tcad_ui_demo PRIVATE tests/ui)
+target_link_libraries(tcad_ui_demo PRIVATE tcad_ui_win32)
+
 if(TCAD_LEGACY_QT)
 # -- the application ----------------------------------------------------------
 set(CMAKE_AUTOMOC ON)

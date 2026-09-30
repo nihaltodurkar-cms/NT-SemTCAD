@@ -32,8 +32,12 @@ def _read(*p):
 
 
 def _sha(*p):
+    # Hash of the CONTENT with line endings normalized to LF: a Windows checkout with core.autocrlf=true
+    # (this repo's setting there) has the same files as CRLF, and the pins below were taken from LF files.
+    # Hashing raw bytes made the N0 baseline "drift" on every Windows checkout with no source change
+    # (found 2026-09-30); any real edit still changes the normalized hash.
     with open(os.path.join(*p), "rb") as fh:
-        return hashlib.sha256(fh.read()).hexdigest()
+        return hashlib.sha256(fh.read().replace(b"\r\n", b"\n")).hexdigest()
 
 
 def _compile(out, main_cpp, extra=(), src_dir=None, timeout=300):
@@ -185,6 +189,25 @@ def test_gate_script_has_its_steps():
         assert needle in s, needle
     assert "windeployqt" not in s.replace("NO windeployqt", "")
     assert '$env:PATH = "$env:SystemRoot\\System32;$env:SystemRoot"' in s
+
+
+def test_gate_script_passes_the_result_array_to_the_spike_gate_intact():
+    # `powershell -File spike.ps1 -Result $Result` cannot pass an array: -Result got the first file and the SECOND
+    # bound to the spike script's -Out, which it deletes and stages into -- the second result file was destroyed on
+    # every two-result run (found 2026-09-30). The call must go through -Command with -Out named.
+    s = _read(DESK, "tools", "verify_native_n1.ps1")
+    code = "\n".join(l for l in s.splitlines() if not l.lstrip().startswith("#"))
+    assert not re.search(r"-File\s+\(Join-Path \$tools \"verify_native_spike\.ps1\"\)", code)
+    call = next(l for l in code.splitlines() if "verify_native_spike.ps1" in l and "-Command" in l)
+    assert "-Result $quoted" in call and "-Out '" in call and "exit `$LASTEXITCODE" in call
+
+
+def test_selftest_pins_the_modifier_state_for_its_synthetic_keys():
+    # the window reads modifiers from the real keyboard (GetKeyState): a key the user holds must not change the result
+    s = _read(SRC, "native", "app_main.cpp")
+    body = s[s.index("void stepShortcut("):]
+    body = body[:body.index("done();")]
+    assert body.index("SetKeyboardState(clean)") < body.index("WM_KEYDOWN, VK_F12") < body.rindex("SetKeyboardState(keys)")
 
 
 # ---- Win32 sources: a SYNTAX check against mingw-w64's headers (not MSVC, not a link, not a run) -------------------------

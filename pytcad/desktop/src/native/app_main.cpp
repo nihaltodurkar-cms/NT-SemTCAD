@@ -183,13 +183,17 @@ private:
             npz = std::make_unique<NpzFile>(NpzFile::open(widen(path)));
             model = std::make_unique<ResultModel>(ResultModel::from_npz(*npz, path));
         } catch (const std::exception& e) {
-            workspace_->setStatus("cannot open " + path + ": " + e.what(), StatusKind::Error);
+            const std::string why = "cannot open " + path + ": " + e.what();
+            workspace_->setStatus(why, StatusKind::Error);
+            if (!args_.selftest.empty()) rec("open_result", false, why);  // the report says WHY, not just "failed"
             return false;
         }
         if (model->dimensionality() < 2 || model->scalar_names().empty()) {
-            workspace_->setStatus(fs::path(path).filename().string() + " is a " + std::to_string(model->dimensionality()) +
-                                      "D result: the field view shows 2D and 3D results (curves come with the plot panel)",
-                                  StatusKind::Error);
+            const std::string why = fs::path(path).filename().string() + " is a " +
+                                    std::to_string(model->dimensionality()) +
+                                    "D result: the field view shows 2D and 3D results (curves come with the plot panel)";
+            workspace_->setStatus(why, StatusKind::Error);
+            if (!args_.selftest.empty()) rec("open_result", false, why);
             return false;
         }
         scene_->setResult(model.get());  // the scene now points at the new model: the old one may go
@@ -311,9 +315,20 @@ private:
         int f12 = 0, ctrl_j = 0;
         workspace_->shortcuts().add("F12", [&] { ++f12; });
         workspace_->shortcuts().add("Ctrl+J", [&] { ++ctrl_j; });
+        // The window reads modifiers with GetKeyState -- the REAL keyboard -- so a Ctrl/Shift/Alt the user happens to
+        // hold made this synthetic F12 arrive as Ctrl+F12 etc. and the check failed intermittently (seen 2026-09-30).
+        // Pin this thread's keyboard state to "no modifier" for the synthetic keys, and restore it after.
+        BYTE keys[256]{};
+        GetKeyboardState(keys);
+        BYTE clean[256];
+        std::copy(std::begin(keys), std::end(keys), clean);
+        for (int vk : {VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_MENU, VK_LMENU, VK_RMENU})
+            clean[vk] &= static_cast<BYTE>(~0x80);
+        SetKeyboardState(clean);
         SendMessageW(window_->hwnd(), WM_KEYDOWN, VK_F12, 0x00000001);           // a real key message through the window
         SendMessageW(window_->hwnd(), WM_KEYDOWN, VK_F12, 0x40000001);           // auto-repeat: must not fire again
         SendMessageW(window_->hwnd(), WM_KEYUP, VK_F12, 0xC0000001);
+        SetKeyboardState(keys);
         const bool routed = workspace_->routeKey(KeyEvent{'J', Mod::Ctrl, true, false});  // as from the VTK child window
         rec("shortcuts", f12 == 1 && ctrl_j == 1 && routed, "F12 via WM_KEYDOWN fired " + std::to_string(f12) + "x (repeat and key-up ignored), Ctrl+J routed from a child: " + std::to_string(ctrl_j));
         done();

@@ -5926,7 +5926,7 @@ around it -- not a new backend feature.
   exactly as disclosed above (the cross-open byte-identical matrix
   itself already landed at section 24.1).
 
-## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2, S3 done on Windows; S4 in progress)
+## 26. P5 — Packaging: detailed plan (2026-09-29, IN PROGRESS: S1, S2, S3 done on Windows; S4 done on Windows incl. the Sandbox gate (26.9.7); only the oldest-Windows-10 run is open)
 
 User: "start P5". §9's P5 bullet list is the scope; this section turns it
 into slices and gates, from the tree as it stands today. **Status (see
@@ -6360,7 +6360,7 @@ powershell -ExecutionPolicy Bypass -File .\desktop\tools\verify_install.ps1 -Ins
 S4 (licence bundle) is §26.9; its `licenses\` folder rides in the stage and therefore in the installer without a
 change to `tcad.iss`.
 
-### 26.9 P5-S4 status (2026-09-30): licence bundle and gate -- implemented; NOT YET RUN on the real Windows runtime
+### 26.9 P5-S4 status (2026-09-30): licence bundle and gate -- DONE on Windows: gate and 11-check Sandbox install pass (26.9.7); oldest-Windows-10 run open
 
 **Implemented (files in the tree):**
 
@@ -6681,6 +6681,97 @@ not re-executed in this session. Pending on Windows: rebuild with `-ExcludeUcrt`
 (+ `-Reference`), `s4_evidence.ps1` re-run, size/file count.
 
 
+#### 26.9.7 S4: decisions made and applied; the licence gate PASSES on the real Windows runtime (2026-09-30)
+
+**Decisions (the user, asked explicitly 2026-09-30).**
+1. The four archive-empty packages get **vendored, pinned texts** (`supplemental_texts`).
+2. **Metapackages:** a package whose conda-meta `files` list is present and empty installs nothing and owes no text.
+3. **tk (TCL) and tzdata (public domain) are accepted as permissive**, each pinned to the one build that was read.
+4. **The MSVC runtime is not shipped.** `vc14_runtime` and `vcomp14` are excluded from the stage. The installer embeds Microsoft's own `vc_redist.x64.exe` and runs it when the machine's runtime is missing or older. This replaces the "Distributable Code" review route of 26.9.2-26.9.4: the conda package's `LICENSE.TXT` does not permit the bundling, and no REDIST-list authorisation was ever established.
+
+**Gate changes (`gen_licenses.py`).**
+- **`reviewed[name].pin` = {version, build}.** Another build fails with "a person must re-review this build", and the review no longer applies. This closes the gap 26.9.2 named: a name-keyed review silently covered every version.
+- **`supplemental_texts[name]`** = {pin, reason, basis, texts: [{file, sha256, source}], notice?}.
+  - Texts live only under `desktop/tools/notices/upstream/`. The loader rejects any other path, any path containing `..`, a malformed sha256 and a missing source.
+  - Texts are added to the package's own, never replacing them.
+  - Each sha256 is of the text with CRLF read as LF. The file also ships LF, so a `core.autocrlf` checkout cannot break a pin. `notices/upstream/.gitattributes` (`* -text`) keeps the bytes exact in git.
+  - `notice` is a credit the licence requires. It goes in a new "Acknowledgements required" block at the top of `THIRD_PARTY_NOTICES.txt`.
+- **Metapackage:** `files` must be present AND empty. A missing key is not treated as "installs nothing". `verify_bundle` accepts a metapackage without texts.
+
+**Policy entries (`license_policy.json`), each pinned, with its source recorded:**
+
+| package | texts | source |
+|---|---|---|
+| libsqlite 3.53.4 `hf5d6505_1` | `blessing.txt` | lines 1-9 of the package's own `sqlite3.h` |
+| libwinpthread 12.0.0.r4.gg4f2fc60ca `h57928b3_10` | `COPYING`, `COPYING.MinGW-w64.txt` | `github.com/mingw-w64/mingw-w64` at **`dc42231f0`**, the `git_rev` in the package's own `info/recipe/meta.yaml`. **Now verified:** the "UNVERIFIED" master-mirror copy of 26.9.3 is byte-identical (`63263614…`) |
+| pyamg 5.3.0 `py314hbac2fa4_1` | `LICENSE.txt` | sibling build `_2`'s package text |
+| libfreetype6 2.14.3 `hdbac1cb_2` (app side, in `tcad-gui`) | `FTL.TXT` | sibling `freetype` output. It also carries the FTL §2 credit as its `notice`, in the FTL's own suggested wording, year 2026 (from `freetype.h` 2.14.3: "Copyright (C) 1996-2026") |
+| tk 8.6.13 `h967ab96_4` | Tk's own terms plus zlib, sqlite3, itcl, tdbc, tdbcpostgres, tdbcsqlite3 and thread | `desktop/tools/proposed/TK-BUNDLED-EVIDENCE.md`. Tk's terms equal the staged `Library/lib/tk8.6/license.terms` (hash-checked) |
+
+- **`reviewed` tk and tzdata:** tzdata's BSD carve-out files (`date.c`, `newstrftime.3`, `strftime.c`) were checked against its 606-file conda-meta list: none of them is installed.
+- **Not done** (from `S4-TK-MULTILICENSE.md`): the per-file coverage partition over tk's 1103 files, including the one `hello.tcl` recipe test file. The texts ship; coverage is not proven file by file.
+
+**Stage and installer changes.**
+- **`stage.ps1 -ExcludeMsvcRuntime`**, by the same mechanism as `-ExcludeUcrt`:
+  - removal uses the package's own conda-meta file list;
+  - its record is deleted;
+  - the app-side closure skips its DLL names;
+  - both "still staged" checks run only after every removal.
+
+  `licenses\excluded-packages.json` is now a list of records.
+- **`make_installer.ps1`:** if the stage excluded `vc14_runtime`, it finds `vc_redist.x64.exe` in the Visual Studio found by vswhere, or takes `-VcRedist`. It refuses a file that is not Authenticode-Valid or is older than the excluded version, and passes `/DVcRedist /DVcMajor /DVcMinor /DVcBld`.
+- **`tcad.iss`:**
+  - the redistributable is `dontcopy` and never installed into `{app}`;
+  - `PrepareToInstall` checks `HKLM\...\VC\Runtimes\x64` (Installed, Major.Minor.Bld);
+  - only if the runtime is missing or older, it runs `vc_redist /install /quiet /norestart` elevated (`runas`, one UAC prompt);
+  - it aborts setup, with nothing installed, on failure or if the runtime is still not current afterwards;
+  - 3010 means restart needed, and 1638 means a newer version is already installed; both are success.
+
+  The install stays per-user otherwise, and uninstall leaves the shared runtime.
+- **`verify_install.ps1`:** a `vcruntime` check (11 checks now). The machine runtime must be at least the excluded version, and `System32\vcruntime140.dll` must be present.
+
+**Results on this machine (observed).**
+- **`stage.ps1 -Reference build\ref -ExcludeUcrt -ExcludeMsvcRuntime -DownloadLicenseTexts`:**
+  - excluded ucrt (92 files), vc14_runtime (22) and vcomp14 (2), with 0 shared or absent;
+  - **licence bundle written: 51 components (47 permissive, 3 weak-copyleft, 1 proprietary-redistributable), zero FAILs;**
+  - **check_runtime.py 15/15 PASS**, including the tcad-dev reference: versions equal and all three examples at max relative diff 0.00e+00. The runtime now loads the system MSVC runtime (14.51.36247 here).
+- `--verify-bundle dist\TCAD`: OK. No MSVC or UCRT DLL is left anywhere in the stage.
+- The staged `tcad_desktop.exe --selftest` on diode_1d, mosfet_2d and resistor_3d, with PATH = Windows only, exits 0.
+- `make_installer.ps1` helpers under Windows PowerShell 5.1:
+  - required runtime 14.51.36247;
+  - it picks VS 18 Community's `v145\vc_redist.x64.exe` (14.51.36247.0, Authenticode Valid);
+  - `Get-StageProblems` finds 0 problems.
+  - A PS 5.1 bug was found and fixed there: `@(... | ConvertFrom-Json)` wraps a JSON array once more, so every record's version was read at once. It was also in `verify_install.ps1`.
+- Tests: `test_desktop_licenses.py` +14 tests / 17 cases (pins, supplemental texts, CRLF, notice, metapackage). Seven mutations were each caught: the metapackage rule, the text sha check, both pin checks, the LF write, verification of textless components, and the acknowledgement. The desktop-tool suites: 149 passed. The pwsh-7-only tests are skipped here: `pwsh` is not installed.
+- The legacy Qt build had been broken since the N0 split (§27.4) and nothing had built it since. 12 `connect(..., view_, &FieldView::setX)` calls no longer resolved, because the setters now live in the non-QObject `FieldScene`. They now use lambdas with `view_` as context (`shell/display_panel.cpp`, `shell/view3d_panel.cpp`). The whole Release build has 0 errors and 0 warnings.
+
+**Not done here (S4 stays open until these pass):**
+1. **Inno Setup is not installed on this machine**, so the new `.iss` Pascal code has never been compiled.
+2. The installer has not been built.
+3. The 11-check Sandbox gate has not run. Windows Sandbox has no VC runtime, so it is the real test of `PrepareToInstall`, including whether a silent install there raises a UAC prompt.
+4. The oldest supported Windows 10 build has not been tried.
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\desktop\tools\make_installer.ps1 -WriteSandboxConfig
+# then dist\installer\tcad-install-test.wsb -> dist\installer\sandbox-log\verify_install.json (11 checks)
+```
+
+**Windows Sandbox gate on the rebuilt installer: PASSED (the user ran it; `dist\installer\sandbox-log\` read by the author).**
+- `verify_install.json`: `ok: true`, all 11 checks pass: `install` (exit 0), `layout`, **`vcruntime`**, `runtime`, `licenses`,
+  `selftest` x3, `uninstall`, `clean`, `userdata`.
+  - `vcruntime`: machine MSVC runtime 14.51.36247, the stage needs 14.51.36247, and `System32\vcruntime140.dll` is present.
+    The Sandbox starts without the runtime, so this is the embedded vc_redist's doing.
+- `install.log`:
+  - Inno Setup **7.1.0**, so the new `[Code]` compiles and runs under Inno 7.
+  - Windows 10.0.26100, per-user install mode (HKCU), although the Sandbox account is administrative.
+  - `vc_redist.x64.exe` was extracted at 13:25:07 and file copying began at 13:29:19. About 4 min 12 s went to
+    `PrepareToInstall`'s vc_redist run. Whether a UAC prompt appeared in that time is not in the log (not recorded).
+- `check_runtime.py` on the installed copy: 11 passed, 0 failed. Its one warning is the expected "no --reference".
+- `--verify-bundle` on the installed tree: OK.
+
+**S4 is DONE** except the run on the oldest Windows 10 build to be supported (not done; no such machine here). The installer's size
+and SHA-256 were not recorded.
+
 ## 27. Qt elimination -- explicit P6 requirement (2026-09-30; dependency chain traced, NOTHING REMOVED YET)
 
 User requirement: "I do not want Qt anywhere in the final TCAD desktop application or package." This is broader than
@@ -6829,3 +6920,923 @@ changes the Qt app (`TCAD_LEGACY_QT` stays ON by default). Known rough edges: th
 keyboard focus once clicked (its keys reach the workspace through the interactor observer, as `on_key_mods`); a child HWND is composited
 apart from its parent, so UI drawn ON the view must be popup windows (N4). N1 changed `vtk_win32_host.*` additively (`on_key_mods`) and
 `CMakeLists.txt`/`build.ps1` only for the new targets; `src/views` (FieldScene) is byte-identical to the baseline (tested).
+
+
+**N1 Windows gate: PASS (2026-09-30, run on the user's Windows 11 machine).** `verify_native_n1.ps1 -Result mosfet_2d.npz,
+resistor_3d.npz` (fresh `run_bench` results), `native-n1-report.json` ok=true, all 7 steps: build (`build.ps1 -NoLegacyQt`,
+MSVC) PASS; `tcad_platform_core_tests` 30/30; stage 70 DLLs (import closure, no windeployqt); `check_no_qt.py` 71 files, NO Qt;
+`--selftest` on both results with a scrubbed PATH 12/12 checks each (dpi_layout, input, shortcuts, settings, file_dialogs,
+timers, post, backend = the REAL backend_service, 29 methods, field_scene, no_qt_loaded, backend_shutdown, backend_restart),
+0 Qt modules among 136 loaded, field displayed (2D: 1,112 colours, 23% non-background; 3D: 488 colours, 20%) and hover-picked
+("doping: 1.070e+18 cm^-3 @ x=0.09, y=0.10 um"; "doping: 1.000e+17 cm^-3 @ x=0.73, y=0.00, z=0.00 um"); the N0 spike gate
+PASS. Screenshots looked at: the 2D MOSFET source/drain doping map and the 3D resistor block, both with their colour bars.
+
+Three defects found and fixed getting there (none in the platform layer's logic):
+- `tcad_platform_core_tests` aborted (0xC0000409) in `settings_a_corrupt_file_is_kept_aside_not_overwritten`: the test
+  still held `settings.json.corrupt` open when it called the THROWING `fs::remove_all`; Windows cannot delete an open file,
+  so the uncaught `filesystem_error` terminated the binary (every later core test never ran). Linux allows it, which is why
+  the cloud run passed. Fixed in the test (the stream is scoped).
+- `verify_native_n1.ps1` needed an MSVC developer shell (`dumpbin` for the import closure): it now imports vcvars64 itself
+  (vswhere, as build.ps1/stage.ps1); `verify_native_spike.ps1`, a pinned baseline, is unchanged and inherits it as a child.
+- `tcad_native --selftest` reported only "failed" when the result file could not be opened (the reason went to the status
+  strip): it now records an `open_result` check with the reason.
+
+And one test fragility: `test_n0_spike_baseline_is_preserved` hashed raw bytes, so every Windows checkout
+(`core.autocrlf=true` -> CRLF) "drifted" from the LF-captured pins with no source change; `_sha` now hashes LF-normalized
+content (all five pinned files match that way -- the baseline is intact).
+
+### 27.7 N2 -- the native UI framework core: detailed plan (2026-09-30; N2a-N2g (27.7.1-27.7.7) COMPLETE on Windows; the manual IME and screen-reader checklists pending)
+
+N2 is the `QWidget` machinery with nothing widget-specific: rendering, the widget tree, layout, input and focus, text
+rendering, text input, accessibility, and the test driver that replaces QTest. N3's widget set, N4's docking and N5's panels are
+built on it. It is §27.5's dominant cost and main risk, so it is sliced finer than §27.5's single row.
+
+**Decisions (the user, asked explicitly 2026-09-30).**
+1. **Direct2D reaches the screen through D3D11On12.** This keeps §27.2's Direct3D 12 decision: one D3D12 device and command
+   queue per process, a DXGI flip-model swap chain per window, and D2D drawing into the back buffer through
+   `ID3D11On12Device` wrapped resources. Rejected: a D3D11 device for the UI (simpler, but it reverses §27.2).
+2. **Full Text Services Framework in N2**, not IMM32 first: IME composition, dictation, touch keyboard and reconversion.
+3. **Render goldens come from WARP, compared exactly (tolerance 0), at 100/150/200%.** The GPU path gets smoke checks only
+   (non-blank, same layout rectangles), because vendor antialiasing differs.
+
+**What N2 builds on (N1, in the tree).**
+- `platform/window` (HWND, per-monitor-v2 DPI), `platform/input` (mouse/key events, `ShortcutMap`) and `platform/app`
+  (message loop, timers, cross-thread post).
+- `platform/dpi` (`Rect`, layout arithmetic) and `theme/tokens.hpp` (Qt-free).
+- The portable/win32 library split (`tcad_platform_core` / `tcad_platform_win32`) and `mini_test.hpp`.
+- N1's `Workspace` status strip is plain GDI, a placeholder that N2 replaces.
+
+**Architecture.**
+- **Libraries.** N1's split again:
+  - `tcad_ui_core` holds everything portable (any C++23 compiler, tested in the cloud like N1's core): widget tree, layout,
+    events and focus, invalidation, the accessibility model, the edit model and a recording painter.
+  - `tcad_ui_win32` holds everything that needs Windows: D3D12/D3D11On12/D2D/DirectWrite/WIC renderer, HWND binding,
+    UIA provider, TSF text store and clipboard.
+  - No Qt anywhere; `check_no_qt.py` and the static no-Qt tests apply from the first commit.
+- **Renderer.**
+  - Process level:
+    - one `ID3D12Device` on the default adapter (WARP under the test driver or `--warp`);
+    - one `ID3D11On12Device` plus `ID2D1Device`/`ID2D1Factory`;
+    - one `IDWriteFactory`;
+    - one `IWICImagingFactory`.
+  - Per window:
+    - swap chain: `DXGI_SWAP_EFFECT_FLIP_DISCARD`, 2 buffers, BGRA8, frame-latency waitable;
+    - each back buffer wrapped once, with an `ID2D1Bitmap1` target.
+  - A frame is: `AcquireWrappedResources`, D2D `BeginDraw` ... `EndDraw`, `ReleaseWrappedResources`, `Flush`, `Present`.
+  - Resize and DPI change release the targets and call `ResizeBuffers`. D2D's DPI is the window's, so widgets work in DIPs
+    and snap to device pixels.
+  - Device loss (`DXGI_ERROR_DEVICE_REMOVED/RESET`) rebuilds every device-dependent object and repaints. It is tested with
+    `ID3D12Device5::RemoveDevice`.
+  - Screenshots and goldens: back buffer, then a readback resource, then a WIC PNG. This replaces N1's GDI screenshot.
+- **Painting.**
+  - The widget tree is retained. `invalidate(rect)` accumulates a dirty region, and a frame repaints the whole window, at
+    most 60 Hz.
+  - `Present1` dirty rectangles are an optimisation for later, only if measured to matter.
+  - Text antialiasing is set explicitly (grayscale), so WARP goldens are reproducible.
+- **Airspace.** The VTK view stays a child HWND (N0/N1) and composites above the swap chain. Anything drawn over it must be
+  its own top-level `WS_POPUP` window with its own swap chain: tooltips, menus, drop-downs. N2 provides popup windows; N3 uses
+  them.
+- **Widget model** (mirrors `QWidget` where the port needs it: N5 converts ~23,000 lines mechanically, not by redesign):
+  - geometry in DIPs, visible/enabled, parent with owned children;
+  - `paint(Painter&)`, event handlers, `sizeHint`/`minimumSize`/`maximumSize`/size policy;
+  - focus policy and tab order;
+  - accessibility role/name/value/state;
+  - notifications as callback lists (N1's style, no signal/slot machinery).
+- **Painter.** A portable interface: fill/stroke rect, rounded rect, line, path, text layout, image, clip, transform.
+  - Two implementations: Direct2D, and a **recording painter**. The recording painter captures a display list, so portable
+    tests assert what was drawn without pixels.
+  - `PlotView`'s QPainter port (N5) targets this interface.
+- **Layouts**, with Qt's size-hint/stretch/min/max rules so ported panels lay out the same:
+  - Box (H/V) and Form, sized by the Qt layout census below;
+  - Grid;
+  - Stack.
+- **Input.**
+  - Mouse: routing, capture, enter/leave/hover, wheel, double-click, cursor shapes, drag threshold.
+  - Keyboard: focus chain, Tab/Shift+Tab, `ShortcutMap` accelerators, Alt mnemonics, focus visuals.
+  - Timers from N1's loop, including the tooltip delay model (the tooltip popup itself is N3).
+- **Text.**
+  - DirectWrite `IDWriteTextLayout`, cached per widget and string: measure, wrap, elide, hit-test, cluster metrics.
+  - Theme font from `tokens.hpp`.
+  - Complex scripts (bidi, Arabic, Devanagari, CJK) render through DirectWrite's shaping.
+- **Text input.**
+  - A portable `EditModel`: UTF-16 buffer, caret and selection by cluster (DirectWrite cluster map injected on Windows),
+    word navigation, undo/redo.
+  - On Windows: clipboard, and a **TSF `ITextStoreACP2`** over `EditModel` with composition display attributes.
+  - N2 includes one bare single-line edit to exercise it. The real line/multi-line edits are N3.
+- **Accessibility.**
+  - A UIA provider per HWND (`IRawElementProviderFragmentRoot/Fragment/Simple`) over the widget tree.
+  - Focus and structure-change events.
+  - Patterns: Invoke, Toggle, Value, RangeValue, Selection/SelectionItem and ExpandCollapse as hooks for N3's widgets, plus
+    **Text** for the edit (it shares TSF's text-store model).
+  - Windows high-contrast mode swaps the theme tokens for system colours.
+- **The test driver (replaces QTest).** `ui::testing::Driver`, in-process.
+  - Creates windows on WARP, with a test-only DPI override (so 150%/200% need no monitor).
+  - Injects events as `WM_*` messages sent through the window's own procedure, i.e. the same dispatch path as real input.
+    Never `SendInput`: it moves the real cursor, the lesson of QTest's `mouseMove` (memory note).
+  - Steps the loop, and reads back:
+    - widget state;
+    - recording-painter display lists;
+    - the framebuffer PNG;
+    - the UIA tree through the real UIA client API (`IUIAutomation::ElementFromHandle`), in-process.
+- **Goldens.**
+  - Stored as `desktop/tests/ui/goldens/<name>@<scale>.png`, binary in git.
+  - The golden manifest records the WARP build (`d3d10warp.dll` file version). On another build the goldens are reported
+    **stale, not failed**, with the re-capture command. This is the machine-specific-golden rule of CLAUDE.md applied to
+    pixels.
+
+**The Qt layout/widget census N2 sizes against** (occurrences in `desktop/src`, 2026-09-30):
+- Layouts: QFormLayout 55, QVBoxLayout 39, QHBoxLayout 21, QStackedWidget 13, QGridLayout 6.
+- For N3: QPushButton 128, QComboBox 114, QDoubleSpinBox 111, QLabel 86, QAction 51, QCheckBox 49, QListWidget 42,
+  QLineEdit 39, QSpinBox 23, QTableWidget 15, QSlider 15, QSplitter 14, QPlainTextEdit 14, QGroupBox 14, QMessageBox 12,
+  QMenu 9, QRadioButton 8, QPainter 7, QTabWidget 4, QTreeWidget 3.
+
+**Slices, in order.** Each is gated on Windows and leaves the legacy Qt build and N0/N1 gates working.
+
+| slice | builds | gate |
+|---|---|---|
+| N2a render core | D3D12 device/queue, D3D11On12, D2D/DWrite/WIC factories; per-window swap chain with create/resize/DPI/minimise/occlusion; device-loss recovery; WARP selection; PNG readback | a window drawing primitives matches its WARP golden at 100/150/200%; forced `RemoveDevice` recovers and repaints; 1000 resizes plus 100 DPI changes leak nothing (D3D12 debug layer: zero live objects at exit, Debug build) |
+| N2b tree, painter, layout | `Widget`, `Painter` (D2D and recording), Box/Form/Grid/Stack, invalidation, theme style | portable layout tests (Qt-semantics cases: stretch, min/max, hidden children, nested, spacing and margins at fractional DPI); recording-painter tests; a composed sample panel's goldens at 3 scales |
+| N2c input and focus | mouse routing/capture/hover/wheel/cursor; focus chain, Tab order, shortcuts, mnemonics; timers | driver tests per behaviour (including focus across the VTK child HWND and back, a known crude spot of the spike) |
+| N2d text rendering | DirectWrite layout cache; measure/wrap/elide/hit-test; complex scripts | measurement tests; goldens of Latin, Arabic (RTL), Devanagari and CJK samples at 3 scales |
+| N2e text input | `EditModel` (portable); clipboard; TSF `ITextStoreACP2`, composition attributes; the bare edit | portable `EditModel` tests (clusters, surrogates, undo); the text store driven directly through its ITextStoreACP2 methods as TSF calls them (lock/grant, GetText/SetText/InsertTextAtSelection, OnLayoutChange). **A manual checklist**, recorded with its result: Japanese IME, Pinyin, emoji panel (Win+.), dictation, touch keyboard. |
+| N2f accessibility | UIA provider, events, the patterns above, Text pattern for the edit; high contrast | an in-process UIA client walks the tree and compares it with the widget tree (roles, names, bounds, patterns, focus events); high-contrast golden; **manual:** Accessibility Insights FastPass and Narrator on the sample window, result recorded |
+| N2g gate and gallery | `tcad_native --ui-gallery` (every N2 capability on one screen, for screenshots and manual checks); `desktop/tools/verify_native_n2.ps1` | the script: no-Qt build, `tcad_ui_core` tests, driver tests, goldens, `check_no_qt.py`, then N1 and N0 gates as regressions; exit 0 only if all pass |
+
+**Not in N2:**
+- the widget set (N3), apart from the test widgets and the bare edit;
+- docking (N4);
+- PlotView and every panel (N5);
+- `Present1` dirty rectangles;
+- the VTK view inside the new tree: it stays in N1's `Workspace` until N4.
+
+**Risks, stated plainly:**
+- **D3D11On12 synchronisation** (acquire/release per frame, state transitions, flush before Present) is where subtle bugs live.
+  N2a gates it alone before anything is built on it.
+- **TSF is only partly testable headlessly.** The text store is tested through its interface; real IMEs only by the manual
+  checklist.
+- **WARP goldens move with Windows updates.** Handled by the stale-not-failed rule above, not by loosening the compare.
+- **Size.** Roughly 8-12k lines of new C++ is the honest order of magnitude for a text-, accessibility- and IME-capable core.
+  Each slice is sized to be reviewable alone.
+
+**Open question for N2b** (DECIDED 2026-09-30 by the author at the user's request: the measured subset, 27.7.2): whether layouts reproduce Qt's rules exactly, including `QSizePolicy`'s eight
+policies, or only the subset the census uses. Recommended: only the subset the ~130 layout uses need, measured when N2b starts.
+
+#### 27.7.1 N2a result: the render core -- BUILT AND PASSING on Windows (2026-09-30)
+
+**Code (no Qt; `tcad_ui_render`, outside the legacy block):**
+- `desktop/src/ui/render/render_device.{hpp,cpp}`:
+  - the process's D3D12 device, DIRECT queue and fence;
+  - `ID3D11On12Device`, `ID2D1Device2`;
+  - the DXGI/D2D/DirectWrite/WIC factories;
+  - WARP or hardware adapter (high-performance first, WARP fallback reported by `isSoftware()`);
+  - `recover()`, `waitIdle()`, the `simulateLoss()` test hook (`ID3D12Device5::RemoveDevice`).
+- `window_surface.{hpp,cpp}`:
+  - flip-discard swap chain with 2 BGRA8 buffers, frame-latency waitable, `DXGI_MWA_NO_ALT_ENTER`;
+  - the back buffers wrapped for D3D11On12 with D2D bitmap targets;
+  - a frame is acquire → D2D in DIPs (`SetDpi` = the surface's scale; grayscale text AA) → release → flush → Present;
+  - optional CPU capture before Present;
+  - resize (0 = minimised: frames skipped);
+  - `render()` with device-loss recovery.
+- `image.{hpp,cpp}`: BGRA images, compare, WIC PNG save/load.
+
+**Gate:**
+- **`tcad_ui_render_tests`**, 9 tests, in `tests/ui/`, with the 320x200-DIP sample scene `render_scene.cpp`.
+- **`tcad_ui_demo`**: a visible window; F5 simulates a device loss.
+- **`gui/tests/test_desktop_ui_render.py`**: runs the gate and pins the facts below.
+
+**Results (observed; whole binary 3 of 3 runs, 3 s each):**
+- WARP adapter "Microsoft Basic Render Driver". A clear to 0x3366CC reads back exactly, on every pixel.
+- **Goldens `n2a_scene@100/150/200.png`: 0 differing pixels** on each of 5 fresh processes and 3 full runs. They were looked at:
+  every primitive is present, the text including µ ∇ · × renders, and the 150% hairline is snapped.
+  - Environment pinned in `goldens/manifest.json`: WARP/D2D/DirectWrite 10.0.26100.9549, Segoe UI 5.72.
+    Elsewhere the goldens report STALE with the re-capture command.
+- Same scene at 200% vs 100%: 3.86x the covered pixels. Two renders are byte-identical.
+- Resize to 123x77, 640x400, 1x1 and 333x222, then 0x0 (Skipped, no error), then back: sizes and pixels correct.
+- **Device loss:** `RemoveDevice`, then the next `render()` recovers (generation+1), rebuilds, and repaints a frame
+  **byte-identical** to the one before the loss. A loss during a resize is recovered on the next frame.
+- **1000 resize+DPI frames** (100-200%, varying sizes): 0 failures, private bytes +1.2 to +1.8 MB, handles 259 → 259,
+  GDI 0 → 0.
+- **Debug layer**, in a child process, because the layer must be on before the first device:
+  - D3D12 info queue: 0 errors before the loss, 0 after recovery;
+  - DXGI info queue: no unexpected errors;
+  - `ReportLiveObjects` after the scope: 0 live objects. The positive case was observed: 131 lines while a device was
+    still alive, so the zero is not a silent channel.
+- **GPU smoke on the RTX 5060 Ti at 150%:** the same 27,472 covered pixels as WARP; 145 pixels differ, by at most 2 per
+  channel (antialiasing). Not a pixel compare, per decision 3.
+- The demo's screenshot on the GPU was looked at.
+- Regression: `verify_native_n1.ps1 -SkipBuild` still passes every step, including the N0 spike gate. Static tests: 42
+  passed.
+
+**Two facts the first Windows run taught (both were real defects, both now pinned by tests):**
+1. **D3D12 has one device per adapter per process.** `D3D12CreateDevice` returns the existing object while anything
+   references it, even a removed one. So recovery first failed with `0x887A0005`. Worse, the "separate" test device was
+   the shared WARP device, and removing it broke every later test.
+   - Now `RenderDevice::create` returns the live instance per adapter kind.
+   - Surfaces register as `DeviceClient`s, and `recover()` makes them release everything before the device is rebuilt.
+   - The debug-layer choice is fixed by the process's first device, because enabling it later removes existing devices;
+     a conflicting request is an error.
+2. **Wrapped back buffers must be declared PRESENT in and PRESENT out.** Microsoft's 11on12 sample declares
+   RENDER_TARGET in, because it draws with D3D12 first. Here D2D is the only writer, so every D2D clear ran on a
+   resource in the wrong state.
+   - The debug layer reported it at once.
+   - It is the most likely cause of the one flaky pixel (delta 9) in the first 150% capture; since the fix, 0 pixels
+     differ in every run.
+
+**Not covered by N2a (by design):**
+- occlusion/minimise interaction with a *visible* window beyond size 0;
+- multiple windows on one device (N2g gallery, N4);
+- `Present1` dirty rectangles;
+- anything above the render core (N2b onward).
+
+#### 27.7.2 N2b result: widget tree, painter, layouts -- BUILT AND PASSING on Windows (2026-09-30)
+
+**The Qt sizing rules: decided.** The user left it to the author, and the chosen answer is **the measured subset, not all of Qt**. It was
+counted in `desktop/src` before any code:
+
+| used | occurrences |
+|---|---|
+| layouts | QFormLayout 55, QVBoxLayout 39, QHBoxLayout 21, QStackedWidget 13, QGridLayout 6 |
+| `addRow` | 87, all with a widget field; 1 `insertRow` |
+| `addLayout` | 16 |
+| `addStretch` | 7 |
+| `addWidget(w, stretch)` | 6 |
+| `setContentsMargins` | 6 |
+| explicit minimum sizes | 7 |
+| grid spans | one 1x3 |
+
+**Zero** uses of: `setSizePolicy`, `setAlignment`, row/column stretch, `QSpacerItem`, maximum-size setters, form growth
+or wrap policies.
+
+Built:
+- Box, Form, Grid (with spans) and Stack;
+- stretch factors and stretch spacers, margins and spacing;
+- explicit minimum/maximum sizes, and hidden widgets taking no space;
+- per-axis policies limited to Fixed / Minimum / Preferred / Expanding, the defaults of the Qt widgets in use.
+
+The distribution rule is written in `layout.hpp` and pinned by tests. Anything else is added only with a port that
+needs it; a static test keeps alignment, row/column stretch, height-for-width and the extra policies out.
+
+**Code:**
+- `desktop/src/ui/core/` is portable: no Win32, and it also builds with g++ `-Wall -Wextra` with 0 warnings.
+  - `geometry.hpp`: device pixels vs DIPs, kept apart.
+  - `painter.hpp`: the Painter interface plus the TextEngine interface.
+  - `recording_painter.*`: display lists.
+  - `style.hpp`: theme tokens plus the Fusion metrics (margin 9, spacing 6, font 12).
+  - `widget.*`: ownership, geometry in pixels, hints in DIPs, effective visibility/enabled, `update()`/`updateGeometry()`.
+  - `layout.*`: all integer-pixel arithmetic, so edges land on pixels.
+- `desktop/src/ui/win32/`:
+  - `dwrite_text.*`: Segoe UI, one-line measurement, a format cache;
+  - `d2d_painter.*`: the Painter on D2D; aliased clips, because widget rectangles are whole pixels;
+  - `ui_window.*`:
+    - a platform window, its surface and a widget tree;
+    - invalidations coalesce into one `InvalidateRect`, and layout requests into one pass before the frame;
+    - full-frame repaint;
+    - a scale override for tests.
+
+**Gates:**
+- **`tcad_ui_core_tests`: 27 tests.** The expected numbers were worked out by hand from the rule.
+  - They cover every distribution case, the Box, Form, Grid and Stack cases, the tree, invalidation, painting with
+    translation and clip, and crisp strokes.
+  - Mutation-checked: 13 mutations of the rules, each caught.
+  - The first pass missed 3:
+    - two were real test gaps (a rounding case with more than one leftover pixel; a Fixed item squeezed below its hint),
+      now tested;
+    - one was an *equivalent* mutation, because a Fixed field's maximum is its hint. The redundant branch it exposed was
+      removed rather than tested.
+- **`tcad_ui_render_tests`: now 14 tests**, adding 5 N2b tests (`test_ui_panel.cpp`).
+  - A sample panel uses every feature of the subset: a form with labels, a Fixed field and a µ/∇ spanning row; a box row
+    with a stretch; view3d_panel's crop grid with its 1x3 span; a stack on its second page.
+  - **Goldens `n2b_panel@100/150/200.png`: 0 differing pixels**, over 4 full runs. They were looked at.
+  - **The Direct2D pixels agree with the RecordingPainter's display list:** all 14 uncovered swatch fills were compared
+    at their centres, 0 wrong. 8 text ops, and the hidden stack page was not drawn.
+  - Three geometry changes in a row gave 1 layout pass and 1 frame.
+  - A DPI change re-lays out in pixels: a Fixed 64x24-DIP button is 80x30, 96x36 and 128x48 px at 125/150/200%, with
+    the margin rounded to nearest.
+  - `update()` gives exactly one coalesced paint request. `WM_PAINT` through the window procedure draws one frame.
+    Windows keeps no update region for a hidden window, so the OS update-region path of a *visible* window is left to
+    `tcad_ui_demo`; it is not automated.
+- `gui/tests/test_desktop_ui_render.py`:
+  - it runs both binaries;
+  - it pins the manifest, which now has 6 goldens across 2 canvases;
+  - it checks that the portable core is free of Win32, and that the layouts stay at the measured subset.
+- The legacy Qt build and the no-Qt build both build clean.
+
+**Two pre-existing defects found by re-running the N1 gate, and fixed:**
+1. **`verify_native_n1.ps1` destroyed the second result file on every run.**
+   - It started the spike gate as `powershell -File verify_native_spike.ps1 -Result $Result`. `-File` cannot pass an
+     array, so `-Result` got only the first file and the second bound positionally to the spike script's `-Out`.
+   - The spike script deletes `-Out` (`Remove-Item -Recurse -Force`) and stages DLLs into it. Here it turned
+     `resistor_3d.npz` into a directory of DLLs. It very likely also explains the scratch data that "had been deleted"
+     in the previous N1 session.
+   - The spike gate had therefore only ever checked the first result.
+   - Now the call goes through `-Command`, with each path quoted and `-Out` named. The spike gate now runs both results
+     (`run:resistor_3d` appears for the first time), and the file survives.
+   - Pinned by `test_gate_script_passes_the_result_array_to_the_spike_gate_intact`.
+2. **The N1 self-test's F12 shortcut check was flaky:** it failed once in 4 runs.
+   - `Window::currentMods()` reads the *real* keyboard with `GetKeyState`, so a modifier the user was holding made the
+     synthetic F12 arrive as Ctrl+F12 or similar.
+   - The self-test now pins this thread's keyboard state to "no modifier" (`SetKeyboardState`) for its synthetic keys
+     and restores it afterwards. The window's behaviour for real input is unchanged.
+   - After the fix, the N1 gate ran twice in a row: ALL STEPS PASSED, both results.
+   - Pinned by `test_selftest_pins_the_modifier_state_for_its_synthetic_keys`.
+
+**Not in N2b (by the plan):**
+- input and focus (N2c): widgets receive no events yet;
+- text wrapping, eliding and hit-testing (N2d);
+- the `addRow(QString, ...)` convenience, which needs N3's Label;
+- vertical growth of form fields: rows are packed at the top, and no census use needs more.
+
+#### 27.7.3 N2c result: input, focus, shortcuts, timers -- BUILT AND PASSING on Windows (2026-09-30)
+
+**Scope, measured first** (`desktop/src`, 2026-09-30):
+
+| Qt feature | uses | built |
+|---|---|---|
+| mouse press/move/release/double-click/wheel/leave overrides in the custom views | 4 / 7 / 4 / 2 / 2 / 8 | yes |
+| `setMouseTracking` | 3 | yes: moves are always delivered |
+| `setToolTip` | 28 | yes: tooltip timing; the popup is N3's |
+| `QTimer` | 24 | yes: widget timers |
+| `setShortcut` | 8, plus 6 standard key sequences | yes: window shortcuts |
+| `&` mnemonics | ~15 | yes: Alt mnemonics |
+| `QDrag` | 3 | **no:** left to a later slice |
+| `setTabOrder`, `setFocusPolicy` overrides, `setCursor`, `keyPressEvent` overrides, event filters | 0 | **no:** tree-order Tab only; cursors are a small fixed set for N3's widgets |
+
+**Code:**
+- **`desktop/src/ui/core/input_router.{hpp,cpp}`**, portable. The rules are written at the top of the header:
+  - **Mouse:** the deepest visible widget gets the event; unaccepted events bubble up; a disabled widget swallows.
+  - **Grab:** a press grabs the mouse until every button is up. Hover is frozen during the grab and re-evaluated after it.
+  - **Drag:** the drag flag is set past the system threshold.
+  - **Focus:** a left/right press gives Click focus; Tab and Shift+Tab move through Tab-focusable widgets in tree order.
+  - **Key order:**
+    1. a widget's shortcut override;
+    2. the window's shortcuts;
+    3. Tab;
+    4. Alt mnemonics (cycling);
+    5. the focus widget, bubbling up.
+  - **Characters** go to the focus widget of an active window only.
+  - **Window activation** hides and restores focus.
+  - **Tooltips** appear after 700 ms; any press, key or hover change hides them.
+  - **Cursors:** the nearest one set; the grabber's cursor wins during a grab.
+- **Safety.** A widget that dies or leaves the tree is reported *before* its subtree is torn down. The router forgets it at
+  once: focus, hover, grab, tooltip, and an "alive in this event" list. Liveness is never tested by walking a possibly
+  freed parent chain.
+- **Timers:**
+  - they belong to the tree's timer service (N1's Application in a window, a fake clock in tests);
+  - a widget's timers stop when it dies or leaves the tree;
+  - `UiWindow` destroys its tree while still attached, so no timer can call a dead widget.
+- **`Widget`** gains focus policy/reason/state, hover, cursor, mnemonic, `toolTip`, `mapFromWindow`, the event handlers
+  (Qt's accept/ignore as a bool), and `startTimer`/`stopTimer`.
+- **N1 additions (`platform/window.*`, additive):**
+  - `WM_SETCURSOR`, as `on_set_cursor`;
+  - `WM_CAPTURECHANGED`, which resets the held buttons and calls `on_capture_lost`, so a capture taken away mid-drag
+    ends the grab.
+- **`UiWindow`** forwards mouse, key, char, focus, capture and cursor. Coordinates go from logical px to device px
+  (× the window's DPI) to the tree's DIPs (÷ the UI scale).
+- **`tests/ui/ui_driver.hpp`**, the start of N2g's driver:
+  - real `WM_*` messages through the window procedure;
+  - never `SendInput`, `SetCursorPos` or `keybd_event`: a static test pins that;
+  - every synthetic key sets this thread's modifier state exactly and restores it.
+
+**Gates:**
+- **`tcad_ui_core_tests`: 45 tests**, 27 of them N2b's. Also built with g++ `-Wall -Wextra`: 0 warnings.
+- **Mutation-checked:** 17 of 17 real mutations of the routing rules caught.
+  - The first pass missed 4. Two were real gaps, now tested: a left click on a Tab-only widget; a grab by an *ancestor*
+    of the hovered widget, which decides the cursor.
+  - One mutation was mine and wrong (it left the distance test in place); it was fixed.
+  - One was equivalent: the Tab walk's hidden-subtree prune, since `acceptsFocus` already requires visibility.
+- **`tcad_ui_render_tests`: 22 tests**, adding 8 on real windows through the driver:
+  - **mouse at 150%:** exact DIP conversion, including the 9-DIP margin rounded to 14 px = 9.33 DIPs;
+  - **capture:** `GetCapture()` is the window while pressed and released after;
+  - wheel in *screen* coordinates, and the leave message;
+  - Tab and Shift+Tab, Ctrl+S reported as handled, Alt+C arriving as `WM_SYSKEYDOWN`;
+  - characters including a surrogate pair, via `WM_CHAR`;
+  - `WM_SETCURSOR` giving the I-beam, then the arrow;
+  - **focus leaving for a native child window** (the VTK view's stand-in) **and coming back**, via real `SetFocus`
+    on a window shown off-screen without activation;
+  - **a tooltip on N1's real Application timer after 703-719 ms** (delay 700), over 3 runs;
+  - **destroying the window stops widget timers:** none fired after the window died.
+- 3 of 3 full runs pass.
+- `gui/tests/test_desktop_ui_render.py`, 49 wrapper and static tests in total, plus:
+  - the driver never touches the real input devices;
+  - routing is free of Win32;
+  - the window forwards every input message.
+- **Regression:**
+  - `tcad_platform_core_tests` 30 of 30;
+  - both builds clean with 0 warnings;
+  - **`verify_native_n1.ps1`: ALL STEPS PASSED** with both results, including the spike gate.
+
+**A fact the Windows run taught (test harness, not a product defect).** N1's window calls `TrackMouseEvent` on the first
+move. That call looks at the *real* cursor, which is not over a hidden test window, so Windows posts `WM_MOUSELEAVE`
+immediately after any synthetic move, and pumping every message cleared the hover that the tooltip test depended on.
+The timer tests now pump only the Application's dispatcher window, i.e. its timers and posted calls. Real input is
+unaffected: there the cursor *is* over the window.
+
+**Not in N2c:**
+- drag and drop (`QDrag`, 3 uses);
+- the tooltip popup, a top-level popup window (N3);
+- Tab order overrides (none used);
+- IME/TSF (N2e);
+- the OS update-region repaint of a *visible* window (still `tcad_ui_demo`'s job, as in N2b).
+
+#### 27.7.4 N2d result: text rendering -- BUILT AND PASSING on Windows (2026-09-30)
+
+**Scope, measured first** (`desktop/src`):
+
+| used | occurrences |
+|---|---|
+| word-wrapped labels (`setWordWrap`) | 8 |
+| advance measurement for the plot axes | `horizontalAdvance` 10, `QFontMetricsF` 5 |
+| aligned `drawText` | 17 |
+| fonts and sizes | `setFont` 11, `setPointSize` 2 |
+| monospace console (`QFontDatabase::FixedFont`) | 1 |
+| selectable label | 1 |
+
+**Not used, so not built:** eliding (0), rich text (0), `QTextLayout`/`QTextDocument` (0).
+
+Built:
+- `TextStyle` gains `family` (Ui = Segoe UI, Monospace = Consolas) and `wrap`.
+- `TextEngine` gains `measureWrapped`, `lineCount`, `hitTest`, `caretRect` and `caretStops`. Positions are UTF-8 byte
+  offsets on cluster boundaries. The fakes keep single-line defaults.
+- `DWriteTextEngine` keeps **one LRU cache of `IDWriteTextLayout`s** (256) per (text, style, box), shared by measuring,
+  drawing and hit-testing, so they agree by construction.
+  - Colour and vertical alignment do not split the cache where they cannot matter.
+  - UTF-8 <-> UTF-16 offsets are mapped both ways per layout; an invalid byte becomes U+FFFD and keeps the mapping.
+- `D2DPainter::drawText` draws that cached layout with `DrawTextLayout`, with **colour fonts enabled** (emoji).
+- Complex scripts come from DirectWrite's shaping, bidi and system font fallback: Nirmala UI, Microsoft YaHei,
+  Yu Gothic UI and Segoe UI Emoji.
+
+**Tests:**
+- **`tcad_ui_render_tests`: now 30 tests**, adding 8 in `test_ui_text.cpp`:
+  - **Measurement:** line height 15.96 DIPs at 12 DIPs; linear in the size; bold wider; trailing spaces kept on one line.
+  - **Monospace:** equal advances ("iiii" = "WWWW"); the UI font is proportional.
+  - **Wrapping:** at whole words; never wider than the box; height = lines x line height; a too-long word overflows.
+  - **Caret stops by cluster:**
+    - "e"+U+0301 is one stop;
+    - 😀 is one;
+    - the 👨‍👩‍👧 ZWJ family (18 bytes) is one;
+    - the Devanagari conjunct क्षि (4 code points) is **one**;
+    - Arabic سلام is 4.
+  - **Hit-test round trips** over every caret stop of Latin, combining, surrogate, conjunct, Arabic and mixed-direction
+    text.
+  - **Right-to-left verified:** an Arabic run's logical start is at its visual right.
+    - At a direction boundary one visual caret position is two logical offsets. In the mixed string, offsets 3 and 11
+      coincide; the round trip there is checked in visual space.
+  - Hits beyond either end give the end offsets, with `inside` false; centring moves the caret.
+  - A wrapped second line hit-tests to its first character.
+  - **The cache:** the same object for the same box, colour ignored, eviction at 256.
+- **Goldens `n2d_text@100/150/200.png`:**
+  - **Content:** a wrapped paragraph, centred and right-aligned boxes, Arabic, mixed bidi, Devanagari with a conjunct,
+    Chinese and Japanese, colour emoji including the ZWJ family, monospace, semibold.
+  - **They were looked at.**
+  - The mixed line "Voltage الجهد = 5 V" displays as "Voltage 5 = الجهد V". That is the Unicode bidi algorithm's
+    correct result (rule W2: digits after RTL text join the RTL run), and Qt produces the same.
+- **The painter's switch from `DrawText` to cached `DrawTextLayout` is pixel-identical:** every N2a/N2b golden matched
+  with 0 differing pixels before re-capture.
+- **Golden environment extended.** It now records:
+  - the monospace font;
+  - the five fallback fonts' versions;
+  - the **user's ClearType Tuner values** that Direct2D's default text rendering parameters come from (gamma, contrast,
+    ClearType level, mode). Golden pixels depend on them, and they are per user.
+
+  Every golden was re-captured twice, once per environment change. **All 9 came back byte-identical each time**
+  (sha256 checked), so only the manifest changed.
+- **Mutation-checked:** 7 of 7 caught, each by its intended test:
+  - WRAP instead of WHOLE_WORD;
+  - vertical alignment in hit-testing;
+  - a cache key without the width;
+  - caret stops per UTF-16 unit;
+  - no monospace family;
+  - emoji without colour;
+  - a wrong wrapped width.
+- 3 of 3 full runs pass 30 of 30.
+- `gui/tests/test_desktop_ui_render.py`: 51 passed across the native suites, pinning the manifest keys, WHOLE_WORD,
+  top-line hit-testing, `DrawTextLayout` with colour fonts, and the measured text scope.
+- The legacy and no-Qt builds are clean; g++ builds the portable core with `-Wall -Wextra`, 0 warnings, 45 of 45.
+
+**Found on Windows and fixed (real defects, each pinned):**
+1. DirectWrite's `WRAP` splits a word too long for the box mid-word. Qt's `WordWrap` lets it overflow, so the engine
+   uses `WHOLE_WORD`.
+2. Hit-testing and caret rectangles applied the style's vertical centring inside an *unbounded* box height, which put
+   the text about 500,000 DIPs down. They now always measure from the top line; the vertical offset is the caller's.
+3. `near` is a macro in the Windows headers (16-bit era): a test helper had to be renamed.
+
+**Open, and stated plainly:**
+1. **An intermittent crash in the debug-layer child process.**
+   - What happened: an access violation (0xC0000005), in 9 of 20 and then 2 of 12 runs of one binary. It was between
+     `simulateLoss()` and the first frame after recovery, i.e. inside device-loss recovery with the D3D12/D3D11
+     debug layers on.
+   - It never happened with the debug layer off: that loss test has passed every run since N2a.
+   - After an unhandled-exception reporter was linked in (module+offset stack walk, for a machine with no debugger),
+     it has not recurred: **0 of about 305 runs**, including 40 under parallel CPU load and a 200-run soak.
+   - Adding the reporter changed the binary's layout and timing. The cause is therefore **not known**: a race in the
+     debug layer's teardown of a removed D3D11On12/D3D12 device, or layout-sensitive undefined behaviour in the
+     recovery path, are both possible.
+   - It is **not claimed fixed.** The reporter and step markers stay in `tcad_ui_render_tests`, so the next occurrence
+     prints where it happened. N2g's gate should soak this test.
+2. **One golden flake while capturing.** The first capture of `n2d_text@100` differed from every later run by a single
+   antialiasing pixel (delta 34) in the monospace line. It was re-captured, then matched in 3 lone runs and 9 full runs.
+   Not explained; a cold DirectWrite font cache for Consolas on first use is a guess, not a finding.
+3. **Wrapped labels need height-for-width in layouts.** N2b built the measured subset without it, and N3's wrapping
+   Label is the first place that needs it.
+
+**Not in N2d (by the plan):**
+- the edit model and text input with TSF (N2e);
+- selection painting (N3's edits and selectable labels);
+- eliding (not used).
+
+#### 27.7.5 N2e result: text input -- BUILT AND PASSING on Windows; the manual IME checklist is NOT yet run (2026-09-30)
+
+**Scope, measured first** (`desktop/src`):
+
+| used | occurrences |
+|---|---|
+| `QLineEdit` | 39: `editingFinished` 21, validators 5, `setReadOnly` 3, `setSelection` 2 |
+| `QPlainTextEdit` | 14: `setPlainText` 2, `setMaximumBlockCount` 2 (the consoles) |
+
+- **Not used:** echo modes, input masks, completers, maximum length.
+- The 9 `undo(` / 7 `redo(` calls in the code are the document UndoStack, not text edits.
+
+**Code:**
+- **`src/ui/core/edit_model.{hpp,cpp}`**, portable:
+  - UTF-8 text; caret and anchor on **caret stops**, the text engine's clusters, so a caret never splits a combining
+    sequence, a conjunct, a surrogate pair or a ZWJ emoji;
+  - moves by cluster and word, the way Windows edit controls do (non-ASCII letters and '_' count as word characters),
+    plus Home/End;
+  - insert, Backspace and Delete, by cluster or by word;
+  - undo/redo that restores the caret, **typing coalesced into one step** until any move or other edit;
+  - a new edit drops the redo history;
+  - read-only; single-line flattening of line breaks; per-line Home/End for multi-line;
+  - the IME composition range; `replaceRange` is the one primitive.
+- **`src/ui/win32/clipboard.*`:** CF_UNICODETEXT in UTF-8, retrying while another process holds the clipboard.
+- **`src/ui/win32/tsf_text_store.*` (decision 27.7-2: full TSF):** an `ITextStoreACP2` plus
+  `ITfContextOwnerCompositionSink` over the model:
+  - the lock protocol: synchronous grants; `TS_E_SYNCHRONOUS` when a sync lock is refused; one queued asynchronous
+    request, granted when the current lock ends; `TS_E_NOLOCK` outside a lock;
+  - selection get/set, `GetText`, `SetText`, `InsertTextAtSelection` (QUERYONLY/NOQUERY), `QueryInsert`,
+    `GetEndACP`, `GetTextExt`/`GetScreenExt`/`GetACPFromPoint` from the widget's geometry;
+  - read-only (`TS_SD_READONLY`, `TS_E_READONLY`);
+  - app-side change notifications;
+  - composition tracking;
+  - UTF-16 ACP <-> UTF-8 offsets mapped on every call;
+  - not implemented, since this app has no embedded objects or text attributes: the embedded-object and attribute
+    calls, which report none.
+- **`src/ui/win32/line_edit.*`**, the bare edit:
+  - keys, the mouse (a press places the caret, Shift extends, a drag selects), the clipboard (Ctrl+A/C/X/V/Z/Y and
+    Ctrl+Shift+Z, which claim the key ahead of window shortcuts);
+  - `on_editing_finished` on Enter and on focus loss;
+  - horizontal scrolling that keeps the caret visible; a caret blinking at the system rate;
+  - a selection highlight, and a composition underline;
+  - **a TSF document per edit that holds the TSF focus only while the edit has the focus**; otherwise an empty
+    document has it.
+
+**Gates:**
+- **`tcad_ui_core_tests`: 54 tests** (+9, in `test_ui_edit.cpp`). Built with g++ `-Wall -Wextra`: 0 warnings.
+- **Mutation-checked: 9 of 9.** The first pass missed Left not collapsing a selection; that test was added.
+- **`tcad_ui_render_tests`: 36 tests** (+6, in `test_ui_edit_win32.cpp`), 3 of 3 full runs:
+  - **The text store driven as TSF drives it** (a fake sink grants the locks):
+    - 日本語 through `InsertTextAtSelection`;
+    - ACP <-> byte selection mapping;
+    - `SetText`, `GetEndACP`, QUERYONLY;
+    - **a nested sync lock refused and an async lock queued and granted after the first**;
+    - a surrogate pair;
+    - app-change notifications, and read-only refusal;
+    - a second sink refused (`CONNECT_E_ADVISELIMIT`).
+  - **Real TSF:**
+    - the thread manager activates;
+    - **TSF advises its sink on our store** when the context is created;
+    - the TSF focus follows the edit, and moves to the other edit, never staying on the unfocused one.
+  - **Typing through real messages:**
+    - "héllo 😀"; Backspace removes the whole emoji; Ctrl+Backspace removes the word;
+    - Ctrl+Left, Shift+End, Ctrl+A winning over a window Ctrl+A shortcut, Delete, Ctrl+Z;
+    - Enter and Tab report editing finished.
+  - **The real Windows clipboard:**
+    - Ctrl+C, Ctrl+V and Ctrl+X round-trip "copy µm";
+    - the test runs only when the clipboard holds plain text (OLE's bookkeeping formats allowed) and **restores that
+      text**, so it never destroys other data. Verified on this machine: the length before and after was 45.
+  - **The mouse:** a press at the x of caret stop 3 gives caret 3; a drag past the end selects 3..8; Shift+click
+    extends.
+  - **Goldens `n2e_edit@100/150/200`:** a focused edit with a selection and a visible caret, and an unfocused one with
+    the IME composition underline under 日本. **They were looked at.**
+- **Existing goldens unchanged:** the 9 earlier images are byte-identical (sha256).
+- `gui/tests/test_desktop_ui_render.py`: 52 passed across the native suites, pinning:
+  - the edit scope;
+  - the full `ITextStoreACP2` and composition sink, with the lock-protocol codes;
+  - the blank TSF document;
+  - the driver pinning modifiers for mouse messages as well as keys.
+- The legacy and no-Qt builds are clean.
+
+**Found on Windows and fixed:**
+1. **A held Shift turned the test driver's synthetic click into a Shift+click.**
+   - The drag test failed in 12 of 30 runs; the anchor was left where `setText` had put it.
+   - The platform window reads modifiers from the real keyboard (`GetKeyState`). The N1 fix had pinned them for
+     synthetic *keys* only; now every driver mouse message pins them too.
+   - **Proven, not inferred:** the test now simulates a held Shift in the thread's keyboard state. With the pinning it
+     passed 10 of 10; with the press left unpinned it failed 5 of 5.
+   - A first hypothesis, that TSF's COM calls dispatched real posted mouse messages, was **tested and wrong**: a
+     message hook saw none.
+2. The clipboard test's first "not only text" check also refused OLE's bookkeeping formats ("DataObject", "Ole Private
+   Data"), so it skipped instead of running. Those formats are now allowed.
+
+**The manual checklist (decision 27.7-2: a real IME cannot be driven headlessly).** Run `tcad_ui_demo --edits`, which
+shows two edits in a real window. Record the result of each here. **NONE RUN YET:**
+1. **Japanese IME** (Microsoft IME, hiragana): type "nihongo" and convert with Space.
+   - The composition is underlined while composing; the candidate window appears at the caret, not at the screen corner.
+   - Enter commits 日本語; Esc cancels.
+2. **Chinese Pinyin** (Microsoft Pinyin): type "zhongwen" and pick a candidate with a digit.
+3. **The emoji panel:** Win+. inserts an emoji at the caret. Backspace removes it whole.
+4. **Dictation:** Win+H, speak a sentence. The text arrives at the caret.
+5. **The touch keyboard:** the text arrives, and the keyboard's suggestions follow the caret.
+6. **Reconversion:** select committed Japanese text and press the Convert key; candidates are offered for it.
+7. **Focus:** with an IME composing in the first edit, press Tab. The composition is committed or cancelled, never
+   carried into the second edit.
+
+**Not in N2e (by the plan):**
+- the real LineEdit, PlainTextEdit, SpinBox and validators, context menus, and double-click word selection (N3);
+- multi-line layout and navigation in the widget: the model supports lines; the view is N3's PlainTextEdit;
+- selection painting for bidi text across direction boundaries: one rectangle between the two caret positions.
+
+#### 27.7.6 N2f result: accessibility (UI Automation) and high contrast -- BUILT AND PASSING on Windows (2026-09-30)
+
+**Code:**
+- **Portable accessibility on `Widget`:**
+  - `Role` (23 roles);
+  - `accessibleName` for the UIA Name, with `name` as the AutomationId;
+  - value get/set and read-only; Invoke; toggle state (-1 means no Toggle pattern).
+  - The router's `on_focus_changed` feeds UIA focus events.
+- **`src/ui/win32/uia_provider.*`:** one element per widget over the live tree.
+  - **Interfaces:** `IRawElementProviderSimple`, `Fragment` and `FragmentRoot`, with `Navigate` over **visible** widgets.
+    The root is hosted by the HWND (`UiaHostProviderFromHwnd`).
+  - **Properties:** control type, Name, AutomationId, HelpText (from the tooltip), ClassName, FrameworkId "TCAD",
+    enabled, focusable, focused, offscreen, and screen bounds.
+  - **Runtime ids** are `UiaAppendRuntimeId` + a per-widget id.
+  - **Point hit test and focus** come from the router.
+  - **Patterns:** Invoke (Button, MenuItem), Toggle, Value, and **Text for the LineEdit**:
+    - document and selection ranges, and a range from a point;
+    - Character/Word/Line-to-Document units: Move, MoveEndpointByUnit/ByRange, ExpandToEnclosingUnit;
+    - Compare/CompareEndpoints, FindText (optionally ignoring case), GetText, Select, bounding rectangles;
+    - no text attributes, reported as "not supported".
+  - **Events:** focus changed, Value property changed and text changed (for edits), and Invoked. They are raised only
+    when `UiaClientsAreListening()`.
+  - **A widget that dies or leaves the tree is disconnected** (`UiaDisconnectProvider`). A client still holding it
+    gets `UIA_E_ELEMENTNOTAVAILABLE`.
+  - `UiWindow`:
+    - answers `WM_GETOBJECT`, through a new N1 window hook;
+    - calls `UiaReturnRawElementProvider(hwnd, 0, 0, nullptr)` at teardown, as the documentation requires.
+- **High contrast:** `style.hpp`'s `token()` maps every chrome token to the system's high-contrast colours when that
+  mode is on. The data colours keep theirs. `UiWindow::applySystemHighContrast()` reads `SPI_GETHIGHCONTRAST` and
+  `GetSysColor`.
+  - **Not yet done:** following a live theme switch (`WM_SETTINGCHANGE`); it is read when a window is created.
+
+**Gates (through the REAL UIA client API, in process: `test_ui_a11y.cpp`, +5 tests, 41 in total):**
+- **The window's UIA children are exactly the visible widgets**, `run_button log_scale voltage`; the hidden button is
+  not among them.
+  - Windows' own title bar is also a child. It comes from Windows' non-client provider, not from us, and is identified
+    and excluded by FrameworkId.
+- Properties: control type, Name, HelpText, FrameworkId, enabled, focusable. **Bounding rectangles** equal the
+  widgets' screen rectangles.
+- **Patterns:**
+  - Invoke clicks the button; Toggle flips the check box; the check box has no Invoke;
+  - Value reads "alpha beta", and SetValue writes "gamma delta" into the edit;
+  - **Text:** the document range; the selection range reads "alpha"; collapse, Move by Word and Expand give "beta";
+    Select selects it in the model; a Character unit gives "b"; FindText "PHA", ignoring case, finds "pha".
+- **Focus through UIA:** `SetFocus` focuses the widget, the focus event is raised, and HasKeyboardFocus is true.
+- **A removed widget's element answers `UIA_E_ELEMENTNOTAVAILABLE`** (0x80040201).
+- **High-contrast goldens `n2f_high_contrast@100/150/200`**, with a fixed "Night sky"-like palette so they do not
+  depend on this machine's theme. **They were looked at.**
+- **Mutation-checked: 6 of 6 caught:**
+  - hidden widgets in the tree;
+  - a removed element staying connected;
+  - Invoke claimed by every element;
+  - the Word unit treated as the document;
+  - no Name;
+  - focus/accent not mapped in high contrast.
+
+**Found by the goldens and fixed:**
+1. **A LineEdit bug from N2e.** `setText` before the first layout scrolled against a zero width, and the edit then
+   showed only the last character, permanently. The edit now re-checks the scroll on every resize (`resized()`).
+   N2e's goldens had missed it, because there the text was set after layout.
+2. The first high-contrast capture was in normal colours: `UiWindow::create` reads the system's high-contrast state,
+   which overwrote the test palette set before it. The test now sets the palette after creating the window.
+
+**Also noted for N3:** an *unfocused* edit's selection is invisible in high contrast, because the inactive selection
+maps to the window colour. Windows edits show it; N3's LineEdit must too.
+
+**The manual checklist, NOT YET RUN.** Run `tcad_ui_demo --gallery` and record the result of each:
+1. **Narrator** (Ctrl+Win+Enter):
+   - Tab through the gallery; each control is announced with its name and type ("Gate voltage [V], edit, 1.5";
+     "Run, button"; "Log scale, check box, not checked");
+   - typing in an edit is echoed;
+   - Caps+arrows read the text by character and by word.
+2. **Accessibility Insights for Windows**, FastPass on the gallery window: zero failures. Record any warnings.
+3. **A real high-contrast theme** (Settings > Accessibility > Contrast themes > Night sky; open the gallery after
+   switching): chrome in the theme's colours, text readable, focus visible.
+4. **Inspect.exe** (Windows SDK): the tree matches the gallery, and properties and patterns are present.
+
+#### 27.7.7 N2g result: the gallery and the N2 gate -- N2 COMPLETE on Windows (2026-09-30)
+
+- **The gallery**, `tcad_ui_demo --gallery [--warp] [--screenshot <png>]` (`tests/ui/ui_gallery.*`), shows every N2
+  capability in one window:
+  - a form with line edits (TSF), and a grid of edits;
+  - Run/Stop buttons with hover, pressed and focus visuals, Space/Enter and **Alt+R/Alt+S mnemonics**
+    (underlined), tooltips and UIA Invoke;
+  - a Log-scale toggle (UIA Toggle), and a stack switched by the buttons;
+  - text in several scripts: wrapped Latin, Arabic, Devanagari, CJK, symbols, emoji, monospace;
+  - a status line that reports clicks, toggles, finished edits and tooltips.
+
+  **Its screenshot was looked at.**
+- **`desktop/tools/verify_native_n2.ps1`**, the consolidated gate. It writes `dist\native-n2-report.json`:
+  1. build (`-SkipBuild` skips it);
+  2. `tcad_ui_core_tests`;
+  3. `tcad_ui_render_tests`, where goldens compare exactly and **STALE** (another rendering setup) is reported with
+     the re-capture command, not failed;
+  4. **a soak of the debug-layer device-loss child** (`-Soak N`, default 25). This tracks N2d's open intermittent
+     crash;
+  5. **staging** `tcad_ui_demo.exe` plus its import closure. `check_no_qt.py` must find zero Qt, and every import must
+     be a Windows system DLL or the MSVC/UCRT runtime (which vc_redist and the OS supply, decision 26.9.7);
+  6. the gallery from the stage, with PATH = the Windows directories only, on WARP;
+  7. `verify_native_n1.ps1` (N1, and through it the N0 spike gate) as the regression, called with `-Command` so the
+     result array arrives intact.
+- **Result on this machine: NATIVE N2: ALL STEPS PASSED.**
+
+  | step | result |
+  |---|---|
+  | core | 54 of 54 |
+  | render | 41 of 41, **15 goldens matching exactly** |
+  | debug soak | 0 of 25 failed in the first full run, 0 of 10 in the rerun |
+  | stage | **a single file**: the whole framework imports only d3d12, d3d11, dxgi, d2d1, DWrite, user32, ole32, oleaut32, UIAutomationCore and kernel32, plus the MSVC/UCRT runtime; nothing from tcad-gui |
+  | no Qt | pass |
+  | gallery | rendered from the stage |
+  | N1 gate | ALL STEPS PASSED |
+
+  One criterion was wrong in the first run and was corrected: it required *no* copied DLL, but the MSVC runtime is
+  legitimately imported. It is now excluded from copying, as `stage.ps1 -ExcludeMsvcRuntime` does.
+- **Also verified:**
+  - `gui/tests/test_desktop_ui_render.py` and the native static suites: 54 passed, run with Python's `SyntaxWarning`
+    as an error;
+  - the legacy Qt build and the no-Qt build are clean;
+  - g++ `-Wall -Wextra` builds the portable core with 0 warnings, 54 of 54.
+
+**N2 STATUS: COMPLETE on Windows for everything automatable.** Open, all stated in the sections above:
+1. **Manual checklists, not yet run:**
+   - N2e: real IMEs, the emoji panel, dictation, the touch keyboard, reconversion (§27.7.5);
+   - N2f: Narrator, Accessibility Insights, a real high-contrast theme, Inspect (§27.7.6).
+2. **N2d's intermittent debug-layer crash in device-loss recovery.**
+   - Last seen before the crash reporter was linked in; 0 of about 340 runs since (305 + the gate's 35).
+   - Its cause is unknown; the soak in the gate watches for it.
+3. **One unexplained golden flake:** N2d's first `n2d_text@100` capture differed by one pixel.
+4. **Carried to N3:**
+   - height-for-width layout for wrapping labels;
+   - the inactive selection in high contrast;
+   - double-click word selection;
+   - multi-line edit views;
+   - bidi-aware selection painting;
+   - structure-changed UIA events for panels added or removed at run time;
+   - following live theme and high-contrast changes.
+
+**Next: N3, the widget set.** Labels, buttons, check/radio buttons, combo boxes, spin boxes and sliders, line and
+multi-line edits, lists, trees, tabs, splitters, scroll areas, toolbars, menus, tooltips and modal dialogs, sized by
+the Qt census in §27.7. Per-widget behaviour and accessibility-tree tests.
+
+### 27.8 N3 -- the widget set: detailed plan (2026-09-30; N3a (27.8.2) COMPLETE on Windows; N3b next)
+
+N3 builds the widgets the ported panels need on N2's framework (§27.7), ordered by the Qt census so the most-used
+widgets land first. The ideas and mockups the user reviewed are the artifact "N3 Widget Set"
+(https://claude.ai/artifact/EeLK3RivmBwbLMsYhdhR6r); it is a design sketch in HTML, not a render from N2.
+
+**Decisions (the user accepted the four recommendations, 2026-09-30).**
+1. **Numeric entry is scientific and engineering, with units.** `DoubleSpinBox` accepts `1e17`, `1.0E+17`, `2.5µ`,
+   `5k`; the unit is drawn inside the field and never typed; the value stays SI (what `DeviceSpec` carries); a
+   logarithmic step (Ctrl+↑ = ×10) for quantities spanning decades. Invalid input is shown as invalid and never
+   clamped silently.
+2. **Every widget is drawn by the framework**, not Windows common controls: one look, one DPI path, one test driver,
+   one high-contrast mapping.
+3. **Menus are drawn, in top-level popup windows** (the airspace rule of §27.4), not a native `HMENU`.
+4. **`editingFinished` fires only when the value changed and is valid.** Qt also fires it on a focus loss with no
+   change; a panel that relied on that is checked while it is ported (N5).
+
+**Slices**, each with N2's gate shape: portable behaviour tests (recording painter, fake text engine), Windows
+driver tests through real `WM_*` messages, the UIA tree through the real client API, WARP goldens at 100/150/200% and
+high contrast, and the N2 gate (`verify_native_n2.ps1`) still passing.
+
+| slice | builds | Qt it replaces (census) |
+|---|---|---|
+| N3a basics | `Label` (word wrap with height-for-width in Box/Form/Stack layouts; Form's `addRow(text, field)`; buddy mnemonics), `PushButton`, `CheckBox`, `RadioButton` + `ButtonGroup`, `GroupBox`; widget contents margins; keyboard cues | QLabel 86, QPushButton 128, QCheckBox 49, QRadioButton 8, QButtonGroup 1, QGroupBox 14 |
+| N3b numbers | `SpinBox`, `DoubleSpinBox` (decision 1), `Slider` (linear/log) | QDoubleSpinBox 111, QSpinBox 23, QSlider 15 |
+| N3c choice | popup windows (per-monitor DPI, flip near screen edges), `ComboBox` with typeahead | QComboBox 114 |
+| N3d text | `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit` (multi-line, capped log that follows the end), selectable labels | QLineEdit 39, QPlainTextEdit 14 |
+| N3e collections | a virtualized row engine; `ListView`, `TableView`, `TreeView`; tab-separated copy; in-place editors | QListWidget 42, QTableWidget 15, QTreeWidget 3 |
+| N3f containers | `TabWidget`, `Splitter` (the VTK child resized when the drag ends), `ScrollArea`, `Action`/`Menu`/`MenuBar`/`ToolBar`, `ToolTip` popup, modal `Dialog`/`MessageBox` (default button) | QTabWidget 4, QSplitter 14, QScrollArea 2, QAction 51, QMenu 9, QToolBar 2, setToolTip 28, QMessageBox 12 |
+
+**N2 carry-overs, placed:** height-for-width (N3a); keyboard cues (N3a); double-click word selection, multi-line
+edits, bidi-aware selection painting, the inactive selection in high contrast (N3d); UIA structure-changed events
+(N3e, where rows come and go); live theme and high-contrast changes (N3f).
+
+**Not in N3:** docking (N4, ADS), `PlotView` and the panels (N5), drag and drop (3 QDrag uses; with N5's list ports).
+
+#### 27.8.1 N3a scope, measured in desktop/src on 2026-09-30
+
+- **QLabel:** `setWordWrap` 9 -- in vertical boxes (4), in spanning form rows (4) and inside a stacked page's form
+  (run_panel) -- so height-for-width is built for Box, Form and Stack; **not for Grid** (no wrapped label is in a
+  grid). One selectable label (`TextSelectableByMouse`, telemetry) moves to N3d with the edits. Not used, so not
+  built: `setBuddy` (0; Form's own labels get a buddy, as `QFormLayout::addRow(QString, ...)` does), rich text (0
+  `setTextFormat`), `setAlignment` (0), pixmaps (0), links (0).
+- **Buttons:** `clicked` 35, `toggled` 17, `setChecked` 17. `&` mnemonics appear on actions and menus (19), not on
+  buttons; the button still parses `&` so ported labels keep working. `setDefault` 2, both on `QMessageBox`: the
+  default button lands with the dialog (N3f). Not used: `setAutoDefault`, `setFlat`, `setIcon`, checkable push
+  buttons (both `setCheckable` uses are on actions).
+- **CheckBox:** two-state only (`setTristate`/`PartiallyChecked` 0; the `setCheckState` uses are list items, N3e).
+  The mockup's tri-state box is therefore dropped.
+- **RadioButton:** 8, in one `QButtonGroup` (display_panel). Built: Qt's auto-exclusive siblings and an explicit
+  `ButtonGroup`; one Tab stop per group with arrow keys moving and checking, as Windows does.
+- **GroupBox:** 10 constructions, none checkable, no `&` in titles.
+
+#### 27.8.2 N3a result: the basic widgets -- BUILT AND PASSING on Windows (2026-09-30)
+
+**Code** (portable, in `tcad_ui_core`; `src/ui/widgets/` has no Win32):
+- **`mnemonic.*`:** Qt's `&` rules (`&&` gives `&`, only the first marker counts, a trailing `&` is kept, UTF-8 keys).
+  The underline is measured from the text before the key and drawn one device pixel thick, on a whole pixel.
+- **`label.*`:** one line or word-wrapped; a font size, weight and colour token; a buddy.
+  - `&` is literal unless the label has a buddy (Qt).
+  - The buddy is looked up in the tree when the mnemonic fires, so one that was removed is never dereferenced.
+  - Wrapped sizes: the hint width is min(text, 40 em); the minimum width is the longest word; the height comes from
+    `heightForWidth`.
+- **`button.*`:** `AbstractButton`, `PushButton`, `CheckBox`, `RadioButton`, `ButtonGroup`, with the behaviour
+  documented in `button.hpp` (Qt's):
+  - press, release inside, and the down state following the pointer;
+  - Space press/release, repeat ignored, cancelled when focus is lost; Enter on push buttons;
+  - disabled buttons never click;
+  - radio buttons are auto-exclusive with their siblings, and so are the members of an exclusive `ButtonGroup`
+    (whose buttons may have different parents); the checked one cannot be unchecked;
+  - arrow keys move and check, wrapping and skipping disabled buttons;
+  - a radio group is one Tab stop, through the new `Widget::isTabStop()`;
+  - either the group or its buttons may die first.
+- **`group_box.*`:** the frame and the title band are the widget's contents margins, through the new
+  `Widget::contentsMargins()` (virtual) and `setContentsMargins`. The layout's own 9-DIP margins sit inside them;
+  the title is drawn over the frame's top edge.
+- **Layouts:** height-for-width in Box, Form and Stack (not Grid), with Qt's rule as documented in `layout.hpp`.
+  - The Form row logic moved into `fitRow`, shared by layout and `heightForWidthPx`.
+  - `FormLayout::addRow(text, field)` makes a buddy `Label` and names the field for screen readers (unless it has a
+    name).
+- **Keyboard cues:**
+  - `InputRouter::mnemonicCuesVisible()` is false until Alt is pressed (`keys::Menu`), or always true when the system
+    says so (`SPI_GETKEYBOARDCUES`, read by `UiWindow`).
+  - `ui/core/keys.hpp` names the virtual keys for portable code.
+- **UIA:** `ISelectionItemProvider` for radio buttons (`Widget::accessibleSelectionState/accessibleSelect`), with
+  the ElementSelected event. A checked radio cannot be removed from the selection.
+- **The gallery** (`tcad_ui_demo --gallery`, now 760x560) uses the real widgets instead of its private test ones,
+  and adds a radio group and a wrapped note.
+
+**Gates:**
+- **Portable** (`test_ui_widgets.cpp`, 45 tests; `tcad_ui_core_tests` 99/99):
+  - mnemonic parsing;
+  - label hints and wrapping;
+  - height-for-width in vertical, horizontal, nested, Form and Stack layouts, including at 150%;
+  - contents margins and GroupBox sizes;
+  - every button behaviour above, driven through the `InputRouter`;
+  - keyboard cues;
+  - ButtonGroup ids, exclusivity and lifetimes;
+  - form buddies, and a removed buddy.
+
+  Every expected number is worked out by hand from the fake engine.
+- **Mutation-checked: 9 of 9 caught:**
+  - height-for-width ignored;
+  - an exclusive button allowed to uncheck;
+  - every radio a Tab stop;
+  - cues always shown;
+  - a click on release outside;
+  - the form field left unnamed;
+  - key repeat clicking;
+  - the group-box title not a margin;
+  - contents margins missing from hints.
+- **Windows** (`test_ui_widgets_win32.cpp`, +6 tests; `tcad_ui_render_tests` 47/47):
+  - **goldens `n3a_widgets@100/150/200` and `n3a_widgets_hc@100/150/200`** (the fixed "Night sky" palette) --
+    **looked at**, and all 21 goldens match exactly;
+  - a wrapped label's height from the real DirectWrite engine (382 DIPs wide, 2 lines, shorter when wider);
+  - real `WM_*` clicks, a release off the button, a disabled button, radio arrows and Space;
+  - Alt as a real `WM_SYSKEYDOWN` turning the cues on, and Alt+R/F/G clicking, checking and focusing a buddy;
+  - through the real UIA client: Invoke, Toggle, SelectionItem (Select, IsSelected, RemoveFromSelection refused),
+    no Invoke or Toggle on radios, a Group's three children, names without `&`, and a form field named by its label.
+- **Also run:**
+  - g++ `-Wall -Wextra` builds the portable core and widgets with 0 warnings, 99/99;
+  - `verify_native_n2.ps1`: **ALL STEPS PASSED** (N1 and the spike included; debug soak 0/25);
+  - the legacy Qt build is clean;
+  - the desktop wrapper pytest files: 125 passed, run with `SyntaxWarning` as an error.
+- **Changed on purpose in `gui/tests/test_desktop_ui_render.py`:**
+  - the test counts (54 to 99, 41 to 47) and the golden lists;
+  - "`heightForWidth` absent from `layout.hpp`" became "present in Box/Form/Stack, absent from Grid" (27.8.1);
+  - the no-Win32 check now covers `src/ui/widgets/`.
+
+**Found and noted, not fixed:**
+- **A lone Alt press goes on to `DefWindowProc`**, so releasing Alt may put the window into the system menu's
+  keyboard mode. This behaviour predates N3a. The test sends only the Alt key-down, because the release would start
+  that modal loop inside a synthetic test. N3f's menu bar will take Alt over.
+- **Kept out of scope, as measured:**
+  - tri-state check boxes (0 uses; the mockup's was dropped);
+  - checkable push buttons;
+  - the default button (with dialogs, N3f);
+  - a checkable group box.
+
+**Manual, not yet run:** Narrator on the gallery. Check that radios are read as "radio button, 1 of 2, selected",
+check boxes as "check box, checked", and the form fields by their label names.
+
+**Next: N3b**, numbers: `SpinBox`, `DoubleSpinBox` (decision 1: scientific/engineering entry with units), `Slider`.

@@ -1,0 +1,85 @@
+{
+  "backend": {
+    "methods": 29,
+    "pid": 9556,
+    "prefix": "C:\\Users\\disha\\.conda\\envs\\tcad-dev",
+    "scratch_dir": "C:\\Users\\disha\\AppData\\Local\\Temp\\tcad_backend_3mc3st32"
+  },
+  "checks": [
+    {
+      "detail": "scale 1.000000, client 1280x800, content 1280x776, child 1280x776",
+      "name": "dpi_layout",
+      "ok": true
+    },
+    {
+      "detail": "move ok, click ok, wheel ok, chars ok (incl. a surrogate pair); coordinates are logical (scale 1.000000)",
+      "name": "input",
+      "ok": true
+    },
+    {
+      "detail": "F12 via WM_KEYDOWN fired 1x (repeat and key-up ignored), Ctrl+J routed from a child: 1",
+      "name": "shortcuts",
+      "ok": true
+    },
+    {
+      "detail": "written atomically to C:\\Users\\disha\\AppData\\Local\\Temp\\tcad_native_selftest_15196\\settings.json and read back (recent files, a value, the window placement)",
+      "name": "settings",
+      "ok": true
+    },
+    {
+      "detail": "IFileOpenDialog and IFileSaveDialog can be created and configured (not shown: a dialog needs a person)",
+      "name": "file_dialogs",
+      "ok": true
+    },
+    {
+      "detail": "a 20 ms repeating timer fired 12x in 420 ms; a 35 ms single-shot fired 1x",
+      "name": "timers",
+      "ok": true
+    },
+    {
+      "detail": "a function posted from another thread ran on the UI thread",
+      "name": "post",
+      "ok": true
+    },
+    {
+      "detail": "system.methods 29 methods, examples.list ok, unknown method -> JSON-RPC -32601, ping ok, replies in call order yes, pid 9556, handshake state Ready",
+      "name": "backend",
+      "ok": true
+    },
+    {
+      "detail": "the existing FieldScene displays mosfet_2d.npz (2D, field doping) in the native window: 1112 colours, 23% non-background; hover hit: doping: 1.070e+18 cm^-3 @ x=0.09, y=0.10 um",
+      "name": "field_scene",
+      "ok": true
+    },
+    {
+      "detail": "136 modules loaded in this process; Qt modules: 0",
+      "name": "no_qt_loaded",
+      "ok": true
+    },
+    {
+      "detail": "system.shutdown: pid 9556 exited, scratch directory removed",
+      "name": "backend_shutdown",
+      "ok": true
+    },
+    {
+      "detail": "a call after shutdown started a new service: pid 21260",
+      "name": "backend_restart",
+      "ok": true
+    }
+  ],
+  "hover": {
+    "hit": true,
+    "text": "doping: 1.070e+18 cm^-3 @ x=0.09, y=0.10 um"
+  },
+  "image": {
+    "distinct_colours": 1112,
+    "height": 776,
+    "non_background_fraction": 0.23260309278350516,
+    "path": ".\\pytcad\\results\\native-n1-mosfet_2d.png",
+    "width": 1280
+  },
+  "loaded_module_count": 136,
+  "ok": true,
+  "qt_modules_loaded": [],
+  "result": "C:\\Users\\disha\\OneDrive\\Desktop\\TCAD\\TCAD-Dev\\pytcad\\build\\ref\\results\\mosfet_2d.npz"
+}

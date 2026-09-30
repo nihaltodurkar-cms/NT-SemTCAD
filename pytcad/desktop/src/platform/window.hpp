@@ -35,6 +35,9 @@ public:
         std::function<void(char32_t)> on_char;
         std::function<void(bool focused)> on_focus;
         std::function<void(HDC dc, const RECT& client)> on_paint;
+        std::function<bool()> on_set_cursor;                 // WM_SETCURSOR over the client area: true = cursor set (N2c)
+        std::function<void()> on_capture_lost;               // the mouse capture was taken away mid-press (N2c)
+        std::function<std::optional<LRESULT>(WPARAM, LPARAM)> on_get_object;  // WM_GETOBJECT: UI Automation (N2f)
     };
 
     static std::expected<std::unique_ptr<Window>, std::string> create(const WindowOptions& options);

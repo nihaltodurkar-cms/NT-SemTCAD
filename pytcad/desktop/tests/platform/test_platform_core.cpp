@@ -531,9 +531,13 @@ TEST(settings_a_corrupt_file_is_kept_aside_not_overwritten) {
     CHECK(!s.windowPlacement().has_value());
     s.addRecent("/x.npz");
     CHECK(s.sync());
-    std::ifstream bad(fs::path(f.string() + ".corrupt"));
     std::stringstream b;
-    b << bad.rdbuf();
+    {
+        // closed before remove_all below: Windows cannot delete an open file,
+        // and the throwing remove_all overload would abort the whole binary
+        std::ifstream bad(fs::path(f.string() + ".corrupt"));
+        b << bad.rdbuf();
+    }
     CHECK_EQ(b.str(), "{ this is not json");                  // the user's bytes are preserved
     CHECK(Settings::atFile(f).loadProblem().empty());         // the new file is valid
     fs::remove_all(d);
