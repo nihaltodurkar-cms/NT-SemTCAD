@@ -7,7 +7,9 @@
 #       [-ToolsDir <dir holding check_runtime.py>] [-LogDir <dir>] [-KeepInstalled]
 #
 # Exit 0 only if every check passed; <LogDir>\verify_install.json records each one. The checks:
-#   install     the setup exits 0, silently, per-user (no admin)
+#   install     the setup exits 0, silently, per-user (admin only for the MSVC runtime, when the machine lacks it)
+#   vcruntime   (a stage made with -ExcludeMsvcRuntime) the machine-wide MSVC runtime is installed, at least
+#               the version the stage excluded -- the installer's embedded vc_redist put it there
 #   layout      exe, runtime\python.exe, backend\pytcad\_core*.pyd, manifest, Start menu shortcut,
 #               Add/Remove Programs entry, "Open with" keys -- and NO .json/.npz default association
 #   runtime     check_runtime.py on the INSTALLED runtime + backend: import closure, PARDISO, the
@@ -97,6 +99,21 @@ try {
     $hijack = @(".json", ".npz" | Where-Object { (-not $assocBefore[$_]) -and (Test-Path "HKCU:\Software\Classes\$_") })
     if ($hijack) { $missing += "UNEXPECTED default association key(s): $($hijack -join ', ')" }
     Record "layout" ($missing.Count -eq 0) $(if ($missing.Count) { "problems: " + ($missing -join "; ") } else { "all present, no default association" })
+
+    # vcruntime (26.9.7): a stage without its own MSVC runtime needs the machine's, which the installer's
+    # embedded vc_redist provides -- at least the vc14_runtime version the stage excluded
+    $exf = Join-Path $app "licenses\excluded-packages.json"
+    $vcNeed = $null
+    if (Test-Path $exf) {
+        $recs = Get-Content -Raw $exf | ConvertFrom-Json          # not @(...): PS 5.1 emits a JSON array as one object
+        foreach ($r in $recs) { if ($r.package -eq "vc14_runtime") { $vcNeed = [version]$r.version } }
+    }
+    if ($vcNeed) {
+        $k = Get-ItemProperty "HKLM:\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\x64" -ErrorAction SilentlyContinue
+        $vcHave = if ($k -and $k.Installed -eq 1) { [version]"$($k.Major).$($k.Minor).$($k.Bld)" } else { $null }
+        $dll = Test-Path (Join-Path $env:SystemRoot "System32\vcruntime140.dll")
+        Record "vcruntime" ($vcHave -and ($vcHave -ge $vcNeed) -and $dll) "machine MSVC runtime $(if ($vcHave) { $vcHave } else { 'NOT installed' }), stage needs $vcNeed; System32\vcruntime140.dll $(if ($dll) { 'present' } else { 'MISSING' })"
+    }
 
     # runtime: the S2 gates, on the installed copy. --scratch keeps the example results.
     $py = Join-Path $app "runtime\python.exe"

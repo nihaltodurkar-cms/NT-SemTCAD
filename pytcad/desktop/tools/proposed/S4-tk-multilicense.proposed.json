@@ -1,0 +1,207 @@
+{
+  "_STATUS": "PROPOSAL -- NOT APPLIED. Schema for one package carrying several pinned licence texts. tk stays UNRESOLVED (reviewed entry not applied).",
+  "_schema_note": "Would live under policy 'supplemental_texts' (G1 generalised). Key = conda package name. 'kind': archive = a file under the package's info/licenses; payload = a file the package installs (path relative to the runtime prefix, must be in conda-meta 'files'); vendored = a file committed under desktop/tools/notices/upstream/ (path = that file). Globs: '*' = within one path segment, '**' = any depth.",
+  "tk": {
+    "pin": {
+      "version": "8.6.13",
+      "build": "h967ab96_4",
+      "archive_sha256": "f19618a3a82cc483dacf1c70a30367ee7b0c7e71b90f1f80e14feff44fbd3688"
+    },
+    "class": "permissive",
+    "coverage": "total",
+    "uncovered_allowed": [
+      {
+        "path": "etc/conda/test-files/tk/0/hello.tcl",
+        "reason": "PROPOSED, NEEDS A DECISION: conda-forge recipe test file, not upstream Tcl/Tk code; the gate would otherwise fail on it"
+      }
+    ],
+    "texts": [
+      {
+        "id": "tcl",
+        "source": {
+          "kind": "archive",
+          "path": "info/licenses/tcl8.6.13/license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz (sha256 43a1fae7412f61ff11de2cfd05d28cfc3a73762f354a417c62370a54e2caf066) : tcl8.6.13/license.terms, byte-identical"
+        },
+        "sha256": "c0a69a2bfd757361ec7e6143973b103c90409316b49e9c88db26ad6388e79f16",
+        "covers": [
+          "Library/bin/tcl86t.dll",
+          "Library/bin/tclsh*.exe",
+          "Library/lib/dde1.4/**",
+          "Library/lib/reg1.3/**",
+          "Library/lib/tcl8/**",
+          "Library/lib/tcl8.6/**",
+          "Library/lib/nmake/**",
+          "Library/lib/tcl86t.lib",
+          "Library/lib/tclstub86.lib",
+          "Library/lib/tclConfig.sh",
+          "Library/lib/tclooConfig.sh",
+          "Library/include/tcl*.h"
+        ],
+        "except": [
+          "Library/lib/tcl8/8.6/tdbc/**"
+        ],
+        "covers_binaries": [
+          "Library/bin/tcl86t.dll",
+          "Library/bin/tclsh.exe",
+          "Library/bin/tclsh86.exe",
+          "Library/bin/tclsh86t.exe",
+          "Library/lib/dde1.4/tcldde14.dll",
+          "Library/lib/reg1.3/tclreg13.dll",
+          "Library/lib/nmake/x86_64-w64-mingw32-nmakehlp.exe"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "tk",
+        "source": {
+          "kind": "payload",
+          "path": "Library/lib/tk8.6/license.terms",
+          "upstream": "tk8.6.13-src.tar.gz (sha256 2e65fa069a23365440a3c56c556b8673b5e32a283800d8d9b257e3f584ce0675) : tk8.6.13/license.terms and xlib/X11/license.terms, byte-identical"
+        },
+        "sha256": "2cde822b93ca16ae535c954b7dfe658b4ad10df2a193628d1b358f1765e8b198",
+        "covers": [
+          "Library/bin/tk86t.dll",
+          "Library/bin/wish*.exe",
+          "Library/lib/tk8.6/**",
+          "Library/lib/tk86t.lib",
+          "Library/lib/tkstub86.lib",
+          "Library/include/tk*.h",
+          "Library/include/X11/*.h"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/bin/tk86t.dll",
+          "Library/bin/wish.exe",
+          "Library/bin/wish86.exe",
+          "Library/bin/wish86t.exe"
+        ],
+        "basis": "Not in info/licenses: read from the STAGED payload file and hash-checked. Open point: the 13 X11 headers also carry their own in-file MIT notices (see the doc)."
+      },
+      {
+        "id": "zlib",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/zlib-1.2.13.zlib.h-licence-header.txt",
+          "upstream": "tcl8.6.13-src.tar.gz : tcl8.6.13/compat/zlib/zlib.h lines 1-23 (zlib 1.2.13, the DLL's own version string)"
+        },
+        "sha256": "0cb543fd7a38b56ddd988def1dfd681ae526809e6fbbe4225a4a9b6259ab9b36",
+        "covers": [
+          "Library/bin/zlib1.dll"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/bin/zlib1.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "sqlite",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/sqlite3-3.40.0.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : tcl8.6.13/pkgs/sqlite3.40.0/license.terms"
+        },
+        "sha256": "66e056b6e8687f32af30d5187611b98b12a8f46f07aaf62f43585f276e8f0ac9",
+        "covers": [
+          "Library/lib/sqlite3.40.0/**"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/lib/sqlite3.40.0/sqlite3400t.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "itcl",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/itcl-4.2.3.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : tcl8.6.13/pkgs/itcl4.2.3/license.terms"
+        },
+        "sha256": "b61edfaeead97546bc62b1f205b046f2e440b83bfc517bc0932b93bc3d505865",
+        "covers": [
+          "Library/lib/itcl4.2.3/**",
+          "Library/include/itcl*.h"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/lib/itcl4.2.3/itcl423t.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "tdbc",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/tdbc-1.1.5.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : pkgs/tdbc1.1.5/license.terms (byte-identical to pkgs/tdbcmysql1.1.5 and pkgs/tdbcodbc1.1.5)"
+        },
+        "sha256": "fafd6456aa4b7c80c190df86de5bdfab82c8c227a0c348662432c75ceeb2238d",
+        "covers": [
+          "Library/lib/tdbc1.1.5/**",
+          "Library/lib/tdbcmysql1.1.5/**",
+          "Library/lib/tdbcodbc1.1.5/**",
+          "Library/include/tdbc*.h"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/lib/tdbc1.1.5/tdbc115t.dll",
+          "Library/lib/tdbcmysql1.1.5/tdbcmysql115t.dll",
+          "Library/lib/tdbcodbc1.1.5/tdbcodbc115t.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "tdbcpostgres",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/tdbcpostgres-1.1.5.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : pkgs/tdbcpostgres1.1.5/license.terms"
+        },
+        "sha256": "d3aa1cf53b96e69469d46c62bceeebadaa3ecb9699b73962bb207246f4288a08",
+        "covers": [
+          "Library/lib/tdbcpostgres1.1.5/**"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/lib/tdbcpostgres1.1.5/tdbcpostgres115t.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "thread",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/thread-2.8.8.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : pkgs/thread2.8.8/license.terms"
+        },
+        "sha256": "0a03981c40f7813ce6ddbdfce9882020bcfd696ea044b21ef07619ed9b86abae",
+        "covers": [
+          "Library/lib/thread2.8.8/**"
+        ],
+        "except": [],
+        "covers_binaries": [
+          "Library/lib/thread2.8.8/thread288t.dll"
+        ],
+        "basis": ""
+      },
+      {
+        "id": "tdbcsqlite3",
+        "source": {
+          "kind": "vendored",
+          "path": "notices/upstream/tk/tdbcsqlite3-1.1.5.license.terms",
+          "upstream": "tcl8.6.13-src.tar.gz : pkgs/tdbcsqlite3-1.1.5/license.terms"
+        },
+        "sha256": "37186e29fd02702179f7c5e9fc630840429319281fcf5a282caaf7fcb0a1c7f4",
+        "covers": [
+          "Library/lib/tcl8/8.6/tdbc/**",
+          "Library/lib/tdbcsqlite31.1.5/**"
+        ],
+        "except": [],
+        "covers_binaries": [],
+        "basis": "NINTH text, NOT in the eight requested: found by the coverage partition. It covers the tdbc::sqlite3 script module and man page (no DLL)."
+      }
+    ]
+  }
+}

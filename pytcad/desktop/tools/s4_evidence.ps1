@@ -81,7 +81,9 @@ function Compare-Redist($staged, $vsFiles, [string[]] $redistTxtNames) {
         $n = [System.IO.Path]::GetFileName($s.path).ToLowerInvariant()
         $v = $byName[$n]
         $rows += [pscustomobject]@{
-            file = $n; stagedAt = $s.path; version = $s.fileVersion; signature = $s.signature
+            file = $n; stagedAt = $s.path; version = $s.fileVersion; signature = $s.signature; stagedSha256 = $s.sha256
+            vsPath = $(if ($v) { $v.path } else { $null }); vsVersion = $(if ($v) { $v.fileVersion } else { $null })
+            vsSha256 = $(if ($v) { $v.sha256 } else { $null })
             inVsRedistFolder = [bool]$v
             sameHashAsVs = [bool]($v -and $v.sha256 -eq $s.sha256)
             sameVersionAsVs = [bool]($v -and $v.fileVersion -eq $s.fileVersion)
@@ -89,6 +91,36 @@ function Compare-Redist($staged, $vsFiles, [string[]] $redistTxtNames) {
         }
     }
     return $rows
+}
+
+# One command-line string for Start-Process -ArgumentList. Passing an ARRAY does not quote elements: the old
+# python -c with a spaced program string reached python.exe as `-c import` (a SyntaxError), and the process was
+# gone before any module list could be read.
+function ConvertTo-ArgString([string[]] $argv) {
+    $parts = foreach ($a in $argv) {
+        if ($a -eq "") { '""' }
+        elseif ($a -match '[\s"]') { '"' + ($a -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
+        else { $a }
+    }
+    return ($parts -join " ")
+}
+
+# Sample a running program's loaded modules: poll (the loader may still be working) until a UCRT module shows up
+# or the deadline passes; never report "nothing" without saying WHY (exited early with code N / no access / none).
+function Get-ModuleSample($proc, [string] $pattern, [int] $timeoutSec = 30) {
+    $deadline = (Get-Date).AddSeconds($timeoutSec)
+    $mods = @(); $err = ""
+    while ((Get-Date) -lt $deadline) {
+        if ($proc.HasExited) { return [pscustomobject]@{ modules = $mods; status = "exited early with code $($proc.ExitCode) after $([int]((Get-Date) - $proc.StartTime).TotalSeconds)s"; error = $err } }
+        try {
+            $proc.Refresh()
+            $mods = @($proc.Modules | Where-Object { $_.ModuleName -match $pattern }); $err = ""
+            if ($mods | Where-Object { $_.ModuleName -match '^(ucrtbase|api-ms-win-crt)' }) { break }
+        } catch { $err = "$($_.Exception.Message)" }
+        Start-Sleep -Milliseconds 500
+    }
+    $status = $(if ($mods.Count) { "ok" } elseif ($err) { "could not read modules: $err" } else { "process running, but no matching module in $timeoutSec s" })
+    return [pscustomobject]@{ modules = $mods; status = $status; error = $err }
 }
 
 function ConvertTo-Native([string] $prefix, [string] $rel) {
@@ -135,23 +167,45 @@ if ($isWin) {
         $A.os = [ordered]@{ product = "$($cv.ProductName)"; displayVersion = "$($cv.DisplayVersion)"; build = "$($cv.CurrentBuild).$($cv.UBR)" }
         $A.os.systemUcrtbase = Get-FileFacts (Join-Path $env:SystemRoot "System32\ucrtbase.dll")
     } catch { $A.os = @{ error = "$_" } }
-    # Which DLLs does the OS load for the staged programs? Start, sample the module list, stop.
-    $targets = @(
-        @{ label = "runtime\python.exe"; exe = (Join-Path $rt "python.exe"); args = @("-c", "import time; time.sleep(12)") },
-        @{ label = "tcad_desktop.exe"; exe = (Join-Path $Stage "tcad_desktop.exe"); args = @("--settings", (Join-Path $Out "ephemeral.ini")) })
-    foreach ($t in $targets) {
-        if (-not (Test-Path $t.exe)) { $A.loaded += [pscustomobject]@{ program = $t.label; note = "not found" }; continue }
+    $modPattern = '^(ucrtbase|api-ms-win-crt|vcruntime|msvcp|concrt|vccorlib|vcamp|vcomp)'
+    # A1. runtime\python.exe, asked about ITSELF (loaded_modules.py, psapi): no start/sleep/sample race. Once with
+    # PATH = the Windows directories only (the S2 gate's condition), once with the caller's PATH.
+    $pyExe = Join-Path $rt "python.exe"
+    if (-not (Test-Path $pyExe)) { $A.loaded += [pscustomobject]@{ program = "runtime\python.exe"; note = "not found" } }
+    else {
+        $savedPath = $env:PATH
+        foreach ($mode in @("scrubbed-PATH", "caller-PATH")) {
+            $label = "runtime\python.exe ($mode)"
+            if ($mode -eq "scrubbed-PATH") { $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot" } else { $env:PATH = $savedPath }
+            try {
+                $raw = & $pyExe (Join-Path $PSScriptRoot "loaded_modules.py") --prefix $Stage 2>&1
+                $code = $LASTEXITCODE
+                $txtOut = ($raw | Out-String).Trim()
+                if ($code -ne 0) { $A.loaded += [pscustomobject]@{ program = $label; note = "loaded_modules.py exit $code: $txtOut" } }
+                else {
+                    $j = $txtOut | ConvertFrom-Json
+                    foreach ($mod in @($j.matches)) { $A.loaded += [pscustomobject]@{ program = $label; module = $mod.module; path = $mod.path; fromStage = [bool]$mod.fromStage } }
+                    $A.loaded += [pscustomobject]@{ program = $label; note = "method=in-process psapi; $($j.moduleCount) modules read in total; $(@($j.matches).Count) match; python $($j.python)" }
+                    if (-not @($j.matches).Count) { $A.loaded += [pscustomobject]@{ program = $label; note = "INCOMPLETE: modules were read but none matched the UCRT/MSVC pattern (unexpected for python.exe)" } }
+                }
+            } catch { $A.loaded += [pscustomobject]@{ program = $label; note = "could not run loaded_modules.py: $_" } }
+            finally { $env:PATH = $savedPath }
+        }
+    }
+    # A2. tcad_desktop.exe: a GUI program cannot report on itself, so start it, poll its module list, stop it.
+    $guiExe = Join-Path $Stage "tcad_desktop.exe"
+    if (-not (Test-Path $guiExe)) { $A.loaded += [pscustomobject]@{ program = "tcad_desktop.exe"; note = "not found" } }
+    else {
         $proc = $null
         try {
-            $proc = Start-Process -FilePath $t.exe -ArgumentList $t.args -PassThru -WindowStyle Minimized
-            Start-Sleep -Seconds 6
-            $mods = @($proc.Modules | Where-Object { $_.ModuleName -match '^(ucrtbase|api-ms-win-crt|vcruntime|msvcp|concrt|vccorlib|vcamp|vcomp)' })
-            foreach ($mod in $mods) {
-                $A.loaded += [pscustomobject]@{ program = $t.label; module = $mod.ModuleName; path = $mod.FileName
+            $proc = Start-Process -FilePath $guiExe -ArgumentList (ConvertTo-ArgString @("--settings", (Join-Path $Out "ephemeral.ini"))) -PassThru -WindowStyle Minimized
+            $smp = Get-ModuleSample $proc $modPattern 30
+            foreach ($mod in $smp.modules) {
+                $A.loaded += [pscustomobject]@{ program = "tcad_desktop.exe"; module = $mod.ModuleName; path = $mod.FileName
                     fromStage = $mod.FileName.StartsWith($Stage, [System.StringComparison]::OrdinalIgnoreCase) }
             }
-            if (-not $mods.Count) { $A.loaded += [pscustomobject]@{ program = $t.label; note = "no matching modules read" } }
-        } catch { $A.loaded += [pscustomobject]@{ program = $t.label; note = "could not sample modules: $_" } }
+            $A.loaded += [pscustomobject]@{ program = "tcad_desktop.exe"; note = "method=external Process.Modules; $($smp.status)" }
+        } catch { $A.loaded += [pscustomobject]@{ program = "tcad_desktop.exe"; note = "could not sample modules: $_" } }
         finally { if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } }
     }
 } else { $A.loaded += [pscustomobject]@{ note = "skipped: not Windows" } }
@@ -197,6 +251,7 @@ if ($vswhere -and (Test-Path $vswhere)) {
 } else { $B.note = "no Visual Studio installation read (not Windows, or vswhere not found)" }
 $B.comparison = Compare-Redist $stagedFacts $vsFiles $redistTxtNames
 $B.redistTxtNames = $redistTxtNames
+$B.redistTxtNote = $(if ($redistTxtNames.Count) { "$($redistTxtNames.Count) DLL names read from $($B.redistTxt.Count) redist*.txt file(s)" } else { "NO redist*.txt (or none naming a DLL) was found under the Visual Studio installation: inRedistTxt is n/a, NOT false. REDIST-list authorisation is therefore not established by this script; supply the list to redist_table.py." })
 $B.authority = "This compares the staged files with the copies in YOUR Visual Studio installation. The authoritative REDIST list is the online list referenced from the 'Distributable Code' section of the Microsoft Software License Terms for your edition; check each 'file' below against it."
 $report.B_msvc = $B
 
@@ -225,7 +280,8 @@ $txt += "OS: $($A.os.product) $($A.os.displayVersion) build $($A.os.build); syst
 foreach ($l in $A.loaded) { $txt += "  loaded  $($l.program)  $($l.module)  <- $($l.path)  fromStage=$($l.fromStage) $($l.note)" }
 $txt += ""; $txt += "== B. MSVC runtime"; $txt += "Visual Studio: $($B.vs.displayName) $($B.vs.installationVersion) ($($B.vs.productDisplayVersion)) at $($B.vs.installationPath)"
 $txt += "redist.txt files: " + ($B.redistTxt -join "; "); $txt += "redist versions in VS: " + ($B.vs.redistVersions -join ", "); $txt += $B.note
-foreach ($r in $B.comparison) { $txt += ("  {0,-28} v{1,-16} sig={2,-9} inVsRedistFolder={3} sameHash={4} sameVersion={5} inRedistTxt={6}" -f $r.file, $r.version, $r.signature, $r.inVsRedistFolder, $r.sameHashAsVs, $r.sameVersionAsVs, $r.inRedistTxt) }
+foreach ($r in $B.comparison) { $txt += ("  {0,-28} v{1,-16} sig={2,-9} inVsRedistFolder={3} sameHash={4} sameVersion={5} inRedistTxt={6}" -f $r.file, $r.version, $r.signature, $r.inVsRedistFolder, $r.sameHashAsVs, $r.sameVersionAsVs, $(if ($null -eq $r.inRedistTxt) { "n/a" } else { $r.inRedistTxt })) }
+$txt += $B.redistTxtNote
 $txt += $B.authority; $txt += ""; $txt += "== C. packages"
 foreach ($c in $C) { $txt += "  [$($c.where)] $($c.name) $($c.version) $($c.build)  licence=$($c.licence)  files=$($c.filesInstalled)  texts=$($c.texts.Count)" }
 $txt | Set-Content -Encoding UTF8 (Join-Path $Out "s4-evidence.txt")

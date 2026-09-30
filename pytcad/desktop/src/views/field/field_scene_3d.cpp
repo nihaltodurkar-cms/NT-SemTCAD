@@ -3,7 +3,7 @@
 // current-density glyphs and streamlines, the exploded view, sweep
 // playback and the view presets. The 2D map and everything shared (the
 // gather, the colour tables, the bar) are in field_view.cpp.
-#include "field_view.hpp"
+#include "field_scene.hpp"
 
 #include "theme/tokens.hpp"
 
@@ -95,7 +95,7 @@ std::optional<VolumePreset> volumePresetFromName(const std::string& name) {
 
 // ---------------------------------------------------------------- setup ----
 
-void FieldView::setup3D() {
+void FieldScene::setup3D() {
     outline_actor_->SetMapper(outline_mapper_);
     outline_actor_->GetProperty()->LightingOff();
     outline_actor_->PickableOff();
@@ -136,7 +136,7 @@ void FieldView::setup3D() {
     // sampling to fit that frame time; at rest (the still rate) it renders
     // at full quality. Section 15.4's orbit budget is 33 ms = 30 fps.
     volume_mapper_->SetInteractiveAdjustSampleDistances(1);
-    if (vtkRenderWindowInteractor* it = window_->GetInteractor()) it->SetDesiredUpdateRate(kDragFps);
+    // (the interactor's desired update rate is set in attach(): no window exists yet)
     volume_->SetMapper(volume_mapper_);
     volume_->SetProperty(volume_property_);
     volume_->PickableOff();
@@ -181,12 +181,12 @@ void FieldView::setup3D() {
     surface_filter_->SetInputConnection(crop_filter_->GetOutputPort());
 }
 
-std::size_t FieldView::nodeIndex(std::size_t i, std::size_t j, std::size_t k) const {
+std::size_t FieldScene::nodeIndex(std::size_t i, std::size_t j, std::size_t k) const {
     const auto n = model_->node_counts();
     return (k * n[1] + j) * n[0] + i;
 }
 
-NodeBox FieldView::fullBox() const {
+NodeBox FieldScene::fullBox() const {
     NodeBox b;
     if (!model_) return b;
     const auto n = model_->node_counts();
@@ -194,18 +194,18 @@ NodeBox FieldView::fullBox() const {
     return b;
 }
 
-std::array<std::size_t, 3> FieldView::cropSize() const {
+std::array<std::size_t, 3> FieldScene::cropSize() const {
     return {crop_.hi[0] - crop_.lo[0] + 1, crop_.hi[1] - crop_.lo[1] + 1, crop_.hi[2] - crop_.lo[2] + 1};
 }
 
-double FieldView::diagonalUm() const {
+double FieldScene::diagonalUm() const {
     double d2 = 0.0;
     for (const auto& a : axes_um_)
         if (!a.empty()) d2 += (a.back() - a.front()) * (a.back() - a.front());
     return std::sqrt(d2);
 }
 
-void FieldView::reset3D() {
+void FieldScene::reset3D() {
     for (auto& sl : slices_) {
         sl.state = SliceState{};
         sl.actor->VisibilityOff();
@@ -246,7 +246,7 @@ void FieldView::reset3D() {
 
 // ---------------------------------------------------- surface and crop ----
 
-void FieldView::rebuildSurface3D() {
+void FieldScene::rebuildSurface3D() {
     auto t0 = std::chrono::steady_clock::now();
     crop_filter_->SetVOI(static_cast<int>(crop_.lo[0]), static_cast<int>(crop_.hi[0] + 1),
                          static_cast<int>(crop_.lo[1]), static_cast<int>(crop_.hi[1] + 1),
@@ -266,7 +266,7 @@ void FieldView::rebuildSurface3D() {
     layer_t_.crop_ms = lap_ms(t0);
 }
 
-void FieldView::rebuildOutline() {
+void FieldScene::rebuildOutline() {
     // The crop box's patch edges: 12 lines in the overlay colour.
     const double x0 = edges_um_[0][crop_.lo[0]], x1 = edges_um_[0][crop_.hi[0] + 1];
     const double y0 = edges_um_[1][crop_.lo[1]], y1 = edges_um_[1][crop_.hi[1] + 1];
@@ -285,7 +285,7 @@ void FieldView::rebuildOutline() {
     outline_mapper_->SetInputData(pd);
 }
 
-void FieldView::setCrop(const NodeBox& box) {
+void FieldScene::setCrop(const NodeBox& box) {
     if (!is3D()) return;
     const NodeBox full = fullBox();
     NodeBox b;
@@ -302,10 +302,10 @@ void FieldView::setCrop(const NodeBox& box) {
     rebuildGlyphs();
     rebuildStreamlines();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setSurfaceMode(SurfaceMode m) {
+void FieldScene::setSurfaceMode(SurfaceMode m) {
     if (!is3D()) return;
     surface_mode_ = m;
     vtkProperty* p = actor_->GetProperty();
@@ -326,10 +326,10 @@ void FieldView::setSurfaceMode(SurfaceMode m) {
     actor_->SetVisibility(m != SurfaceMode::Hidden && !exploded_on_);
     updatePickList();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::enteringInteriorLayer() {
+void FieldScene::enteringInteriorLayer() {
     // An opaque surface hides everything inside it: the first interior
     // layer switches it to the translucent context surface, as
     // viewer3d.py always draws it (section 15.19, S6a). Once per result.
@@ -338,7 +338,7 @@ void FieldView::enteringInteriorLayer() {
     if (surface_mode_ == SurfaceMode::Field) setSurfaceMode(SurfaceMode::Context);
 }
 
-void FieldView::updatePickList() {
+void FieldScene::updatePickList() {
     picker_->InitializePickList();
     picker_->RemoveAllLocators();
     if (!is3D()) {
@@ -363,7 +363,7 @@ void FieldView::updatePickList() {
 
 // ------------------------------------------------------------- slices ----
 
-void FieldView::setSlice(int axis, bool on, std::size_t index) {
+void FieldScene::setSlice(int axis, bool on, std::size_t index) {
     if (!is3D() || axis < 0 || axis > 2) return;
     auto& sl = slices_[static_cast<std::size_t>(axis)];
     const std::size_t n = model_->node_counts()[static_cast<std::size_t>(axis)];
@@ -373,10 +373,10 @@ void FieldView::setSlice(int axis, bool on, std::size_t index) {
     rebuildSlice(axis);
     updatePickList();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::rebuildSlice(int axis) {
+void FieldScene::rebuildSlice(int axis) {
     auto& sl = slices_[static_cast<std::size_t>(axis)];
     const auto a = static_cast<std::size_t>(axis);
     const std::size_t k = sl.state.index;
@@ -425,7 +425,7 @@ void FieldView::rebuildSlice(int axis) {
     layer_t_.slice_ms = lap_ms(t0);
 }
 
-void FieldView::showCentralZPlane() {
+void FieldScene::showCentralZPlane() {
     if (!is3D()) return;
     interior_seen_ = true;  // the surface mode is set explicitly just below
     setSlice(2, true, model_->node_counts()[2] / 2);  // mpl_canvas_item: values[shape[0] // 2]
@@ -435,7 +435,7 @@ void FieldView::showCentralZPlane() {
 
 // ------------------------------------------------ values for the interior ----
 
-std::array<double, 2> FieldView::displayedMinMax(const std::vector<double>& raw) const {
+std::array<double, 2> FieldScene::displayedMinMax(const std::vector<double>& raw) const {
     const FieldKind kind = fieldKind();
     const bool abs_log = kind == FieldKind::Recombination || (kind == FieldKind::Generic && log_);
     double lo = std::numeric_limits<double>::infinity(), hi = -lo;
@@ -449,7 +449,7 @@ std::array<double, 2> FieldView::displayedMinMax(const std::vector<double>& raw)
                    : std::array<double, 2>{displayTransform(lo), displayTransform(hi)};
 }
 
-const std::vector<double>& FieldView::croppedDisplayed() {
+const std::vector<double>& FieldScene::croppedDisplayed() {
     if (crop_values_version_ == values_version_ && crop_values_box_ == crop_) return crop_values_;
     const auto s = cropSize();
     crop_values_.resize(s[0] * s[1] * s[2]);
@@ -464,34 +464,34 @@ const std::vector<double>& FieldView::croppedDisplayed() {
     return crop_values_;
 }
 
-void FieldView::rebuild3DValues() {
+void FieldScene::rebuild3DValues() {
     if (iso_on_) rebuildIso();
     if (volume_on_) rebuildVolume();
 }
 
 // ---------------------------------------------------------- isosurface ----
 
-void FieldView::setIsosurface(bool on) {
+void FieldScene::setIsosurface(bool on) {
     if (!is3D()) return;
     iso_on_ = on;
     if (on) enteringInteriorLayer();
     rebuildIso();
     updatePickList();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setIsoLevel(double level) {
+void FieldScene::setIsoLevel(double level) {
     if (!is3D()) return;
     iso_level_ = level;
     if (iso_on_) {
         rebuildIso();
         renderNow();
     }
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::rebuildIso() {
+void FieldScene::rebuildIso() {
     iso_actor_->SetVisibility(iso_on_);
     if (!iso_on_) return;
     auto t0 = std::chrono::steady_clock::now();
@@ -546,7 +546,7 @@ void FieldView::rebuildIso() {
 
 // -------------------------------------------------------------- volume ----
 
-void FieldView::setVolume(bool on) {
+void FieldScene::setVolume(bool on) {
     if (!is3D()) return;
     volume_on_ = on;
     if (on) {
@@ -560,10 +560,10 @@ void FieldView::setVolume(bool on) {
     }
     rebuildVolume();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setVolumePreset(VolumePreset p) {
+void FieldScene::setVolumePreset(VolumePreset p) {
     if (!is3D()) return;
     volume_preset_ = p;
     // The preset's colour map becomes the view's, so the bar describes the
@@ -571,7 +571,7 @@ void FieldView::setVolumePreset(VolumePreset p) {
     setColorMap(volumePresetSpec(p).map);
 }
 
-void FieldView::rebuildVolume() {
+void FieldScene::rebuildVolume() {
     volume_->SetVisibility(volume_on_);
     if (!volume_on_) return;
     auto t0 = std::chrono::steady_clock::now();
@@ -618,7 +618,7 @@ void FieldView::rebuildVolume() {
 
 // ----------------------------------------------- glyphs and streamlines ----
 
-void FieldView::setVectorField(const std::string& name) {
+void FieldScene::setVectorField(const std::string& name) {
     if (!is3D()) return;
     const auto& names = model_->vector_names();
     if (std::find(names.begin(), names.end(), name) == names.end()) return;
@@ -626,38 +626,38 @@ void FieldView::setVectorField(const std::string& name) {
     rebuildGlyphs();
     rebuildStreamlines();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setGlyphs(bool on) {
+void FieldScene::setGlyphs(bool on) {
     if (!is3D()) return;
     glyphs_on_ = on && !vector_name_.empty();
     if (glyphs_on_) enteringInteriorLayer();
     rebuildGlyphs();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setGlyphSpacing(double fraction) {
+void FieldScene::setGlyphSpacing(double fraction) {
     if (!is3D()) return;
     glyph_spacing_ = std::clamp(fraction, 0.0, 0.5);
     if (glyphs_on_) {
         rebuildGlyphs();
         renderNow();
     }
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setStreamlines(bool on) {
+void FieldScene::setStreamlines(bool on) {
     if (!is3D()) return;
     streamlines_on_ = on && !vector_name_.empty();
     if (streamlines_on_) enteringInteriorLayer();
     rebuildStreamlines();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::rebuildGlyphs() {
+void FieldScene::rebuildGlyphs() {
     glyph_actor_->VisibilityOff();
     glyph_sources_->Initialize();
     glyph_poly_->Initialize();
@@ -791,7 +791,7 @@ void FieldView::rebuildGlyphs() {
     layer_t_.glyph_ms = lap_ms(t0);
 }
 
-void FieldView::rebuildStreamlines() {
+void FieldScene::rebuildStreamlines() {
     stream_actor_->VisibilityOff();
     stream_lines_->Initialize();
     if (!streamlines_on_ || vector_name_.empty()) {
@@ -889,7 +889,7 @@ void FieldView::rebuildStreamlines() {
     layer_t_.streamline_ms = lap_ms(t0);
 }
 
-void FieldView::updateBars() {
+void FieldScene::updateBars() {
     // The bar column: the field's bar, and -- while a vector overlay is
     // shown -- |J|'s below it (section 15.19 finding 9).
     const bool vec = is3D() && (glyph_actor_->GetVisibility() || stream_actor_->GetVisibility());
@@ -911,9 +911,9 @@ void FieldView::updateBars() {
 
 // ------------------------------------------------------- exploded view ----
 
-bool FieldView::explodedAvailable(QString* why) const {
+bool FieldScene::explodedAvailableStr(std::string* why) const {
     auto say = [&](const char* s) {
-        if (why) *why = QString::fromUtf8(s);
+        if (why) *why = s;
         return false;
     };
     if (!is3D()) return say("the exploded view is 3D only");
@@ -931,25 +931,25 @@ bool FieldView::explodedAvailable(QString* why) const {
     return say("none of the result's regions has a 3D box");
 }
 
-void FieldView::setExploded(bool on) {
+void FieldScene::setExploded(bool on) {
     if (!is3D()) return;
-    exploded_on_ = on && explodedAvailable();
+    exploded_on_ = on && explodedAvailableStr();
     rebuildExploded();
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::setExplodedSeparation(double um) {
+void FieldScene::setExplodedSeparation(double um) {
     if (!is3D()) return;
     exploded_sep_um_ = std::max(0.0, um);
     if (exploded_on_) {
         rebuildExploded();
         renderNow();
     }
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
-void FieldView::rebuildExploded() {
+void FieldScene::rebuildExploded() {
     for (auto& a : region_actors_) renderer_->RemoveViewProp(a);
     region_actors_.clear();
     regions_.clear();
@@ -1021,7 +1021,7 @@ void FieldView::rebuildExploded() {
 
 // ------------------------------------------------------------ playback ----
 
-const SweepSnapshots* FieldView::snapshots() const {
+const SweepSnapshots* FieldScene::snapshots() const {
     if (!snapshots_checked_) {
         snapshots_checked_ = true;
         if (is3D() && model_->has_sweep_snapshots()) {
@@ -1035,18 +1035,18 @@ const SweepSnapshots* FieldView::snapshots() const {
     return snapshots_ ? &*snapshots_ : nullptr;
 }
 
-bool FieldView::showingSnapshot() const {
+bool FieldScene::showingSnapshot() const {
     if (!snapshot_ || !model_ || source_ != model_) return false;
     const SweepSnapshots* s = snapshots();
     if (!s || *snapshot_ >= s->count()) return false;
     return std::find(s->field_names.begin(), s->field_names.end(), field_) != s->field_names.end();
 }
 
-void FieldView::loadSnapshotValues() {
+void FieldScene::loadSnapshotValues() {
     raw_.values = model_->snapshot_field(*snapshots_, field_, *snapshot_);
 }
 
-std::array<double, 2> FieldView::snapshotUnion() {
+std::array<double, 2> FieldScene::snapshotUnion() {
     const std::string key = field_ + (log_ ? "|log" : "|lin");
     if (auto it = snapshot_union_.find(key); it != snapshot_union_.end()) return it->second;
     double lo = std::numeric_limits<double>::infinity(), hi = -lo;
@@ -1061,7 +1061,7 @@ std::array<double, 2> FieldView::snapshotUnion() {
     return snapshot_union_[key] = {lo, hi};
 }
 
-void FieldView::setSnapshot(std::optional<std::size_t> k) {
+void FieldScene::setSnapshot(std::optional<std::size_t> k) {
     if (!is3D()) return;
     const SweepSnapshots* s = snapshots();
     if (k && (!s || s->count() == 0)) k.reset();
@@ -1073,12 +1073,12 @@ void FieldView::setSnapshot(std::optional<std::size_t> k) {
     rebuildScalars();  // decodes the snapshot, gathers, refreshes the isosurface / volume
     layer_t_.snapshot_ms = lap_ms(t0);
     renderNow();
-    emit displayChanged();
+    notifyDisplayChanged();
 }
 
 // --------------------------------------------------------------- views ----
 
-void FieldView::setViewPreset(ViewPreset p) {
+void FieldScene::setViewPreset(ViewPreset p) {
     if (!is3D()) return;
     vtkCamera* cam = renderer_->GetActiveCamera();
     double pos[3] = {0.8, -0.6, -1.0}, up[3] = {0.0, -1.0, 0.0};  // Iso: as P0's default

@@ -1,0 +1,335 @@
+diff -ruN a/pytcad/desktop/tools/stage.ps1 b/pytcad/desktop/tools/stage.ps1
+--- a/pytcad/desktop/tools/stage.ps1	2026-09-29 17:47:48.111355581 +0000
++++ b/pytcad/desktop/tools/stage.ps1	2026-09-29 17:48:46.270847959 +0000
+@@ -27,6 +27,12 @@
+ # -RecreateRuntime: delete and re-create the -RuntimeEnv env from the spec.
+ # -NoVerify: skip check_runtime.py on the staged runtime + backend.
+ # -NoLicenses: skip gen_licenses.py (P5-S4). The installer build refuses a stage without the bundle.
++# -ExcludeUcrt: do not ship the conda `ucrt` package (the Windows SDK's app-local Universal CRT: ucrtbase.dll and
++#   the api-ms-win-*.dll forwarders). On Windows 10/11 the OS always loads its own UCRT and ignores an app-local
++#   copy (Microsoft; confirmed on this project's own tcad_desktop.exe: System32\ucrtbase.dll is loaded). Its files are
++#   removed from runtime\ by the package's own conda-meta file list, its conda-meta record is deleted so the licence
++#   inventory matches what ships, and the app-side copies from tcad-gui are neither copied nor kept. A RUNTIME CHANGE:
++#   re-run the full S2 gate (stage.ps1 -Reference ...) and the S3 Sandbox gate. Off by default.
+ # -DownloadLicenseTexts: when a package's extracted conda cache dir AND tarball are both gone (`conda clean`),
+ #   re-download that package to restore its licence text -- verified against the sha256/md5 conda recorded.
+ #   Without it only local tarballs are used (gen_licenses.py --restore-texts); nothing touches the network.
+@@ -47,6 +53,7 @@
+     [switch] $NoVerify,
+     [switch] $NoLicenses,
+     [switch] $DownloadLicenseTexts,
++    [switch] $ExcludeUcrt,
+     [switch] $NoPin,
+     [switch] $RecreateRuntime,
+     [string] $RuntimeEnv = "tcad-runtime",
+@@ -90,6 +97,55 @@
+     [System.IO.File]::WriteAllLines($path, $lines, (New-Object System.Text.UTF8Encoding $false))
+ }
+ 
++# -- conda package exclusion (-ExcludeUcrt) -------------------------------------------------------------
++
++# The lower-case DLL names a package installs, from its conda-meta record(s) in a prefix (distinct).
++function Get-CondaPackageFileNames([string] $prefix, [string] $name) {
++    $names = @{}
++    foreach ($f in (Get-ChildItem (Join-Path $prefix "conda-meta") -Filter "$name-*.json" -ErrorAction SilentlyContinue)) {
++        $m = Get-Content -Raw $f.FullName | ConvertFrom-Json
++        if ($m.name -ne $name) { continue }
++        foreach ($rel in @($m.files)) { $names[[System.IO.Path]::GetFileName($rel).ToLowerInvariant()] = $true }
++    }
++    return @($names.Keys | Sort-Object)
++}
++
++# Remove the files of conda package `name` from a staged prefix, by ITS OWN conda-meta list, and delete its
++# conda-meta record. All paths are validated BEFORE anything is deleted (an absolute or '..' path throws); a
++# file that another package's record also lists is KEPT and reported. Returns $null when the package is not
++# there (so a second run is a no-op).
++function Remove-CondaPackage([string] $prefix, [string] $name) {
++    $metaDir = Join-Path $prefix "conda-meta"
++    $records = @(Get-ChildItem $metaDir -Filter "$name-*.json" -ErrorAction SilentlyContinue |
++        Where-Object { (Get-Content -Raw $_.FullName | ConvertFrom-Json).name -eq $name })
++    if (-not $records.Count) { return $null }
++    $shared = @{}
++    foreach ($o in (Get-ChildItem $metaDir -Filter "*.json" -ErrorAction SilentlyContinue)) {
++        if ($records.FullName -contains $o.FullName) { continue }
++        $om = Get-Content -Raw $o.FullName | ConvertFrom-Json
++        foreach ($rel in @($om.files)) { $shared[$rel.Replace('\', '/').ToLowerInvariant()] = $om.name }
++    }
++    $plan = @()
++    foreach ($r in $records) {
++        $m = Get-Content -Raw $r.FullName | ConvertFrom-Json
++        foreach ($rel in @($m.files)) {
++            $norm = $rel.Replace('\', '/')
++            # rooted, drive-lettered, leading-slash or '..' paths are refused on EVERY OS (IsPathRooted alone is OS-dependent)
++            if ([System.IO.Path]::IsPathRooted($norm) -or $norm -match '^[A-Za-z]:' -or $norm.StartsWith('/') -or ($norm -split '/') -contains '..') { throw "refusing to remove '$rel': not a path inside the prefix" }
++            $plan += [pscustomobject]@{ rel = $norm; path = (Join-Path $prefix ($norm -replace '/', [System.IO.Path]::DirectorySeparatorChar)); owner = $shared[$norm.ToLowerInvariant()] }
++        }
++    }
++    $removed = @(); $missing = @(); $kept = @()
++    foreach ($e in $plan) {
++        if ($e.owner) { $kept += "$($e.rel) (also owned by $($e.owner))"; continue }
++        if (Test-Path -LiteralPath $e.path -PathType Leaf) { Remove-Item -LiteralPath $e.path -Force; $removed += $e.rel } else { $missing += $e.rel }
++    }
++    $first = Get-Content -Raw $records[0].FullName | ConvertFrom-Json
++    $records | ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force }
++    return [pscustomobject]@{ name = $name; version = "$($first.version)"; build = "$($first.build)"; removed = $removed; missing = $missing
++        keptShared = $kept; metaRemoved = @($records | ForEach-Object { $_.Name }) }
++}
++
+ # 0. The reference run: tcad-dev's own interpreter, the repo's source tree.
+ if ($EmitReference) {
+     $dev = Get-CondaEnvPath "tcad-dev"
+@@ -167,6 +223,8 @@
+     }
+     return $names
+ }
++$excludedDlls = @{}
++if ($ExcludeUcrt) { foreach ($n in (Get-CondaPackageFileNames $gui "ucrt")) { $excludedDlls[$n] = $true } }
+ $queue = New-Object System.Collections.Queue
+ Get-ChildItem $Out -Recurse -Include *.exe, *.dll | ForEach-Object { $queue.Enqueue($_.FullName) }
+ $seen = @{}
+@@ -177,6 +235,7 @@
+         $key = $dll.ToLowerInvariant()
+         if ($seen.ContainsKey($key)) { continue }
+         $seen[$key] = $true
++        if ($excludedDlls.ContainsKey($key)) { continue }              # -ExcludeUcrt: the OS supplies these
+         if (Test-Path (Join-Path $Out $dll)) { continue }
+         $src = Join-Path $guibin $dll
+         if (Test-Path $src) {
+@@ -187,6 +246,16 @@
+     }
+ }
+ 
++# -ExcludeUcrt, app side: anything windeployqt6 or the closure left next to the exe that the ucrt package owns.
++$ucrtAppRemoved = @()
++if ($ExcludeUcrt) {
++    foreach ($f in (Get-ChildItem $Out -Recurse -File -Filter "*.dll" -ErrorAction SilentlyContinue)) {
++        $top = ($f.FullName.Substring($Out.Length).TrimStart('\', '/') -split '[\\/]')[0]
++        if ($top -in @("runtime", "backend", "licenses")) { continue }
++        if ($excludedDlls.ContainsKey($f.Name.ToLowerInvariant())) { Remove-Item -LiteralPath $f.FullName -Force; $ucrtAppRemoved += $f.FullName.Substring($Out.Length).TrimStart('\', '/') }
++    }
++}
++
+ # 5. The Python runtime (runtime\) and the backend sources (backend\) -- P5-S2.
+ function New-PinnedRuntimeSpec([string] $BaseYml, [string] $OutYml, [string] $EnvName) {
+     # tcad-runtime.yml names the packages; the VERSIONS come from tcad-dev's own
+@@ -292,6 +361,16 @@
+     New-Item -ItemType Directory -Force (Join-Path $be "gui") | Out-Null
+     Copy-Item (Join-Path $root "gui\__init__.py") (Join-Path $be "gui")
+     Copy-Tree (Join-Path $root "gui\services") (Join-Path $be "gui\services") @("__pycache__")
++    # 5c'. -ExcludeUcrt, runtime side: remove the ucrt package by its own file list and drop its conda-meta record,
++    #      then prove nothing it owned is left anywhere in the staged tree.
++    $excluded = $null
++    if ($ExcludeUcrt) {
++        $excluded = Remove-CondaPackage $rt "ucrt"
++        if (-not $excluded) { throw "-ExcludeUcrt: no ucrt package in $rt\conda-meta (already excluded, or not in this runtime)" }
++        Write-Host ("excluded ucrt {0}: removed {1} runtime files ({2} listed but absent, {3} kept as shared); {4} app-dir copies not shipped" -f $excluded.version, $excluded.removed.Count, $excluded.missing.Count, $excluded.keptShared.Count, $ucrtAppRemoved.Count)
++        $left = @(Get-ChildItem $Out -Recurse -File -Filter "*.dll" | Where-Object { $excludedDlls.ContainsKey($_.Name.ToLowerInvariant()) })
++        if ($left.Count) { throw ("-ExcludeUcrt: still staged: " + (($left | Select-Object -First 5 | ForEach-Object { $_.FullName }) -join "; ")) }
++    }
+     # 5d. The licence bundle (P5-S4), generated from what is now actually staged: every conda package
+     #     in runtime\ and every DLL next to the exe (traced to its owning tcad-gui package). Fails, with
+     #     every problem listed, on a package/DLL with no licence entry, GPL/AGPL in the base runtime, or a
+@@ -302,6 +381,14 @@
+         & (Join-Path $rt "python.exe") (Join-Path $PSScriptRoot "gen_licenses.py") @licArgs
+         Assert-Exit "gen_licenses.py (the licence bundle)"
+     }
++    if ($excluded) {                                             # a record of what was deliberately not shipped
++        New-Item -ItemType Directory -Force (Join-Path $Out "licenses") | Out-Null
++        $rec = [ordered]@{ package = $excluded.name; version = $excluded.version; build = $excluded.build
++            reason = "app-local Universal CRT: the OS always loads its own UCRT on Windows 10/11 (NATIVE-DESKTOP-PLAN.md 26.9.3)"
++            runtimeFilesRemoved = $excluded.removed; runtimeFilesListedButAbsent = $excluded.missing; keptBecauseSharedWithAnotherPackage = $excluded.keptShared
++            condaMetaRecordsRemoved = $excluded.metaRemoved; appDirCopiesNotShipped = $ucrtAppRemoved }
++        Write-TextFile (Join-Path $Out "licenses\excluded-packages.json") (($rec | ConvertTo-Json -Depth 4) -split "`r?`n")
++    }
+     $stagedRuntime = $true
+ }
+ 
+diff -ruN a/pytcad/gui/tests/test_desktop_ucrt_exclusion.py b/pytcad/gui/tests/test_desktop_ucrt_exclusion.py
+--- a/pytcad/gui/tests/test_desktop_ucrt_exclusion.py	1970-01-01 00:00:00.000000000 +0000
++++ b/pytcad/gui/tests/test_desktop_ucrt_exclusion.py	2026-09-29 17:48:46.271064933 +0000
+@@ -0,0 +1,185 @@
++"""NATIVE-DESKTOP-PLAN.md 26.9.3: stage.ps1 -ExcludeUcrt (stage-time exclusion of the conda `ucrt` package).
++
++Executed under PowerShell 7 against a fake staged runtime built from the REAL ucrt 10.0.26100.0 file set
++(46 distinct names in two places = 92 files). NOT covered, not claimed: an actual Windows staging with the switch,
++and the S2/S3 revalidation that removing app-local UCRT files requires (a runtime change).
++"""
++import importlib.util
++import json
++import os
++import re
++import shutil
++import subprocess
++import sys
++
++import pytest
++
++ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
++TOOLS = os.path.join(ROOT, "desktop", "tools")
++STAGE_PS1 = os.path.join(TOOLS, "stage.ps1")
++PWSH = shutil.which("pwsh")
++needs_pwsh = pytest.mark.skipif(PWSH is None, reason="PowerShell 7 (pwsh) is not installed")
++
++# the distinct names in conda-forge ucrt-10.0.26100.0-h57928b3_0 (info/paths.json): each at the env root AND Library/bin
++UCRT_NAMES = (
++    ["api-ms-win-core-" + n for n in (
++        "console-l1-1-0", "console-l1-2-0", "datetime-l1-1-0", "debug-l1-1-0", "errorhandling-l1-1-0", "fibers-l1-1-0",
++        "fibers-l1-1-1", "file-l1-1-0", "file-l1-2-0", "file-l2-1-0", "handle-l1-1-0", "heap-l1-1-0", "interlocked-l1-1-0",
++        "kernel32-legacy-l1-1-1", "libraryloader-l1-1-0", "localization-l1-2-0", "memory-l1-1-0", "namedpipe-l1-1-0",
++        "processenvironment-l1-1-0", "processthreads-l1-1-0", "processthreads-l1-1-1", "profile-l1-1-0",
++        "rtlsupport-l1-1-0", "string-l1-1-0", "synch-l1-1-0", "synch-l1-2-0", "sysinfo-l1-1-0", "sysinfo-l1-2-0",
++        "timezone-l1-1-0", "util-l1-1-0")]
++    + ["api-ms-win-crt-" + n for n in (
++        "conio-l1-1-0", "convert-l1-1-0", "environment-l1-1-0", "filesystem-l1-1-0", "heap-l1-1-0", "locale-l1-1-0",
++        "math-l1-1-0", "multibyte-l1-1-0", "private-l1-1-0", "process-l1-1-0", "runtime-l1-1-0", "stdio-l1-1-0",
++        "string-l1-1-0", "time-l1-1-0", "utility-l1-1-0")]
++)
++UCRT_NAMES = [n + ".dll" for n in UCRT_NAMES] + ["ucrtbase.dll"]
++UCRT_FILES = UCRT_NAMES + ["Library/bin/" + n for n in UCRT_NAMES]
++
++
++def _read(p):
++    with open(p, "r", encoding="utf-8") as fh:
++        return fh.read()
++
++
++def _meta(prefix, name, version, files, licence="MIT"):
++    (prefix / "conda-meta").mkdir(parents=True, exist_ok=True)
++    (prefix / "conda-meta" / f"{name}-{version}-h0_0.json").write_text(json.dumps(
++        {"name": name, "version": version, "build": "h0_0", "license": licence, "files": files}))
++
++
++def _touch(prefix, files):
++    for rel in files:
++        p = prefix / rel
++        p.parent.mkdir(parents=True, exist_ok=True)
++        p.write_bytes(b"x")
++
++
++def _fake_runtime(tmp_path):
++    rt = tmp_path / "runtime"
++    _meta(rt, "ucrt", "10.0.26100.0", UCRT_FILES, "LicenseRef-MicrosoftWindowsSDK10")
++    _meta(rt, "python", "3.14.7", ["python.exe", "python314.dll"], "PSF-2.0")
++    _meta(rt, "vc14_runtime", "14.51.36247", ["vcruntime140.dll", "Library/bin/vcruntime140.dll"],
++          "LicenseRef-MicrosoftVisualCpp2015-2022Runtime")
++    _touch(rt, UCRT_FILES + ["python.exe", "python314.dll", "vcruntime140.dll", "Library/bin/vcruntime140.dll", "Lib/keep.py"])
++    return rt
++
++
++def _ps(rt, expr, extra=""):
++    script = (f"$ast=[System.Management.Automation.Language.Parser]::ParseFile('{STAGE_PS1}',[ref]$null,[ref]$null);"
++              "foreach($f in $ast.FindAll({$args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst]},$true)){"
++              "if($f.Name -in 'Remove-CondaPackage','Get-CondaPackageFileNames'){Invoke-Expression $f.Extent.Text}};"
++              f"{extra}; ConvertTo-Json -Compress -Depth 6 -InputObject $({expr})")
++    p = subprocess.run([PWSH, "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True,
++                       encoding="utf-8", timeout=120)
++    return p
++
++
++def test_the_fake_matches_the_real_package_shape():
++    assert len(UCRT_NAMES) == 46 and len(UCRT_FILES) == 92 and len(set(UCRT_FILES)) == 92
++    assert sum(n.startswith("api-ms-win-crt-") for n in UCRT_NAMES) == 15 and sum(n.startswith("api-ms-win-core-") for n in UCRT_NAMES) == 30
++
++
++@needs_pwsh
++def test_removes_exactly_the_92_listed_files_and_the_conda_meta_record(tmp_path):
++    rt = _fake_runtime(tmp_path)
++    p = _ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'")
++    assert p.returncode == 0, p.stdout + p.stderr
++    r = json.loads(p.stdout)
++    assert (r["name"], r["version"], r["build"]) == ("ucrt", "10.0.26100.0", "h0_0")
++    assert sorted(r["removed"]) == sorted(UCRT_FILES) and len(r["removed"]) == 92 and r["missing"] == [] and r["keptShared"] == []
++    assert r["metaRemoved"] == ["ucrt-10.0.26100.0-h0_0.json"]
++    for rel in UCRT_FILES:
++        assert not (rt / rel).exists(), rel
++    # everything else is untouched: other packages' files AND their conda-meta records
++    for rel in ("python.exe", "python314.dll", "vcruntime140.dll", "Library/bin/vcruntime140.dll", "Lib/keep.py"):
++        assert (rt / rel).is_file(), rel
++    assert sorted(os.listdir(str(rt / "conda-meta"))) == ["python-3.14.7-h0_0.json", "vc14_runtime-14.51.36247-h0_0.json"]
++
++
++@needs_pwsh
++def test_a_second_run_is_a_noop_and_a_missing_package_returns_nothing(tmp_path):
++    rt = _fake_runtime(tmp_path)
++    assert _ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'").returncode == 0
++    p = _ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'")
++    assert p.returncode == 0 and p.stdout.strip() == "null"
++    p = _ps(rt, f"Remove-CondaPackage '{rt}' 'no_such_package'")
++    assert p.returncode == 0 and p.stdout.strip() == "null"
++
++
++@needs_pwsh
++def test_files_absent_from_disk_are_reported_not_fatal(tmp_path):
++    rt = _fake_runtime(tmp_path)
++    (rt / "ucrtbase.dll").unlink()
++    (rt / "Library" / "bin" / "api-ms-win-crt-time-l1-1-0.dll").unlink()
++    r = json.loads(_ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'").stdout)
++    assert sorted(r["missing"]) == ["Library/bin/api-ms-win-crt-time-l1-1-0.dll", "ucrtbase.dll"] and len(r["removed"]) == 90
++
++
++@needs_pwsh
++def test_a_file_another_package_also_owns_is_kept(tmp_path):
++    rt = _fake_runtime(tmp_path)
++    _meta(rt, "other", "1.0", ["ucrtbase.dll"], "MIT")                      # claims one of ucrt's files
++    r = json.loads(_ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'").stdout)
++    assert (rt / "ucrtbase.dll").is_file() and len(r["removed"]) == 91
++    assert r["keptShared"] == ["ucrtbase.dll (also owned by other)"]
++
++
++@needs_pwsh
++@pytest.mark.parametrize("bad", ["../escape.dll", "..\\escape.dll", "sub/../../escape.dll", "C:/Windows/System32/x.dll", "/etc/x.dll"])
++def test_a_path_outside_the_prefix_is_refused_before_anything_is_deleted(tmp_path, bad):
++    rt = _fake_runtime(tmp_path)
++    _meta(rt, "ucrt", "10.0.26100.0", UCRT_FILES + [bad], "LicenseRef-MicrosoftWindowsSDK10")
++    p = _ps(rt, f"Remove-CondaPackage '{rt}' 'ucrt'")
++    assert p.returncode != 0 and "refusing to remove" in (p.stdout + p.stderr)
++    assert all((rt / rel).is_file() for rel in UCRT_FILES), "nothing may be deleted when any path is refused"
++    assert (rt / "conda-meta" / "ucrt-10.0.26100.0-h0_0.json").is_file()
++
++
++@needs_pwsh
++def test_the_app_side_name_list_is_the_distinct_lowercase_dll_names(tmp_path):
++    gui = tmp_path / "gui"
++    _meta(gui, "ucrt", "10.0.26100.0", UCRT_FILES, "LicenseRef-MicrosoftWindowsSDK10")
++    p = _ps(gui, f"Get-CondaPackageFileNames '{gui}' 'ucrt'")
++    got = json.loads(p.stdout)
++    assert got == sorted(n.lower() for n in UCRT_NAMES) and len(got) == 46
++
++
++def test_after_exclusion_the_licence_inventory_no_longer_contains_ucrt(tmp_path):
++    """The point of deleting the conda-meta record: gen_licenses inventories what ships."""
++    spec = importlib.util.spec_from_file_location("gen_licenses", os.path.join(TOOLS, "gen_licenses.py"))
++    gl = importlib.util.module_from_spec(spec)
++    sys.modules["gen_licenses"] = gl
++    spec.loader.exec_module(gl)
++    stage = tmp_path / "stage"
++    rt = stage / "runtime"
++    _meta(rt, "ucrt", "10.0.26100.0", UCRT_FILES, "LicenseRef-MicrosoftWindowsSDK10")
++    _meta(rt, "python", "3.14.7", ["python.exe"], "PSF-2.0")
++    _touch(rt, UCRT_FILES + ["python.exe"])
++    pol = gl.load_policy(gl.DEFAULT_POLICY)
++    rows, problems, _ = gl.build_inventory(str(stage), None, pol, False)
++    assert {r["name"] for r in rows} == {"ucrt", "python"}
++    assert any("LicenseRef-MicrosoftWindowsSDK10" in p for p in problems)          # today's blocker
++    for rel in UCRT_FILES:
++        os.remove(str(rt / rel))
++    os.remove(str(rt / "conda-meta" / "ucrt-10.0.26100.0-h0_0.json"))
++    rows, problems, _ = gl.build_inventory(str(stage), None, pol, False)
++    assert {r["name"] for r in rows} == {"python"} and not any("ucrt" in p or "MicrosoftWindowsSDK10" in p for p in problems)
++
++
++def test_stage_script_wiring_is_explicit_ordered_and_never_touches_the_conda_env():
++    s = _read(STAGE_PS1)
++    code = "\n".join(ln for ln in s.splitlines() if not ln.lstrip().startswith("#"))
++    assert "[switch] $ExcludeUcrt" in code and "$ExcludeUcrt" in code.split("param(")[1].split(")")[0]      # off by default: an explicit decision
++    assert not re.search(r"^\s*(&\s*)?conda(\.exe)?\s+(remove|uninstall|install|update)", code, re.M)         # never `conda remove ucrt` (it would take python with it)
++    assert "conda remove" not in code
++    closure = code.index("$excludedDlls.ContainsKey($key)")
++    assert code.index("Get-CondaPackageFileNames $gui") < closure                                                # the skip list exists before the closure walk
++    assert closure < code.index("Remove-CondaPackage $rt")                                                       # app-side skip, then the runtime removal
++    assert code.index("Remove-CondaPackage $rt") < code.index("gen_licenses.py") < code.index("excluded-packages.json")   # inventory sees the result; the record is written last
++    assert "-ExcludeUcrt: still staged" in code                                                                  # and it proves nothing is left
++
++
++def test_the_patch_is_ascii():
++    assert open(STAGE_PS1, "rb").read().isascii()

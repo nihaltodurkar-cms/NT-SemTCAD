@@ -86,6 +86,10 @@ def test_required_defines_are_guarded_and_every_used_define_exists():
         assert re.search(rf"#ifndef {d}\s*\n\s*#error", text), d
     assert re.search(r'#ifndef NameSuffix\s*\n\s*#define NameSuffix "-unsigned"', text)   # decision 26.4-2
     defined = set(re.findall(r"^\s*#define (\w+)", text, re.M)) | {"AppVersion", "StageDir"}
+    # 26.9.7: the vc_redist defines are optional as a group -- used only under #ifdef VcRedist, which stops
+    # the build (#error) when the version defines that must accompany it are missing
+    assert re.search(r"#ifdef VcRedist\s*\n\s*#ifndef VcMajor\s*\n\s*#error", text)
+    defined |= {"VcRedist", "VcMajor", "VcMinor", "VcBld"}
     used = set(re.findall(r"\{#(\w+)\}", "\n".join(_iss_lines())))
     assert used <= defined, used - defined
     assert _setup()["OutputBaseFilename"] == "TCAD-{#AppVersion}{#NameSuffix}-setup"
@@ -95,7 +99,9 @@ def test_installer_names_the_real_executable_and_ships_the_whole_stage():
     assert re.search(r'#define AppExe "tcad_desktop\.exe"', _read(ISS))
     assert re.search(r"add_executable\(tcad_desktop\b", _read(CMAKE))
     files = _section("Files")
-    assert files == ['Source: "{#StageDir}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs']
+    assert files == ['Source: "{#StageDir}\\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs',
+                     # 26.9.7: Microsoft's vc_redist, embedded but never installed into {app} (dontcopy)
+                     '#ifdef VcRedist', 'Source: "{#VcRedist}"; DestName: "vc_redist.x64.exe"; Flags: dontcopy', '#endif']
 
 
 def test_no_file_association_is_taken_only_open_with_under_applications():

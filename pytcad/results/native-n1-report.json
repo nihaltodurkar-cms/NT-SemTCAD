@@ -1,0 +1,36 @@
+﻿{
+    "ok":  false,
+    "out":  ".\\pytcad\\results\\finfet3d_curved.npz",
+    "steps":  [
+                  {
+                      "step":  "build",
+                      "ok":  true,
+                      "detail":  "build.ps1 -NoLegacyQt exit 0"
+                  },
+                  {
+                      "step":  "core-tests",
+                      "ok":  false,
+                      "detail":  "RUN settings_a_corrupt_file_is_kept_aside_not_overwritten"
+                  },
+                  {
+                      "step":  "stage",
+                      "ok":  true,
+                      "detail":  "70 DLLs copied next to the exe from tcad-gui (import closure of the exe)"
+                  },
+                  {
+                      "step":  "no-qt",
+                      "ok":  true,
+                      "detail":  "71 files scanned; NO Qt found"
+                  },
+                  {
+                      "step":  "selftest:mosfet_2d",
+                      "ok":  true,
+                      "detail":  "exit 0; 12 checks, 0 failed; backend pid 9556, 29 methods; png: .\\pytcad\\results\\native-n1-mosfet_2d.png"
+                  },
+                  {
+                      "step":  "spike-gate",
+                      "ok":  true,
+                      "detail":  "verify_native_spike.ps1 exit 0"
+                  }
+              ]
+}

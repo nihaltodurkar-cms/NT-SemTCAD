@@ -81,9 +81,9 @@ DisplayPanel::DisplayPanel(FieldView* view, QWidget* parent) : QWidget(parent), 
         const QString name = cmap_->itemData(i).toString();
         view_->setColorMap(name.isEmpty() ? std::nullopt : colorMapFromName(name.toStdString()));
     });
-    connect(log_, &QCheckBox::toggled, view_, &FieldView::setLogScale);
-    connect(contours_, &QCheckBox::toggled, view_, &FieldView::setContours);
-    connect(mesh_, &QCheckBox::toggled, view_, &FieldView::setMeshLines);
+    connect(log_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setLogScale(x); });
+    connect(contours_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setContours(x); });
+    connect(mesh_, &QCheckBox::toggled, view_, [v = view_](bool x) { v->setMeshLines(x); });
     connect(auto_, &QRadioButton::toggled, this, [this](bool on) {
         if (on) view_->setAutoRange();
     });

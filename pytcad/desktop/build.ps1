@@ -12,13 +12,21 @@
 # (vtk-io-ffmpeg: conda-forge splits that module out of vtk-base, but
 # vtk-base's CMake targets still reference its .lib.)
 # Output: pytcad\build\desktop\.
+#
+# -NoLegacyQt (NATIVE-DESKTOP-PLAN.md section 27): build ONLY the Qt-free targets -- the native Win32
+# spike tcad_native_spike and the libraries it links -- with -DTCAD_LEGACY_QT=OFF into
+# pytcad\build\desktop-native\. No Qt, no ADS, no vtkGUISupportQt is configured or linked. (The
+# tcad-gui env still HAS qt6-main installed, because conda-forge's vtk-base depends on it; nothing of
+# it is linked or staged. tools\verify_native_spike.ps1 proves that.)
 param(
     [ValidateSet("Release", "RelWithDebInfo", "Debug")] [string] $Config = "Release",
-    [switch] $Test
+    [switch] $Test,
+    [switch] $NoLegacyQt
 )
 $ErrorActionPreference = "Stop"
 $src = $PSScriptRoot
-$build = Join-Path (Split-Path -Parent $src) "build\desktop"
+$build = Join-Path (Split-Path -Parent $src) $(if ($NoLegacyQt) { "build\desktop-native" } else { "build\desktop" })
+$legacy = if ($NoLegacyQt) { "OFF" } else { "ON" }
 
 # 1. MSVC developer environment (x64).
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -50,7 +58,7 @@ $devpy = if ($dev) { Join-Path $dev "python.exe" } else { "" }
 if (-not $devpy) { Write-Warning "conda env 'tcad-dev' not found: the backend needs TCAD_BACKEND_PYTHON" }
 
 # 3. Configure + build.
-& $cmake -S $src -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DCMAKE_PREFIX_PATH=$lib" "-DCMAKE_MAKE_PROGRAM=$ninja" "-DTCAD_BACKEND_PYTHON=$devpy"
+& $cmake -S $src -B $build -G Ninja "-DCMAKE_BUILD_TYPE=$Config" "-DCMAKE_PREFIX_PATH=$lib" "-DCMAKE_MAKE_PROGRAM=$ninja" "-DTCAD_BACKEND_PYTHON=$devpy" "-DTCAD_LEGACY_QT=$legacy"
 if ($LASTEXITCODE) { throw "CMake configure failed" }
 & $cmake --build $build
 if ($LASTEXITCODE) { throw "Build failed" }
@@ -61,4 +69,5 @@ if ($Test) {
     & (Join-Path $lib "bin\ctest.exe") --test-dir $build --output-on-failure
     if ($LASTEXITCODE) { throw "C++ unit tests failed" }
 }
-Write-Host "Built into $build  (run: $build\tcad_desktop.cmd [result.npz])"
+if ($NoLegacyQt) { Write-Host "Built into $build  (Qt-free: run $build\tcad_native_spike.exe <result.npz>; staged check: tools\verify_native_spike.ps1)" }
+else { Write-Host "Built into $build  (run: $build\tcad_desktop.cmd [result.npz])" }
