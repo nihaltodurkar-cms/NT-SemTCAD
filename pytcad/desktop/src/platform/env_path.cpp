@@ -90,7 +90,7 @@ std::string pythonPathEnvironment(const std::string& current_path, const std::st
 
 std::string resolveManifestPath(const std::string& app_dir, const std::string& value) {
     if (value.empty() || isAbsolutePath(value)) return value;
-    return (fs::path(app_dir) / value).lexically_normal().string();
+    return (fs::path(app_dir) / value).lexically_normal().generic_string();  // forward slashes: valid for CreateProcess, and one spelling on every platform
 }
 
 RpcConfig resolveBackendConfig(const std::string& app_dir, const std::string& manifest_text,
