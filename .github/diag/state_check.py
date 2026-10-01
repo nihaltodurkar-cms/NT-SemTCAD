@@ -33,12 +33,25 @@ dF = np.abs(F - z["F"]); scale = np.maximum(np.abs(z["F"]), 1e-300)
 dJ = abs(Jc - Jref); 
 print(f"F: max|dF|={dF.max():.3e} max rel={np.max(dF/np.maximum(np.abs(z['F']),1e-30)):.3e} |F|max={np.abs(F).max():.3e}")
 print(f"J: max|dJ|={dJ.max():.3e} |J|max={abs(Jref).max():.3e}")
+# which entries differ, and which side matches a central finite difference
+D = (Jc - Jref).tocoo()
+order = np.argsort(-np.abs(D.data))[:8]
+ub0 = C._pack(z["psib"], z["nb"], z["pb"]); bcb = bc_at(float(z["Vb"]))
+def Fat(u):
+    ps, nn, pp = C._unpack(u); return dev._residual_jacobian(ps, nn, pp, bcb)[0]
+for k in order:
+    r, cc = int(D.row[k]), int(D.col[k])
+    h = 1e-6 * max(1.0, abs(ub0[cc]))
+    up = ub0.copy(); up[cc] += h; um = ub0.copy(); um[cc] -= h
+    fd = (Fat(up)[r] - Fat(um)[r]) / (2 * h)
+    print(f"row={r} (node {r//3}, eq {'psi n p'.split()[r%3]}) col={cc} (node {cc//3}, var {'psi n p'.split()[cc%3]}) "
+          f"here={Jc[r, cc]:+.10e} ref={Jref[r, cc]:+.10e} fd_here={fd:+.10e}")
 ua = C._pack(z["psia"], z["na"], z["pa"]); ub = C._pack(z["psib"], z["nb"], z["pb"])
 Va, Vb = float(z["Va"]), float(z["Vb"])
 raw = np.concatenate([ub - ua, [Vb - Va]]); mask = np.zeros(3*N+1, bool); mask[0:3*N:3] = True; mask[-1] = True
 raw = raw * mask; tf = raw / np.linalg.norm(raw); tu, tV = tf[:-1], tf[-1]
 c = np.zeros(3*N); c[0] = -1.0/VT
-for ds in (500.0, 250.0, 125.0, 60.0, 30.0, 10.0, 4.0, 1.0):
+for ds in (500.0, 250.0, 125.0):
     u, V, ok, it, _ = C._bordered_corrector_staged(dev, ub + ds*tu, Vb + ds*tV, ub, Vb, tu, tV, ds, c,
         bc_at, NewtonOptions(), 1e-8, 60, _II_STAGES, "_ii_strength")
     print(f"ds={ds:7.2f} converged={ok} iters={it} V={V:+.5f}")
