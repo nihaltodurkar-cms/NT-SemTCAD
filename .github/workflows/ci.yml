@@ -134,6 +134,48 @@ jobs:
             pytcad/benchmark-report.md
             pytcad/benchmark-report.json
 
+  # TEMPORARY diagnostic (PR #2): trace the M15 N=2e16 arc-length sweep on
+  # Windows to compare with the container trace. Remove before merge.
+  fold-trace:
+    name: "diag: M15 fold trace"
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: conda-incubator/setup-miniconda@v3
+        with:
+          python-version: "3.11"
+          miniforge-version: latest
+          activate-environment: tcad
+      - name: Install
+        working-directory: pytcad
+        run: |
+          conda install -y -c conda-forge mkl eigen
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install nanobind scikit-build-core
+          conda create -y -p "$RUNNER_TEMP/tcad-cpp" -c conda-forge gxx binutils cmake ninja
+      - name: Build the extension in place
+        working-directory: pytcad
+        run: |
+          CPP="$(cygpath -m "$RUNNER_TEMP/tcad-cpp")/Library/bin"
+          export PATH="$(cygpath -u "$CPP"):$PATH"
+          cmake -S core -B build/dev -G Ninja \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+                -DTCAD_INPLACE_OUTPUT=ON \
+                -DCMAKE_CXX_COMPILER="$CPP/g++.exe" \
+                -DCMAKE_AR="$CPP/x86_64-w64-mingw32-ar.exe" \
+                -DCMAKE_RANLIB="$CPP/x86_64-w64-mingw32-ranlib.exe" \
+                -DCMAKE_PREFIX_PATH="$(cygpath -m "$CONDA_PREFIX")/Library" \
+                -DPython_EXECUTABLE="$(cygpath -m "$(which python)")"
+          cmake --build build/dev
+      - name: Trace N=2e16
+        working-directory: pytcad
+        run: python ../.github/diag/fold_trace.py . 2e16
+
   wheel:
     name: wheel builds
     runs-on: windows-latest
