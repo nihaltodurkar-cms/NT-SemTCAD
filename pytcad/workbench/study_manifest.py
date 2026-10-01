@@ -41,7 +41,9 @@ def _git_commit():
     try:
         out = subprocess.run(
             ["git", "rev-parse", "HEAD"], capture_output=True, text=True,
-            timeout=5, cwd=os.path.dirname(os.path.abspath(__file__)))
+            # 5 s was not enough on a loaded Windows CI runner (4 xdist
+            # workers): git timed out and the stamp silently became None.
+            timeout=30, cwd=os.path.dirname(os.path.abspath(__file__)))
     except Exception:
         return None
     return out.stdout.strip() if out.returncode == 0 else None
