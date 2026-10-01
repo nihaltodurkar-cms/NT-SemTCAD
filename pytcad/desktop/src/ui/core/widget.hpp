@@ -29,6 +29,7 @@ namespace tcad::ui {
 
 class Layout;
 class InputRouter;
+class PopupService;
 class Widget;
 
 using TimerId = std::uint64_t;
@@ -51,6 +52,10 @@ public:
     virtual InputRouter* input() { return nullptr; }      // focus, hover, capture (N2c)
     virtual TimerService* timers() { return nullptr; }
     virtual void widgetGone(Widget*) {}                   // a widget (and its subtree) left the tree or died
+    virtual PopupService* popups() { return nullptr; }    // top-level popup windows (N3c; ui/core/popup.hpp)
+    // Tell a screen reader something happened to `w` that is not a property change: the highlighted row of an open
+    // drop-down (UI Automation's notification event). No-op without one.
+    virtual void announce(Widget*, std::string_view) {}
 };
 
 // The Qt focus policies the framework keeps (N2c): None; Tab (keyboard only); Click (mouse only); Strong (both).
@@ -63,7 +68,15 @@ enum class Cursor { Inherit, Arrow, IBeam, Hand, SizeWE, SizeNS, SizeAll, Cross,
 // types and patterns: Invoke for Button/MenuItem, Toggle when accessibleToggleState() has a value, Value when
 // accessibleHasValue(), Text for an edit (ui/win32/uia_provider.cpp).
 enum class Role { Pane, Group, Text, Edit, Button, CheckBox, RadioButton, ComboBox, Slider, List, ListItem, Tree,
-                  TreeItem, Tab, TabItem, Menu, MenuItem, ToolBar, StatusBar, ProgressBar, ScrollBar, Image, Custom };
+                  TreeItem, Tab, TabItem, Menu, MenuItem, ToolBar, StatusBar, ProgressBar, ScrollBar, Image, Spinner, Custom };
+
+// RangeValue (N3b: sliders and spin boxes): a number within [minimum, maximum]; `small_step` is one arrow key,
+// `large_step` one page. `valid` false: the widget has no range.
+struct AccessibleRange {
+    bool valid = false;
+    double value = 0, minimum = 0, maximum = 0, small_step = 1, large_step = 10;
+    bool read_only = false;
+};
 
 // A mouse event as a widget sees it: positions in DIPs, `pos` relative to the widget.
 struct UiMouseEvent {
@@ -174,7 +187,11 @@ public:
     // Alt+<letter> underlines are shown (Windows' keyboard cues: after Alt is pressed, or always by the system
     // setting). True without a router.
     bool mnemonicCuesVisible() const;
-    void setFocus(FocusReason why = FocusReason::Other);
+    void setFocus(FocusReason why = FocusReason::Other);  // a focus proxy's, when it has one
+    // QWidget::setFocusProxy (N3b): focusing this widget -- a label's buddy, Alt+<letter> -- focuses `w`, and hasFocus()
+    // reports w's. `w` must be this widget or one of its descendants (it then dies with it); it stays the Tab stop.
+    void setFocusProxy(Widget* w) { focus_proxy_ = w == this ? nullptr : w; }
+    Widget* focusProxy() const { return focus_proxy_; }
     void clearFocus();
     bool hasFocus() const;  // the focus widget of an ACTIVE window
     bool isHovered() const;
@@ -209,6 +226,22 @@ public:
     // SelectionItem (N3a: radio buttons; list rows and tabs later): -1 none, else 0/1 selected.
     virtual int accessibleSelectionState() const { return -1; }
     virtual void accessibleSelect() {}
+    // RangeValue (N3b). accessibleSetRangeValue: false when the value is refused (out of range, not a whole number).
+    virtual AccessibleRange accessibleRange() const { return {}; }
+    virtual bool accessibleSetRangeValue(double) { return false; }
+    // ExpandCollapse (N3c: combo boxes; menus later): -1 none, 0 collapsed, 1 expanded.
+    virtual int accessibleExpandState() const { return -1; }
+    virtual void accessibleExpand(bool /*open*/) {}
+    std::function<void()> accessible_expand_changed;  // set by the window's UIA host
+    void notifyExpandChanged() const {
+        if (accessible_expand_changed) accessible_expand_changed();
+    }
+    void announce(std::string_view text);  // through the host; see UiHost::announce
+    // Set by the window's UIA host: the widget's range value changed (raises the property-changed event).
+    std::function<void()> accessible_range_changed;
+    void notifyRangeChanged() const {
+        if (accessible_range_changed) accessible_range_changed();
+    }
 
     // -- timers, stopped automatically when the widget dies or leaves the tree. 0 when the tree has no timer service.
     TimerId startTimer(int interval_ms, bool repeat, std::function<void()> fn);
@@ -235,6 +268,7 @@ private:
     FocusPolicy focus_policy_ = FocusPolicy::None;
     Cursor cursor_ = Cursor::Inherit;
     char32_t mnemonic_ = 0;
+    Widget* focus_proxy_ = nullptr;
     std::vector<TimerId> timers_;
 };
 

@@ -34,6 +34,11 @@ public:
     void setText(std::string_view utf8);
     std::function<void()> on_editing_finished;
     std::function<void()> on_text_changed;
+    std::function<void(bool, FocusReason)> on_focus_changed;  // after the edit's own reaction (N3b: a spin box's)
+    // The text is not acceptable: a two-DIP error-coloured frame (N3b; Qt's spin boxes show no such state -- they
+    // silently fix the text up, which decision 1 of 27.8 forbids).
+    void setInvalid(bool on);
+    bool isInvalid() const { return invalid_; }
 
     TextStore* textStore() const { return store_; }
     bool tsfReady() const { return doc_ != nullptr; }
@@ -91,6 +96,7 @@ private:
     float scroll_ = 0;
     bool caret_on_ = true;
     bool blinking_ = true;
+    bool invalid_ = false;
     TimerId blink_ = 0;
 };
 

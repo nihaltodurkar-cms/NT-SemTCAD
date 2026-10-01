@@ -236,8 +236,16 @@ bool Widget::acceptsFocus(FocusReason why) const {
 }
 
 void Widget::setFocus(FocusReason why) {
+    if (focus_proxy_) {
+        focus_proxy_->setFocus(why);
+        return;
+    }
     UiHost* h = host();
     if (h && h->input() && focus_policy_ != FocusPolicy::None && isVisible() && isEnabled()) h->input()->setFocus(this, why);
+}
+
+void Widget::announce(std::string_view text) {
+    if (UiHost* h = host()) h->announce(this, text);
 }
 
 void Widget::clearFocus() {
@@ -246,6 +254,7 @@ void Widget::clearFocus() {
 }
 
 bool Widget::hasFocus() const {
+    if (focus_proxy_) return focus_proxy_->hasFocus();
     UiHost* h = host();
     return h && h->input() && h->input()->focusWidget() == this && h->input()->windowActive();
 }

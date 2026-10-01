@@ -70,6 +70,7 @@ void InputRouter::widgetGone(Widget* w) {
     auto dead = [&](Widget* x) { return x && std::find(sub.begin(), sub.end(), x) != sub.end(); };
     if (dead(focus_)) focus_ = nullptr;  // no focusChanged on a dying widget
     if (dead(grab_)) grab_ = nullptr, dragging_ = false;
+    if (dead(press_filter_owner_)) press_filter_owner_ = nullptr, press_filter_ = nullptr;
     auto it = std::find_if(hover_.begin(), hover_.end(), dead);
     hover_.erase(it, hover_.end());
     if (dead(tooltip_target_) || dead(tooltip_shown_)) hideTooltip();
@@ -183,6 +184,8 @@ bool InputRouter::mouse(const MouseEvent& e) {
             const auto chain = chainAt(p);
             setHover(chain);  // a press can arrive without a move first
             if (chain.empty()) return false;
+            if (press_filter_ && press_filter_(chain.back())) return true;
+            if (!alive(chain.back())) return false;  // the filter closed a popup that took it along
             if (e.button == MouseButton::Left || e.button == MouseButton::Right)
                 for (auto it = chain.rbegin(); it != chain.rend(); ++it)
                     if ((*it)->acceptsFocus(FocusReason::Mouse)) {

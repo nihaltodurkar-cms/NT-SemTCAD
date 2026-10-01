@@ -3,7 +3,7 @@
 // Esc closes. For looking at, not for gating: the gate is tcad_ui_render_tests.
 //
 //   tcad_ui_demo [--warp] [--screenshot <png> (render one frame, save it, exit)]
-//   tcad_ui_demo --gallery [--warp] [--screenshot <png>]   the N2/N3a gallery (ui_gallery.hpp)
+//   tcad_ui_demo --gallery [--warp] [--screenshot <png>]   the N2/N3 gallery (ui_gallery.hpp)
 //   tcad_ui_demo --edits   two N2e line edits in a real window: the manual IME / dictation / touch-keyboard checklist
 //                          of NATIVE-DESKTOP-PLAN.md 27.7.5 is run here
 #include "render_scene.hpp"
@@ -36,7 +36,7 @@ int main(int argc, char** argv) {
     if (gallery_mode) {
         auto dev = ui::RenderDevice::create({.warp = warp});
         if (!dev) return 1;
-        auto uw = ui::UiWindow::create(*dev, {.title = L"PyTCAD - N2/N3a gallery", .width = 760, .height = 560});
+        auto uw = ui::UiWindow::create(*dev, {.title = L"PyTCAD - N2/N3 gallery", .width = 760, .height = 560});
         if (!uw) return 1;
         ui::gallery::build(**uw, [](const std::string& s) { std::printf("%s\n", s.c_str()); });
         if (!shot.empty()) {

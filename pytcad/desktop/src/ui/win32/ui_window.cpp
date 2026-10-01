@@ -1,6 +1,7 @@
 #include "ui/win32/ui_window.hpp"
 
 #include "ui/core/style.hpp"
+#include "ui/win32/popup_window.hpp"
 
 #include <UIAutomationCoreApi.h>
 #include "platform/app.hpp"
@@ -59,7 +60,7 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
     std::unique_ptr<UiWindow> w(new UiWindow());
     w->device_ = std::move(device);
     w->scale_override_ = o.scale_override;
-    auto win = platform::Window::create({.title = o.title, .width = o.width, .height = o.height});
+    auto win = platform::Window::create({.title = o.title, .width = o.width, .height = o.height, .popup = o.popup});
     if (!win) return std::unexpected(win.error());
     w->window_ = std::move(*win);
     w->scale_ = o.scale_override.value_or(w->window_->dpiScale());
@@ -80,15 +81,22 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
     w->router_->setDragThresholdPx(std::max(GetSystemMetrics(SM_CXDRAG), GetSystemMetrics(SM_CYDRAG)));
     w->uia_ = std::make_unique<UiaHost>(w->window_->hwnd(), *w->root_, *w->router_);
     w->router_->on_focus_changed = [u = w->uia_.get()](Widget* f) { u->focusChanged(f); };
-    applySystemHighContrast();
+    if (!o.popup) applySystemHighContrast();  // (a popup shares the palette its owner already read)
     // keyboard cues (N3a): the system setting "underline access keys" shows mnemonics always; otherwise after Alt
     BOOL cues = FALSE;
     if (SystemParametersInfoW(SPI_GETKEYBOARDCUES, 0, &cues, 0)) w->router_->setAlwaysShowCues(cues != FALSE);
 
     UiWindow* self = w.get();
     auto& h = w->window_->handlers;
-    h.on_resize = [self](int wpx, int hpx) { self->resizeClient(wpx, hpx); };
+    h.on_resize = [self](int wpx, int hpx) {
+        self->resizeClient(wpx, hpx);
+        if (self->popups_) self->popups_->dismissAll();  // N3c: a popup does not outlive its window's geometry
+    };
+    h.on_moved = [self] {
+        if (self->popups_) self->popups_->dismissAll();
+    };
     h.on_dpi_changed = [self](double scale) {
+        if (self->popups_) self->popups_->dismissAll();
         if (!self->scale_override_) self->setScale(scale);
     };
     h.on_paint = [self](HDC, const RECT&) { self->renderNow(); };
@@ -102,7 +110,10 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
     };
     h.on_key = [self](const platform::KeyEvent& e) { return self->router_->key(e); };
     h.on_char = [self](char32_t c) { self->router_->character(c); };
-    h.on_focus = [self](bool focused) { self->router_->windowActivated(focused); };
+    h.on_focus = [self](bool focused) {
+        self->router_->windowActivated(focused);
+        if (!focused && self->popups_) self->popups_->dismissAll();  // deactivated: a drop-down closes
+    };
     h.on_capture_lost = [self] { self->router_->cancelGrab(); };
     h.on_get_object = [self](WPARAM wp, LPARAM lp) -> std::optional<LRESULT> {
         LRESULT r = 0;
@@ -116,11 +127,14 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
     return w;
 }
 
+UiWindow::UiWindow() = default;
+
 UiWindow::~UiWindow() {
     if (window_) window_->handlers = {};  // no more events into a half-destroyed window
     // The tree dies while still attached to this host: every widget stops its timers (on the Application, which
     // outlives this window) and the router forgets it. Detaching first would leave timers calling dead widgets.
     root_.reset();
+    popups_.reset();  // after the tree: a dying combo box closes its popup through it
     if (window_) UiaReturnRawElementProvider(window_->hwnd(), 0, 0, nullptr);  // UIA releases what it cached
     uia_.reset();
     router_.reset();
@@ -129,6 +143,17 @@ UiWindow::~UiWindow() {
 }
 
 TimerService* UiWindow::timers() { return timers_.get(); }
+
+PopupWindowService& UiWindow::popupService() {
+    if (!popups_) popups_ = std::make_unique<PopupWindowService>(*this);
+    return *popups_;
+}
+
+PopupService* UiWindow::popups() { return &popupService(); }
+
+void UiWindow::announce(Widget* w, std::string_view text) {
+    if (uia_) uia_->announce(w, text);
+}
 
 void UiWindow::widgetGone(Widget* w) {
     if (uia_) uia_->widgetGone(w);

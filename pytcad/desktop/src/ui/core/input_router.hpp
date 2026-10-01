@@ -43,6 +43,18 @@ public:
     void setTooltipDelayMs(int ms) { tooltip_delay_ms_ = ms; }
     // Show a tooltip for the widget at the window-DIP point, or hide it (nullptr). The popup itself is N3's.
     std::function<void(Widget*, PointF)> on_tooltip;
+    // Called for every press (before it is delivered) with the widget under the pointer; true swallows the press. An
+    // open popup sets it to close itself and to keep the press that closed it from reaching whatever is under it when
+    // that is the popup's opener (N3c). One at a time.
+    // `owner` is the widget that set it: the filter goes when the owner does, and only the owner may clear it.
+    void setPressFilter(Widget* owner, std::function<bool(Widget* hit)> f) {
+        press_filter_owner_ = owner;
+        press_filter_ = std::move(f);
+    }
+    void clearPressFilter(Widget* owner) {
+        if (press_filter_owner_ == owner) press_filter_owner_ = nullptr, press_filter_ = nullptr;
+    }
+    bool hasPressFilter() const { return static_cast<bool>(press_filter_); }
     // The focus widget changed (null: none), while the window is active -- UI Automation's focus event (N2f).
     std::function<void(Widget*)> on_focus_changed;
 
@@ -101,6 +113,8 @@ private:
     Widget* tooltip_target_ = nullptr;
     Widget* tooltip_shown_ = nullptr;
     std::vector<Widget*> dead_;
+    std::function<bool(Widget*)> press_filter_;
+    Widget* press_filter_owner_ = nullptr;
     bool cues_ = false;
     bool always_cues_ = false;
 };

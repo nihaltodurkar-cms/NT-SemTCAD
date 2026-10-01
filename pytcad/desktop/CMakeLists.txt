@@ -168,12 +168,15 @@ add_library(tcad_ui_core STATIC
   src/ui/widgets/mnemonic.cpp src/ui/widgets/mnemonic.hpp
   src/ui/widgets/label.cpp src/ui/widgets/label.hpp
   src/ui/widgets/button.cpp src/ui/widgets/button.hpp
-  src/ui/widgets/group_box.cpp src/ui/widgets/group_box.hpp)
+  src/ui/widgets/group_box.cpp src/ui/widgets/group_box.hpp
+  src/ui/widgets/numeric.cpp src/ui/widgets/numeric.hpp
+  src/ui/widgets/slider.cpp src/ui/widgets/slider.hpp
+  src/ui/widgets/combo_box.cpp src/ui/widgets/combo_box.hpp src/ui/core/popup.hpp)
 target_include_directories(tcad_ui_core PUBLIC src)
 target_compile_features(tcad_ui_core PUBLIC cxx_std_23)
 target_link_libraries(tcad_ui_core PUBLIC tcad_platform_core)  # N2c: platform/input.hpp (portable)
 add_executable(tcad_ui_core_tests tests/ui/test_ui_core.cpp tests/ui/test_ui_input.cpp tests/ui/test_ui_edit.cpp
-  tests/ui/test_ui_widgets.cpp)
+  tests/ui/test_ui_widgets.cpp tests/ui/test_ui_numbers.cpp tests/ui/test_ui_combo.cpp)
 target_include_directories(tcad_ui_core_tests PRIVATE tests/platform)
 target_link_libraries(tcad_ui_core_tests PRIVATE tcad_ui_core)
 add_test(NAME tcad_ui_core_tests COMMAND tcad_ui_core_tests)
@@ -195,13 +198,15 @@ add_library(tcad_ui_win32 STATIC
   src/ui/win32/clipboard.cpp src/ui/win32/clipboard.hpp
   src/ui/win32/tsf_text_store.cpp src/ui/win32/tsf_text_store.hpp
   src/ui/win32/line_edit.cpp src/ui/win32/line_edit.hpp
+  src/ui/win32/spin_box.cpp src/ui/win32/spin_box.hpp
+  src/ui/win32/popup_window.cpp src/ui/win32/popup_window.hpp
   src/ui/win32/uia_provider.cpp src/ui/win32/uia_provider.hpp)
 target_link_libraries(tcad_ui_win32 PUBLIC tcad_ui_core tcad_ui_render tcad_platform_win32 user32 ole32 oleaut32 uiautomationcore)
 # The gate: goldens (WARP, exact) at 100/150/200% for the N2a scene and the N2b panel, device loss, resize/DPI churn,
 # debug layer, GPU smoke, display list vs pixels, invalidation/layout coalescing, WM_PAINT.
 add_executable(tcad_ui_render_tests
   tests/ui/test_ui_render.cpp tests/ui/test_ui_panel.cpp tests/ui/test_ui_input_win32.cpp tests/ui/ui_driver.hpp
-  tests/ui/test_ui_text.cpp tests/ui/test_ui_edit_win32.cpp tests/ui/test_ui_a11y.cpp tests/ui/test_ui_widgets_win32.cpp
+  tests/ui/test_ui_text.cpp tests/ui/test_ui_edit_win32.cpp tests/ui/test_ui_a11y.cpp tests/ui/test_ui_widgets_win32.cpp tests/ui/test_ui_numbers_win32.cpp tests/ui/test_ui_combo_win32.cpp
   tests/ui/render_scene.cpp tests/ui/render_scene.hpp
   tests/ui/render_test_support.cpp tests/ui/render_test_support.hpp
   src/native/tcad_native.manifest)

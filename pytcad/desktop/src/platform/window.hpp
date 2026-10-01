@@ -18,10 +18,18 @@
 
 namespace tcad::platform {
 
+// A popup (N3c): a borderless top-level window that is never activated (clicking it keeps the owner active), has no
+// taskbar button, and is placed exactly: `rect` in device px on the virtual screen. Closing one never ends the app.
+struct PopupOptions {
+    HWND owner = nullptr;
+    RECT rect{};
+};
+
 struct WindowOptions {
     std::wstring title = L"PyTCAD";
     int width = 1280, height = 800;                  // the client area, LOGICAL px at the system DPI
     std::optional<WindowPlacement> placement;        // restored when it still lies on a monitor
+    std::optional<PopupOptions> popup;               // a popup instead of a normal window (width/height are ignored)
 };
 
 class Window {
@@ -36,6 +44,7 @@ public:
         std::function<void(bool focused)> on_focus;
         std::function<void(HDC dc, const RECT& client)> on_paint;
         std::function<bool()> on_set_cursor;                 // WM_SETCURSOR over the client area: true = cursor set (N2c)
+        std::function<void()> on_moved;                      // WM_MOVE: the window moved on the screen (N3c: popups close)
         std::function<void()> on_capture_lost;               // the mouse capture was taken away mid-press (N2c)
         std::function<std::optional<LRESULT>(WPARAM, LPARAM)> on_get_object;  // WM_GETOBJECT: UI Automation (N2f)
     };
@@ -66,6 +75,7 @@ private:
     static Mod currentMods();
     HWND hwnd_ = nullptr;
     bool tracking_leave_ = false;
+    bool popup_ = false;
     unsigned buttons_down_ = 0;
     wchar_t high_surrogate_ = 0;
 };

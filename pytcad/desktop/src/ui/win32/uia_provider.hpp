@@ -21,6 +21,8 @@
 #include <windows.h>
 
 #include <map>
+#include <string>
+#include <string_view>
 
 namespace tcad::ui {
 
@@ -39,10 +41,15 @@ public:
     void widgetGone(Widget* w);
     void focusChanged(Widget* w);
     void valueChanged(Widget* w);
+    void rangeChanged(Widget* w);  // a slider's or spin box's RangeValue changed (or a combo box's value)
+    void expandChanged(Widget* w); // a drop-down opened or closed
+    void announce(Widget* w, std::string_view text);  // UIA's notification event: a screen reader speaks it
     HWND hwnd() const { return hwnd_; }
     Widget& root() const { return root_; }
     InputRouter& router() const { return router_; }
     int eventsAttempted() const { return events_; }  // tests: the wiring ran (whether or not a client listens)
+    int announcements() const { return announcements_; }
+    const std::string& lastAnnouncement() const { return last_announcement_; }
 
 private:
     HWND hwnd_;
@@ -51,6 +58,8 @@ private:
     std::map<Widget*, UiaElement*> elements_;
     int next_id_ = 1;
     int events_ = 0;
+    int announcements_ = 0;
+    std::string last_announcement_;
 };
 
 class UiaElement final : public IRawElementProviderSimple,
@@ -59,6 +68,8 @@ class UiaElement final : public IRawElementProviderSimple,
                          public IInvokeProvider,
                          public IToggleProvider,
                          public IValueProvider,
+                         public IRangeValueProvider,
+                         public IExpandCollapseProvider,
                          public ISelectionItemProvider,
                          public ITextProvider {
 public:
@@ -93,7 +104,18 @@ public:
     // IValueProvider
     STDMETHODIMP SetValue(LPCWSTR v) override;
     STDMETHODIMP get_Value(BSTR* v) override;
-    STDMETHODIMP get_IsReadOnly(BOOL* r) override;
+    STDMETHODIMP get_IsReadOnly(BOOL* r) override;  // also IRangeValueProvider's (the same signature)
+    // IExpandCollapseProvider (combo boxes)
+    STDMETHODIMP Expand() override;
+    STDMETHODIMP Collapse() override;
+    STDMETHODIMP get_ExpandCollapseState(ExpandCollapseState* s) override;
+    // IRangeValueProvider (sliders and spin boxes; Widget::accessibleRange)
+    STDMETHODIMP SetValue(double v) override;
+    STDMETHODIMP get_Value(double* v) override;
+    STDMETHODIMP get_Minimum(double* v) override;
+    STDMETHODIMP get_Maximum(double* v) override;
+    STDMETHODIMP get_LargeChange(double* v) override;
+    STDMETHODIMP get_SmallChange(double* v) override;
     // ISelectionItemProvider (a radio button: selecting it checks it; it cannot be removed from the selection)
     STDMETHODIMP Select() override;
     STDMETHODIMP AddToSelection() override;

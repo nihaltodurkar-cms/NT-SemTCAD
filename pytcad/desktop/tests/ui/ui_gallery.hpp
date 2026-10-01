@@ -1,4 +1,4 @@
-// The N2/N3a gallery (N2g, NATIVE-DESKTOP-PLAN.md 27.7; N3a, 27.8.2): every capability of the native UI framework
+// The N2/N3 gallery (N2g, NATIVE-DESKTOP-PLAN.md 27.7; N3a, 27.8.2): every capability of the native UI framework
 // core on one screen -- layouts (form, box with a stretch, grid, stack), text in several scripts, line edits (TSF),
 // N3a's labels (a wrapped one), push buttons, a check box, a radio group in a group box, with
 // hover/press/focus visuals, tooltips, keyboard focus and mnemonics, accessibility names -- with a status line that

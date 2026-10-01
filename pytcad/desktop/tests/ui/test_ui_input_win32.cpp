@@ -56,22 +56,6 @@ public:
     void hoverChanged(bool in) override { g_events.push_back(name + (in ? ":enter" : ":leave")); }
 };
 
-tcad::platform::Application& app() {  // N1's message loop and timers; one per process
-    static tcad::platform::Application a;
-    return a;
-}
-
-// Run the Application's own messages (its timers and posted calls) and nothing else. Pumping everything would also
-// deliver the WM_MOUSELEAVE Windows posts right after a synthetic move -- N1's window asks TrackMouseEvent, which
-// looks at the REAL cursor, and that is not over a hidden test window.
-void pumpTimers() {
-    MSG m;
-    while (PeekMessageW(&m, app().dispatcherWindow(), 0, 0, PM_REMOVE)) {
-        TranslateMessage(&m);
-        DispatchMessageW(&m);
-    }
-}
-
 struct Fixture {
     std::unique_ptr<UiWindow> w;
     Probe *a = nullptr, *b = nullptr, *c = nullptr;

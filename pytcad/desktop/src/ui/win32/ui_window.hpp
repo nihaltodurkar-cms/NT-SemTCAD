@@ -26,12 +26,15 @@
 
 namespace tcad::ui {
 
+class PopupWindowService;
+
 class UiWindow final : public UiHost {
 public:
     struct Options {
         std::wstring title = L"PyTCAD";
         int width = 800, height = 600;         // client area, logical px at the system DPI
         std::optional<double> scale_override;  // pin the DPI scale (tests)
+        std::optional<platform::PopupOptions> popup;  // a popup window (N3c; ui/win32/popup_window.hpp), not a normal one
     };
 
     static std::expected<std::unique_ptr<UiWindow>, std::string> create(std::shared_ptr<RenderDevice> device,
@@ -46,6 +49,9 @@ public:
     DWriteTextEngine& text() { return *text_; }
     InputRouter& router() { return *router_; }
     UiaHost& uia() { return *uia_; }
+    std::shared_ptr<RenderDevice> renderDevice() const { return device_; }
+    bool hasScaleOverride() const { return scale_override_.has_value(); }
+    PopupWindowService& popupService();  // made on first use; also what popups() hands to widgets
     // Windows high contrast (N2f): read SPI_GETHIGHCONTRAST and the system colours into the style's palette.
     static bool applySystemHighContrast();
 
@@ -72,9 +78,11 @@ public:
     InputRouter* input() override { return router_.get(); }
     TimerService* timers() override;
     void widgetGone(Widget* w) override;
+    PopupService* popups() override;
+    void announce(Widget* w, std::string_view text) override;
 
 private:
-    UiWindow() = default;
+    UiWindow();
     void requestPaint();
 
     std::shared_ptr<RenderDevice> device_;
@@ -85,6 +93,7 @@ private:
     std::unique_ptr<InputRouter> router_;
     std::unique_ptr<UiaHost> uia_;
     std::unique_ptr<TimerService> timers_;
+    std::unique_ptr<PopupWindowService> popups_;
     std::optional<double> scale_override_;
     double scale_ = 1.0;
     SizeI client_;

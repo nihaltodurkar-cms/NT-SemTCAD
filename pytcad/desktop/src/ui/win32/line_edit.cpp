@@ -193,8 +193,8 @@ void LineEdit::setText(std::string_view utf8) {
 void LineEdit::paint(Painter& p) {
     const SizeF s = sizeDips();
     p.fillRect({0, 0, s.width, s.height}, token(T::Base));
-    const auto border = p.crisp({0, 0, s.width, s.height}, 1.0f);
-    p.strokeRect(border.rect, token(hasFocus() ? T::Focus : T::BorderStrong), border.width);
+    const auto border = p.crisp({0, 0, s.width, s.height}, invalid_ ? 2.0f : 1.0f);
+    p.strokeRect(border.rect, token(invalid_ ? T::Error : hasFocus() ? T::Focus : T::BorderStrong), border.width);
     p.save();
     p.clipRect({kPadding - 1, 1, std::max(0.0f, s.width - 2 * kPadding + 2), std::max(0.0f, s.height - 2)});
     const float ox = kPadding - scroll_, oy = textTop(), lh = lineHeight();
@@ -292,11 +292,18 @@ bool LineEdit::charEvent(char32_t c) {
     return true;
 }
 
-void LineEdit::focusChanged(bool in, FocusReason) {
+void LineEdit::focusChanged(bool in, FocusReason why) {
     if (tsf_ && doc_) tsf_->SetFocus(in ? doc_.Get() : blank_doc_.Get());
     restartBlink();
     update();
     if (!in && on_editing_finished) on_editing_finished();  // QLineEdit: editingFinished on focus loss too
+    if (on_focus_changed) on_focus_changed(in, why);
+}
+
+void LineEdit::setInvalid(bool on) {
+    if (invalid_ == on) return;
+    invalid_ = on;
+    update();
 }
 
 }  // namespace tcad::ui

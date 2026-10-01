@@ -7697,7 +7697,7 @@ maps to the window colour. Windows edits show it; N3's LineEdit must too.
 multi-line edits, lists, trees, tabs, splitters, scroll areas, toolbars, menus, tooltips and modal dialogs, sized by
 the Qt census in §27.7. Per-widget behaviour and accessibility-tree tests.
 
-### 27.8 N3 -- the widget set: detailed plan (2026-09-30; N3a (27.8.2) COMPLETE on Windows; N3b next)
+### 27.8 N3 -- the widget set: detailed plan (2026-10-01; N3a (27.8.2), N3b (27.8.3) and N3c (27.8.4) COMPLETE on Windows; N3d next)
 
 N3 builds the widgets the ported panels need on N2's framework (§27.7), ordered by the Qt census so the most-used
 widgets land first. The ideas and mockups the user reviewed are the artifact "N3 Widget Set"
@@ -7720,9 +7720,9 @@ high contrast, and the N2 gate (`verify_native_n2.ps1`) still passing.
 
 | slice | builds | Qt it replaces (census) |
 |---|---|---|
-| N3a basics | `Label` (word wrap with height-for-width in Box/Form/Stack layouts; Form's `addRow(text, field)`; buddy mnemonics), `PushButton`, `CheckBox`, `RadioButton` + `ButtonGroup`, `GroupBox`; widget contents margins; keyboard cues | QLabel 86, QPushButton 128, QCheckBox 49, QRadioButton 8, QButtonGroup 1, QGroupBox 14 |
-| N3b numbers | `SpinBox`, `DoubleSpinBox` (decision 1), `Slider` (linear/log) | QDoubleSpinBox 111, QSpinBox 23, QSlider 15 |
-| N3c choice | popup windows (per-monitor DPI, flip near screen edges), `ComboBox` with typeahead | QComboBox 114 |
+| N3a basics -- DONE (27.8.2) | `Label` (word wrap with height-for-width in Box/Form/Stack layouts; Form's `addRow(text, field)`; buddy mnemonics), `PushButton`, `CheckBox`, `RadioButton` + `ButtonGroup`, `GroupBox`; widget contents margins; keyboard cues | QLabel 86, QPushButton 128, QCheckBox 49, QRadioButton 8, QButtonGroup 1, QGroupBox 14 |
+| N3b numbers -- DONE (27.8.3) | `SpinBox`, `DoubleSpinBox` (decision 1; decade stepping), `Slider` (linear only: no log slider is used) | QDoubleSpinBox 144, QSpinBox 40, QSlider 18 (lines naming the class, measured 2026-10-01; the earlier 111/23/15 counted differently) |
+| N3c choice -- DONE (27.8.4) | popup windows (per-monitor DPI, flip near screen edges), `ComboBox` with typeahead (non-editable) | QComboBox 24 widgets (51 lines naming the class; the earlier 114 counted calls) |
 | N3d text | `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit` (multi-line, capped log that follows the end), selectable labels | QLineEdit 39, QPlainTextEdit 14 |
 | N3e collections | a virtualized row engine; `ListView`, `TableView`, `TreeView`; tab-separated copy; in-place editors | QListWidget 42, QTableWidget 15, QTreeWidget 3 |
 | N3f containers | `TabWidget`, `Splitter` (the VTK child resized when the drag ends), `ScrollArea`, `Action`/`Menu`/`MenuBar`/`ToolBar`, `ToolTip` popup, modal `Dialog`/`MessageBox` (default button) | QTabWidget 4, QSplitter 14, QScrollArea 2, QAction 51, QMenu 9, QToolBar 2, setToolTip 28, QMessageBox 12 |
@@ -7839,4 +7839,133 @@ edits, bidi-aware selection painting, the inactive selection in high contrast (N
 **Manual, not yet run:** Narrator on the gallery. Check that radios are read as "radio button, 1 of 2, selected",
 check boxes as "check box, checked", and the form fields by their label names.
 
-**Next: N3b**, numbers: `SpinBox`, `DoubleSpinBox` (decision 1: scientific/engineering entry with units), `Slider`.
+**Next: N3b** (done, 27.8.3), numbers: `SpinBox`, `DoubleSpinBox` (decision 1: scientific/engineering entry with units), `Slider`.
+
+#### 27.8.3 N3b: the number widgets -- BUILT AND PASSING on Windows (2026-10-01)
+
+**Scope, measured in desktop/src (the Qt panels; lines naming the class, so declarations count):** QDoubleSpinBox 144,
+QSpinBox 40, QSlider 18. What they call: `setRange` 31, `setValue` 41, `setDecimals` 27, `setSingleStep` 7, `setSuffix` 1,
+`setSpecialValueText` 1 (the mesh editor's "(2D)"), `editingFinished` 17 (every one means "apply the edit"), `valueChanged` 8,
+`blockSignals` 28 (panels loading a document). Ranges seen: -1e21..1e21 (doping), -1..1 at 9 decimals (cm), 0..5000, 0..89.999,
+1.001..3, and ones computed from the mesh. The 3 sliders are horizontal, integer, linear (frame, cut position, 3D slice),
+`valueChanged` only. NOT used, so not built: prefix, wrapping, accelerated stepping, keyboard-tracking off, read-only, vertical
+or log sliders, ticks, `sliderMoved`/`sliderReleased`. (The table in 27.8 said "Slider (linear/log)": no log slider is used.)
+
+**Code.**
+- Portable, in `tcad_ui_core`: `ui/widgets/numeric.*` (parse, display, step -- no Win32, no text engine) and `ui/widgets/slider.*`.
+- Win32, beside `LineEdit` (TSF, clipboard): `ui/win32/spin_box.*` -- `NumberField` (the shared behaviour), `SpinBox`,
+  `DoubleSpinBox`. A spin box is a `LineEdit` child plus two drawn buttons (16 DIPs wide).
+- Framework additions: `Widget::setFocusProxy` (QWidget's: a form label's Alt+letter focuses the edit inside a spin box),
+  `Role::Spinner`, `AccessibleRange` and the RangeValue pattern (`IRangeValueProvider`, with the property-changed event),
+  `LineEdit::setInvalid` (a 2-DIP error frame) and `on_focus_changed`.
+
+**Decision 1 -- scientific/engineering entry with units (numeric.hpp):**
+- Accepted: `1e17`, `-2.5E-3`, `.5`; an SI prefix `f p n u/micro m k M G T` (`5k`, `2.5 u`); the field's unit, optional
+  (`5 kV`, `5 V`, `5`). An exponent with a prefix (`1e3k`) is refused. Text exactly equal to the field's unit is the unit, never a
+  prefix: `5 m` in a "m" field is five metres, `5 mm` five millimetres. Values are SI underneath; prefix and unit are only text.
+- Display: Qt's `decimals` places while that shows the value exactly (to 9 digits) and is under 1e9; else, from 1e-3 to 1e9,
+  as many more places as needed (1.5 in a 0-decimals field is `1.5`, never `2`); else scientific (`1e17`, `2.5e-10`). A value is
+  never shown as something it is not, and never rounded to `decimals`.
+- Stepping: linear adds the single step; **decade** (`DoubleSpinBox::setDecadeStep`) multiplies or divides by 10 (zero steps to
+  the single step, and a value below it steps through zero). Steps are tidied to 15 digits (0.1 + 0.2 is 0.3).
+
+**Decision 4 and "never clamp silently":**
+- Text that is not a number, is out of range, or (SpinBox) is not whole is **rejected**: put back to the value, `on_rejected(text,
+  reason)`, and the frame is red while the text is wrong (unfinished text such as `1e` is not flagged while typed). Qt clamps without a word.
+- `on_editing_finished` fires on Enter or focus loss **only when the value changed** since the last such event and the text was valid.
+  Stepping and back is no change; a program's `setValue` is the new baseline (loading a document is no edit); `setValueSilent`
+  replaces `blockSignals`.
+- A program's `setValue` still clamps to the range (Qt), and returns false when it did.
+
+**Behaviour (Qt's unless said):** Up/Down step, PageUp/PageDown ten steps (one on a decade field), buttons auto-repeat after 500 ms
+at 75 ms while the pointer stays on the pressed button, a step starts from typed text, Escape takes back a pending edit, Tab or a
+mnemonic selects the text, the wheel steps a notch **only while the field has the focus** (Qt steps on hover; a wheel passing over
+a form should not change a value). Slider: keys Left/Down/Right/Up/PageUp/PageDown/Home/End, a press on the groove **jumps** there
+and drags (Windows 11; Qt's Fusion steps a page), wheel three steps capped at a page, focused only.
+UI Automation: Spinner with RangeValue and Value and the edit as its child (named as the spin box); Slider with RangeValue; a set
+outside the range, or a fraction on a whole-number box, is refused (`E_INVALIDARG`), never clamped.
+
+**Gates, all run:**
+- Portable (`test_ui_numbers.cpp`, +27; `tcad_ui_core_tests` **126/126**): parse (plain, scientific, prefixes, units, the unit-vs-prefix
+  rule, refusals, unfinished), display, round trip, linear and decade steps, the slider (hints, clamping, reports, handle geometry,
+  grab, groove jump, disabled, keys, wheel, UIA range and its event), focus proxy. g++ `-Wall -Wextra`: 0 warnings, 126/126.
+- Windows (`test_ui_numbers_win32.cpp`, +14; `tcad_ui_render_tests` **61/61**, 27 goldens exact): goldens `n3b_numbers@100/150/200`
+  and `n3b_numbers_hc@*` (looked at); typing with real messages (`2.5e17`, `5k`, `2.5 m`, `-3 V`), rejection of each kind, the special
+  value text, focus loss, stepping, decade, wheel, buttons with real timers (auto-repeat bounds are generous), a mnemonic, the slider,
+  and UIA through the real client.
+- Mutation-checked, **18 of 18 caught** (each by the test named in the run): exponent with prefix, unit-vs-prefix rule, no 1e9 limit,
+  display rounding, no zero crossing, no tidy, slider wheel without focus, slider UIA clamping, no groove jump, out-of-range clamped,
+  editing-finished always, program set not the baseline, step ignoring typed text, decade page key, spin wheel without focus, no
+  error frame, focus proxy's hasFocus, a fraction accepted by a whole box.
+- `verify_native_n2.ps1` ALL STEPS PASSED (N1 and the spike included; debug soak 0/25) -- with `mosfet_2d.npz` only:
+  `s4scratch\resistor_3d.npz` is now an empty file, so it could not be given; the N2 gate needs a 2D or 3D result.
+- Legacy Qt build exit 0. Desktop wrapper pytest (`-k desktop`): 709 passed, 56 skipped, **2 failed** in
+  `test_desktop_runtime_check.py` ("add-on runtime is missing: tetgen" in this machine's env -- the runtime check, not the UI; not
+  investigated further). `test_desktop_ui_render.py` 16/16.
+- One compiler warning remains in the build, not in N3b's code: MSVC C4996 `sscanf` in `src/native/spike_main.cpp:144` (the spike).
+
+**Changed on purpose in `gui/tests/test_desktop_ui_render.py`:** the counts (99 to 126, 47 to 61), the golden lists (+ `n3b_numbers`,
+`n3b_numbers_hc`, 400x330), `IRangeValueProvider` required. The gallery (`tcad_ui_demo --gallery`) gained a doping field (decade,
+`1e17`), a whole-number field and a slider. `app()` and `pumpTimers()` moved into `render_test_support` (one Application per process).
+
+**Not done:** the manual Narrator check -- the spin boxes should read "spin button, 1e17", the slider "slider, 40" and follow
+changes.
+
+**Next: N3c** (done, 27.8.4), choice: popup windows (per-monitor DPI, flip near screen edges) and `ComboBox` with typeahead.
+
+#### 27.8.4 N3c: popup windows and the combo box -- BUILT AND PASSING on Windows (2026-10-01)
+
+**Scope, measured in desktop/src:** 24 `QComboBox`, all non-editable. Calls: `addItem` 19 (text and user data), `addItems` 10, `clear` 8,
+`currentText` 15, `currentData` 11, `setCurrentIndex` 14, `setCurrentText` 7, `findData` 7, `findText` 4, `itemData` 5, `count` 3;
+signals `currentIndexChanged` 8, `currentTextChanged` 7, `activated` 5; `AdjustToContents` 1. NOT used, so not built: editable combos, icons,
+insertion, max-visible-items, per-item enabled state, completers, the model/view API. The user data are a bool, an int or a string
+(`ComboData`, a `std::variant`).
+
+**Decision 3 -- popups are top-level windows.** Code:
+- Portable (`tcad_ui_core`): `ui/core/popup.hpp` (`PopupService`, `PopupHandle`, and `placePopup`, the one pure piece: below the anchor, at
+  least as wide, moved left to fit, above when it does not fit below and does above, else on the roomier side and cut -- the content scrolls);
+  `ui/widgets/combo_box.*` (`ComboBox`, and `ComboPopupList`, the rows: ten visible, scrolling, hover, click).
+- Win32: `ui/win32/popup_window.*` -- each popup is a `UiWindow` of its own (`platform::PopupOptions`: `WS_POPUP`, `WS_EX_NOACTIVATE`,
+  `WS_EX_TOOLWINDOW`, owned by the owner window, `WM_MOUSEACTIVATE` gives `MA_NOACTIVATE`; closing one never posts `WM_QUIT`).
+  It is created 1x1 at the anchor's corner (which gives it that MONITOR's DPI), measured with its own text engine, placed on the monitor's work
+  area, drawn once, then shown. The combo keeps the keyboard focus and drives the list; the popup takes only the mouse.
+- Framework: `UiHost::popups()`/`announce()`, `InputRouter::setPressFilter` (an open popup sees every press in the owner first), `Role::ComboBox` with ExpandCollapse (`IExpandCollapseProvider`, with the property-changed event), the highlighted row
+  announced through UI Automation's notification event, and the value event for combo boxes.
+
+**Behaviour (Qt's unless said):** the first item added becomes current; `clear()` leaves -1 and ""; `currentIndexChanged`/`currentTextChanged` fire for
+every change including the program's (`setCurrentIndexSilent` is QSignalBlocker); `activated` only for the user, even on the same item. A press opens the
+drop-down (the current item highlighted); Up/Down/Home/End/PageUp/PageDown move the highlight, Enter or Space picks, Tab picks and closes, Escape/F4/
+Alt+Up close; a click on a row picks it (press and release on the same row). A press elsewhere in the owner closes it and still reaches what is there
+(Windows'; Qt swallows it); a press on the combo itself only closes. Deactivating, moving, resizing or a DPI change of the owner closes it. Closed:
+Up/Down/Left/Right change the item, PageUp/PageDown by ten, Home/End, F4/Alt+Down/Space open; the wheel steps an item **only while the combo has
+the focus**. Typeahead: the first item starting with what was typed (ASCII case-folded; the same letter again cycles), forgotten after a second.
+Not Qt: the drop-down opens below the combo (Fusion overlaps the current item).
+UI Automation: ComboBox with Value (setting it picks the item with that text; an unknown text is refused) and ExpandCollapse (a disabled combo cannot
+be expanded); its name comes from a form label.
+
+**Gates, all run:**
+- Portable (`test_ui_combo.cpp`, +39; `tcad_ui_core_tests` **165/165**; g++ `-Wall -Wextra` 0 warnings): placement, items/data/lookup, every signal, the hint,
+  the drop-down's life (a fake popup service that records and can dismiss), every key closed and open, typeahead on a fake clock, the wheel, the press
+  filter, the list (hint, scrolling, hit testing, painting), UI Automation states.
+- Windows (`test_ui_combo_win32.cpp`, +13; `tcad_ui_render_tests` **74/74**, 39 goldens exact): goldens `n3c_combo@*`/`n3c_combo_hc@*` (the closed combos) and
+  `n3c_popup@*`/`n3c_popup_hc@*` (the popup window's own frame; looked at), the popup's window style and owner, opening below at the anchor's width, FLIPPING
+  above near the bottom of the real work area, a click on a row with real messages to the popup's window, a press outside, keys and typeahead, the wheel
+  in the popup, deactivation/move/resize closing it, destroying the owner with a popup open, and the real UIA client.
+- Mutation-checked, **23 of 24 caught**; the 24th (a height cap in `placePopup`) was an EQUIVALENT mutant -- the cut branches already bound the height -- so the
+  redundant line was removed. The 23 include: no press filter, a press on the open combo reopening, a popup that is not closed, Tab not picking, no shortcut
+  override, typed text never forgotten, no cycling, wheel direction and focus, no scroll-into-view, pick on any release, no flip above, no shift left, a move or
+  deactivation not closing the popup, a popup that activates, a popup reading the system palette (broke high contrast), no ExpandCollapse pattern.
+- `verify_native_n2.ps1` ALL STEPS PASSED (with `mosfet_2d.npz`; N1 and the spike included; debug soak 0/25); legacy Qt build exit 0;
+  `test_desktop_ui_render.py` 16/16 (pins changed: 126 to 165 and 61 to 74, the new goldens -- popup sizes pinned per scale, since a popup is as big as its
+  content -- and `IExpandCollapseProvider`). Desktop wrapper pytest: 709 passed, 56 skipped, the same 2 `test_desktop_runtime_check.py` failures as at N3b
+  (this machine's env lacks `tetgen`).
+
+**Limits, stated:** a popup takes the DPI of the monitor where its anchor is, at the moment it opens (a window straddling two monitors uses the anchor's);
+no per-item UI Automation elements in the list (N3e's lists bring them -- the announcement covers it); the list's scroll indicator is not draggable;
+a press on a non-client area of the owner (its title bar) does not close the popup until the window moves; the wheel over the popup relies on Windows'
+"scroll inactive windows" setting (on by default).
+
+**Not done:** the manual Narrator check -- a combo should read "combo box, <item>, collapsed"; Alt+Down "expanded"; arrowing should speak each item.
+The gallery (`tcad_ui_demo --gallery`) has a "Model" combo.
+
+**Next: N3d**, text: `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit`, selectable labels.

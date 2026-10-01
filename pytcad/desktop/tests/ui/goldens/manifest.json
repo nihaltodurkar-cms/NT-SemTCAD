@@ -95,6 +95,78 @@
     "n3a_widgets_hc@200.png": {
       "height": 660,
       "width": 800
+    },
+    "n3b_numbers@100.png": {
+      "height": 330,
+      "width": 400
+    },
+    "n3b_numbers@150.png": {
+      "height": 495,
+      "width": 600
+    },
+    "n3b_numbers@200.png": {
+      "height": 660,
+      "width": 800
+    },
+    "n3b_numbers_hc@100.png": {
+      "height": 330,
+      "width": 400
+    },
+    "n3b_numbers_hc@150.png": {
+      "height": 495,
+      "width": 600
+    },
+    "n3b_numbers_hc@200.png": {
+      "height": 660,
+      "width": 800
+    },
+    "n3c_combo@100.png": {
+      "height": 200,
+      "width": 400
+    },
+    "n3c_combo@150.png": {
+      "height": 300,
+      "width": 600
+    },
+    "n3c_combo@200.png": {
+      "height": 400,
+      "width": 800
+    },
+    "n3c_combo_hc@100.png": {
+      "height": 200,
+      "width": 400
+    },
+    "n3c_combo_hc@150.png": {
+      "height": 300,
+      "width": 600
+    },
+    "n3c_combo_hc@200.png": {
+      "height": 400,
+      "width": 800
+    },
+    "n3c_popup@100.png": {
+      "height": 68,
+      "width": 323
+    },
+    "n3c_popup@150.png": {
+      "height": 102,
+      "width": 322
+    },
+    "n3c_popup@200.png": {
+      "height": 136,
+      "width": 323
+    },
+    "n3c_popup_hc@100.png": {
+      "height": 68,
+      "width": 323
+    },
+    "n3c_popup_hc@150.png": {
+      "height": 102,
+      "width": 322
+    },
+    "n3c_popup_hc@200.png": {
+      "height": 136,
+      "width": 323
     }
   }
 }

@@ -3,9 +3,12 @@
 #include "ui/core/layout.hpp"
 #include "ui/core/style.hpp"
 #include "ui/widgets/button.hpp"
+#include "ui/widgets/combo_box.hpp"
 #include "ui/widgets/group_box.hpp"
 #include "ui/widgets/label.hpp"
+#include "ui/widgets/slider.hpp"
 #include "ui/win32/line_edit.hpp"
+#include "ui/win32/spin_box.hpp"
 
 #include <cmath>
 
@@ -64,7 +67,7 @@ void build(UiWindow& w, std::function<void(const std::string&)> report) {
         if (report) report(s);
     };
     auto* outer = root.setLayout<BoxLayout>(Orientation::Vertical);
-    outer->add<Label>("PyTCAD native UI \xE2\x80\x94 N2/N3a gallery")->setFont(15.0f, true);
+    outer->add<Label>("PyTCAD native UI \xE2\x80\x94 N2/N3 gallery")->setFont(15.0f, true);
     auto* row = outer->addBox(Orientation::Horizontal, 1);
 
     // left: a form with edits, a grid of edits, buttons and a check box, a stack, a radio group and a wrapped note
@@ -80,6 +83,37 @@ void build(UiWindow& w, std::function<void(const std::string&)> report) {
     };
     form->addRow("&Gate voltage [V]", edit("gate_voltage", "Gate voltage [V]", "1.5"));
     form->addRow("T&emperature [K]", edit("temperature", "Temperature [K]", "300"));
+    // N3b: a decade field taking "1e17" or "5k", a whole-number field, and a slider
+    auto* doping = root.addChild<DoubleSpinBox>(w.window().hwnd());
+    doping->name = "doping";
+    doping->setDecimals(0);
+    doping->setRange(-1e21, 1e21);
+    doping->setSingleStep(1e14);
+    doping->setDecadeStep(true);
+    doping->setValue(1e17);
+    doping->on_editing_finished = [doping, status] { status("doping = " + doping->text()); };
+    doping->on_rejected = [status](const std::string& t, Reject) { status("refused: " + t); };
+    form->addRow("&Doping [cm^-3]", doping);
+    auto* nodes = root.addChild<SpinBox>(w.window().hwnd());
+    nodes->name = "nodes";
+    nodes->setRange(2, 2000);
+    nodes->setValue(64);
+    nodes->on_editing_finished = [nodes, status] { status("nodes = " + nodes->text()); };
+    form->addRow("Mesh &nodes", nodes);
+    auto* frame = root.addChild<Slider>();
+    frame->name = "frame";
+    frame->setRange(0, 100);
+    frame->setValue(40);
+    frame->on_value_changed = [status](int v) { status("frame " + std::to_string(v)); };
+    form->addRow("&Frame", frame);
+    // N3c: a drop-down in its own popup window, with typeahead
+    auto* model = root.addChild<ComboBox>();
+    model->name = "model";
+    model->addItem("Boltzmann", 1);
+    model->addItem("Fermi-Dirac", 2);
+    model->addItem("Incomplete ionization", 3);
+    model->on_activated = [model, status](int) { status("model: " + model->currentText()); };
+    form->addRow("&Model", model);
     auto* grid = left->addGrid();
     const char* axes[] = {"X", "Y", "Z"};
     for (int a = 0; a < 3; ++a) {

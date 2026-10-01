@@ -38,6 +38,17 @@ std::expected<std::unique_ptr<Window>, std::string> Window::create(const WindowO
         return RegisterClassExW(&wc) != 0;
     }();
     if (!registered) return std::unexpected(lastErrorText("RegisterClassEx"));
+    if (o.popup) {
+        std::unique_ptr<Window> pw(new Window());
+        pw->popup_ = true;
+        const RECT& pr = o.popup->rect;
+        HWND ph = CreateWindowExW(WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW, kClassName, o.title.c_str(), WS_POPUP | WS_CLIPCHILDREN,
+                                  pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top, o.popup->owner, nullptr,
+                                  GetModuleHandleW(nullptr), pw.get());
+        if (!ph) return std::unexpected(lastErrorText("CreateWindowEx (popup)"));
+        pw->hwnd_ = ph;
+        return pw;
+    }
     const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
     const UINT dpi = GetDpiForSystem();
     RECT r{0, 0, MulDiv(o.width, static_cast<int>(dpi), 96), MulDiv(o.height, static_cast<int>(dpi), 96)};
@@ -165,8 +176,14 @@ LRESULT Window::handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (!handlers.on_close_requested || handlers.on_close_requested()) DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
-            PostQuitMessage(0);
+            if (!popup_) PostQuitMessage(0);  // a popup going away is not the application ending
             return 0;
+        case WM_MOUSEACTIVATE:
+            if (popup_) return MA_NOACTIVATE;  // clicking a popup leaves the owner active
+            break;
+        case WM_MOVE:
+            if (handlers.on_moved) handlers.on_moved();
+            break;
         case WM_SETFOCUS:
         case WM_KILLFOCUS:
             if (handlers.on_focus) handlers.on_focus(msg == WM_SETFOCUS);

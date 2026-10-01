@@ -163,4 +163,17 @@ GoldenResult checkGolden(RenderDevice& d, const std::string& name, const Image& 
     return GoldenResult::Mismatch;
 }
 
+tcad::platform::Application& app() {
+    static tcad::platform::Application a;
+    return a;
+}
+
+void pumpTimers() {
+    MSG m;
+    while (PeekMessageW(&m, app().dispatcherWindow(), 0, 0, PM_REMOVE)) {
+        TranslateMessage(&m);
+        DispatchMessageW(&m);
+    }
+}
+
 }  // namespace tcad::ui::testing

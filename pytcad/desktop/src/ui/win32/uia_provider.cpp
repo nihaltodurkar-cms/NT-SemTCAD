@@ -36,6 +36,7 @@ CONTROLTYPEID controlType(Role r) {
         case Role::RadioButton: return UIA_RadioButtonControlTypeId;
         case Role::ComboBox: return UIA_ComboBoxControlTypeId;
         case Role::Slider: return UIA_SliderControlTypeId;
+        case Role::Spinner: return UIA_SpinnerControlTypeId;
         case Role::List: return UIA_ListControlTypeId;
         case Role::ListItem: return UIA_ListItemControlTypeId;
         case Role::Tree: return UIA_TreeControlTypeId;
@@ -263,6 +264,9 @@ UiaElement* UiaHost::element(Widget* w) {
     auto* e = new UiaElement(this, w, next_id_++);
     elements_.emplace(w, e);
     if (auto* le = dynamic_cast<LineEdit*>(w)) le->on_accessible_value_changed = [this, le] { valueChanged(le); };
+    if (w->accessibleRange().valid || (w->accessibleHasValue() && !dynamic_cast<LineEdit*>(w)))
+        w->accessible_range_changed = [this, w] { rangeChanged(w); };
+    if (w->accessibleExpandState() >= 0) w->accessible_expand_changed = [this, w] { expandChanged(w); };
     return e;
 }
 
@@ -303,6 +307,48 @@ void UiaHost::valueChanged(Widget* w) {
     VariantClear(&new_v);
 }
 
+void UiaHost::rangeChanged(Widget* w) {
+    ++events_;
+    if (!w || !UiaClientsAreListening()) return;
+    auto* e = static_cast<IRawElementProviderSimple*>(element(w));
+    if (w->accessibleRange().valid) {
+        VARIANT old_v, new_v;
+        VariantInit(&old_v);
+        VariantInit(&new_v);
+        new_v.vt = VT_R8;
+        new_v.dblVal = w->accessibleRange().value;
+        UiaRaiseAutomationPropertyChangedEvent(e, UIA_RangeValueValuePropertyId, old_v, new_v);
+    }
+    if (w->accessibleHasValue()) valueChanged(w);
+}
+
+void UiaHost::expandChanged(Widget* w) {
+    ++events_;
+    if (!w || !UiaClientsAreListening()) return;
+    auto* e = static_cast<IRawElementProviderSimple*>(element(w));
+    VARIANT old_v, new_v;
+    VariantInit(&old_v);
+    VariantInit(&new_v);
+    new_v.vt = VT_I4;
+    new_v.lVal = w->accessibleExpandState() == 1 ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+    old_v.vt = VT_I4;
+    old_v.lVal = w->accessibleExpandState() == 1 ? ExpandCollapseState_Collapsed : ExpandCollapseState_Expanded;
+    UiaRaiseAutomationPropertyChangedEvent(e, UIA_ExpandCollapseExpandCollapseStatePropertyId, old_v, new_v);
+}
+
+void UiaHost::announce(Widget* w, std::string_view text) {
+    ++events_;
+    ++announcements_;
+    last_announcement_.assign(text);
+    if (!w || !UiaClientsAreListening()) return;
+    auto* e = static_cast<IRawElementProviderSimple*>(element(w));
+    BSTR t = bstr(std::string(text));
+    BSTR id = SysAllocString(L"tcad.highlight");
+    UiaRaiseNotificationEvent(e, NotificationKind_Other, NotificationProcessing_MostRecent, t, id);
+    SysFreeString(t);
+    SysFreeString(id);
+}
+
 // -- the element --------------------------------------------------------------------------------------------------
 
 ULONG UiaElement::Release() {
@@ -320,6 +366,8 @@ STDMETHODIMP UiaElement::QueryInterface(REFIID riid, void** out) {
     else if (riid == __uuidof(IInvokeProvider)) *out = static_cast<IInvokeProvider*>(this);
     else if (riid == __uuidof(IToggleProvider)) *out = static_cast<IToggleProvider*>(this);
     else if (riid == __uuidof(IValueProvider)) *out = static_cast<IValueProvider*>(this);
+    else if (riid == __uuidof(IRangeValueProvider)) *out = static_cast<IRangeValueProvider*>(this);
+    else if (riid == __uuidof(IExpandCollapseProvider)) *out = static_cast<IExpandCollapseProvider*>(this);
     else if (riid == __uuidof(ISelectionItemProvider)) *out = static_cast<ISelectionItemProvider*>(this);
     else if (riid == __uuidof(ITextProvider)) *out = static_cast<ITextProvider*>(this);
     else return E_NOINTERFACE;
@@ -350,6 +398,8 @@ STDMETHODIMP UiaElement::GetPatternProvider(PATTERNID id, IUnknown** out) {
     else if (id == UIA_TogglePatternId) has = w_->accessibleToggleState() >= 0;
     else if (id == UIA_ValuePatternId) has = w_->accessibleHasValue();
     else if (id == UIA_SelectionItemPatternId) has = w_->accessibleSelectionState() >= 0;
+    else if (id == UIA_RangeValuePatternId) has = w_->accessibleRange().valid;
+    else if (id == UIA_ExpandCollapsePatternId) has = w_->accessibleExpandState() >= 0;
     else if (id == UIA_TextPatternId) has = edit() != nullptr;
     if (has) {
         *out = static_cast<IRawElementProviderSimple*>(this);
@@ -367,7 +417,13 @@ STDMETHODIMP UiaElement::GetPropertyValue(PROPERTYID id, VARIANT* v) {
     };
     switch (id) {
         case UIA_ControlTypePropertyId: v->vt = VT_I4; v->lVal = controlType(w_->accessibleRole()); break;
-        case UIA_NamePropertyId: if (!w_->accessibleName.empty()) v->vt = VT_BSTR, v->bstrVal = bstr(w_->accessibleName); break;
+        case UIA_NamePropertyId: {
+            // A spin box's inner edit is named as the spin box is (a form's label names the spin box).
+            const Widget* named = w_;
+            if (named->accessibleName.empty() && named->parent() && named->parent()->accessibleRole() == Role::Spinner) named = named->parent();
+            if (!named->accessibleName.empty()) v->vt = VT_BSTR, v->bstrVal = bstr(named->accessibleName);
+            break;
+        }
         case UIA_AutomationIdPropertyId: if (!w_->name.empty()) v->vt = VT_BSTR, v->bstrVal = bstr(w_->name); break;
         case UIA_HelpTextPropertyId: if (!w_->toolTip.empty()) v->vt = VT_BSTR, v->bstrVal = bstr(w_->toolTip); break;
         case UIA_ClassNamePropertyId: v->vt = VT_BSTR; v->bstrVal = SysAllocString(L"TcadWidget"); break;
@@ -503,7 +559,64 @@ STDMETHODIMP UiaElement::get_Value(BSTR* v) {
 
 STDMETHODIMP UiaElement::get_IsReadOnly(BOOL* r) {
     if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
-    *r = w_->accessibleReadOnly();
+    const AccessibleRange a = w_->accessibleRange();
+    *r = a.valid ? a.read_only : w_->accessibleReadOnly();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::Expand() {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (!w_->isEnabled()) return UIA_E_ELEMENTNOTENABLED;
+    w_->accessibleExpand(true);
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::Collapse() {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (!w_->isEnabled()) return UIA_E_ELEMENTNOTENABLED;
+    w_->accessibleExpand(false);
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_ExpandCollapseState(ExpandCollapseState* s) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *s = w_->accessibleExpandState() == 1 ? ExpandCollapseState_Expanded : ExpandCollapseState_Collapsed;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::SetValue(double v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (!w_->isEnabled()) return UIA_E_ELEMENTNOTENABLED;
+    return w_->accessibleSetRangeValue(v) ? S_OK : E_INVALIDARG;  // out of range, or not a whole number
+}
+
+STDMETHODIMP UiaElement::get_Value(double* v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *v = w_->accessibleRange().value;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_Minimum(double* v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *v = w_->accessibleRange().minimum;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_Maximum(double* v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *v = w_->accessibleRange().maximum;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_LargeChange(double* v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *v = w_->accessibleRange().large_step;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_SmallChange(double* v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *v = w_->accessibleRange().small_step;
     return S_OK;
 }
 
