@@ -274,8 +274,7 @@ void register_device1d(nb::module_& m) {
                      {bc_right[0], bc_right[1], bc_right[2]}, pn, pp, strength, starts, ends,
                      theta ? &lag : nullptr);
                  return nb::make_tuple(rj.F, rj.J.rows, rj.J.cols, rj.J.vals, rj.Jn, rj.Jp,
-                                       rj.dirichlet, rj.ii_gs, rj.btbt_gs, rj.ii_abs_jn,
-                                       rj.ii_abs_jp);
+                                       rj.dirichlet, rj.ii_gs, rj.btbt_gs);
              },
              nb::arg("psi"), nb::arg("n"), nb::arg("p"), nb::arg("bc_left"),
              nb::arg("bc_right"), nb::arg("Pn").none(), nb::arg("Pp").none(),
@@ -283,7 +282,7 @@ void register_device1d(nb::module_& m) {
              nb::arg("theta").none() = nb::none(), nb::arg("n_lag").none() = nb::none(),
              nb::arg("Jn_lag").none() = nb::none(), nb::arg("Qheat_lag").none() = nb::none(),
              "device.py's _residual_jacobian with every frozen input explicit: "
-             "(F, rows, cols, vals, Jn, Jp, dirichlet_rows, ii_gs, btbt_gs, ii_abs_jn, ii_abs_jp).")
+             "(F, rows, cols, vals, Jn, Jp, dirichlet_rows, ii_gs, btbt_gs).")
         .def("set_edge_diffusivity",
              [](tcad::device1d::Device1D& d, F64 dn, F64 dp) {
                  d.set_edge_diffusivity_scaled(to_vec(dn), to_vec(dp));

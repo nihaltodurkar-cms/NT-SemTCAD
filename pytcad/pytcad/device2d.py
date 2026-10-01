@@ -1679,7 +1679,7 @@ class Device2D:
                 eff = None
             G, g_r, g_c, g_v, self._ii_fields = _ii_grid(
                 N, axes, psi.ravel(), self.VT, self.LD, self.J0, self.R0,
-                eff=eff, n=n.ravel(), p=p.ravel())
+                eff=eff)
             strength = self._ii_strength
             Gs = np.where(live, strength * G, 0.0)
             self._ii_gs_cache = Gs.copy()

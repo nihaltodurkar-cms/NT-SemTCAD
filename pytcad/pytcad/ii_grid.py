@@ -32,7 +32,7 @@ Jacobian (the nonlocal model, M34-S6 section 2).
 """
 import numpy as np
 
-from .device import _II_J_EPS_REL, _II_J_ROUNDOFF_REL, _ii_smooth_abs
+from .device import _II_J_EPS_REL, _ii_smooth_abs, _ii_smooth_sign
 from .ionization import alpha_n, alpha_p, dalpha_dE, Q_E
 
 
@@ -40,7 +40,7 @@ def _ratio(S, M):
     return np.divide(S, M, out=np.zeros_like(S), where=M > 0.0)
 
 
-def grid_impact(N, axes, psi, VT, LD, J0, R0, eff=None, n=None, p=None):
+def grid_impact(N, axes, psi, VT, LD, J0, R0, eff=None):
     """Impact-ionization generation on a structured grid.
 
     N    : node count; node indices are the devices' flat (row-major) ones.
@@ -54,62 +54,41 @@ def grid_impact(N, axes, psi, VT, LD, J0, R0, eff=None, n=None, p=None):
     psi  : flat potential (units of VT).
     eff  : None, or (E_n, D_n, E_p, D_p): per-carrier effective fields
            [V/cm] and their d/dpsi as (N, N) scipy sparse matrices.
-    n, p : flat scaled densities. With them, each edge's |J| regularizer
-           is floored at its own round-off (_II_J_ROUNDOFF_REL times the
-           SG terms whose difference is the edge current), exactly as
-           Device1D's compiled assembly does; without them (None) only the
-           global eps applies.
 
     Returns (G, rows, cols, vals, (E_n, E_p)): G (N,) scaled generation;
     the Jacobian dG_i/du as COO triples -- rows are NODE indices i, cols
     are unknown indices 3*u + comp; and the fields alpha was evaluated at.
     """
     K = 1.0 / (Q_E * R0)
-    # per-edge SG term magnitudes |dJ/dn_R n_R| + |dJ/dn_L n_L|: the scale
-    # of each edge current's round-off (see device1d.cpp's impact block)
-    terms = []
-    for ax in axes:
-        kL, kR = ax["kL"], ax["kR"]
-        if n is None:
-            terms.append((np.zeros(kL.size), np.zeros(kL.size)))
-        else:
-            terms.append((np.abs(ax["dJn_dnR"] * n[kR]) + np.abs(ax["dJn_dnL"] * n[kL]),
-                          np.abs(ax["dJp_dpR"] * p[kR]) + np.abs(ax["dJp_dpL"] * p[kL])))
-    # the edge that sets eps: (resolved |J|, axis index, carrier, edge
-    # index) -- a round-off-sized current must not set it
+    # the edge that sets eps: (|J|, axis index, carrier, edge index)
     top = (0.0, None, None, None)
     for ai, ax in enumerate(axes):
-        for ci, car in enumerate(("n", "p")):
+        for car in ("n", "p"):
             J = ax["J" + car]
             if J.size:
-                res = np.abs(J) - _II_J_ROUNDOFF_REL * terms[ai][ci]
-                k = int(np.argmax(res))
-                if res[k] > top[0]:
-                    top = (float(res[k]), ai, car, k)
+                k = int(np.argmax(np.abs(J)))
+                if abs(J[k]) > top[0]:
+                    top = (float(abs(J[k])), ai, car, k)
     j_eps = _II_J_EPS_REL * max(top[0], 1e-300)
     per = []
-    for ax, (tn, tp) in zip(axes, terms):
+    for ax in axes:
         kL, kR = ax["kL"], ax["kR"]
         cnt = (np.bincount(kL, minlength=N)
                + np.bincount(kR, minlength=N)).astype(float)
         inv = _ratio(np.ones(N), cnt)
-        en = np.maximum(j_eps, _II_J_ROUNDOFF_REL * tn)
-        ep = np.maximum(j_eps, _II_J_ROUNDOFF_REL * tp)
-        rn = _ii_smooth_abs(ax["Jn"], en)
-        rp = _ii_smooth_abs(ax["Jp"], ep)
-        # below its floor an edge contributes ~j_eps; above it |J| is
-        # shifted by en - j_eps (0 wherever the floor is j_eps itself)
-        sn, sp = (rn - (en - j_eps)) * J0, (rp - (ep - j_eps)) * J0
+        rn = _ii_smooth_abs(ax["Jn"], j_eps)
+        rp = _ii_smooth_abs(ax["Jp"], j_eps)
+        sn, sp = rn * J0, rp * J0
         dpsi = psi[kR] - psi[kL]
         cE = VT / (LD * ax["h"])                      # V/cm per unit psi
         Ee = np.abs(dpsi) * cE
         per.append(dict(
-            ax=ax, inv=inv, rn=rn, rp=rp, fn=en > j_eps, fp=ep > j_eps,
+            ax=ax, inv=inv, rn=rn, rp=rp,
             Sn=(np.bincount(kL, sn, N) + np.bincount(kR, sn, N)) * inv,
             Sp=(np.bincount(kL, sp, N) + np.bincount(kR, sp, N)) * inv,
             Ea=(np.bincount(kL, Ee, N) + np.bincount(kR, Ee, N)) * inv,
-            sgn_n=ax["Jn"] / rn,
-            sgn_p=ax["Jp"] / rp,
+            sgn_n=_ii_smooth_sign(ax["Jn"], j_eps),
+            sgn_p=_ii_smooth_sign(ax["Jp"], j_eps),
             cEs=np.sign(dpsi) * cE))
     Mn = np.sqrt(sum(a["Sn"] * a["Sn"] for a in per))
     Mp = np.sqrt(sum(a["Sp"] * a["Sp"] for a in per))
@@ -149,11 +128,9 @@ def grid_impact(N, axes, psi, VT, LD, J0, R0, eff=None, n=None, p=None):
                      cJn * ax["dJn_dpsiR"] + cJp * ax["dJp_dpsiR"] + cEd,
                      cJn * ax["dJn_dnL"], cJn * ax["dJn_dnR"],
                      cJp * ax["dJp_dpL"], cJp * ax["dJp_dpR"]]
-        # d(J0 s)/d eps, per edge, into both end nodes: J0 eps / r where
-        # the floor is eps itself; J0 where the round-off floor is above it
-        # (s = r - floor + eps there, the floor not depending on eps)
-        for g, r, fl in ((gSn, a["rn"], a["fn"]), (gSp, a["rp"], a["fp"])):
-            ds = np.where(fl, J0, J0 * j_eps / r)
+        # d(J0 s)/d eps = J0 eps / s, per edge, into both end nodes
+        for g, r in ((gSn, a["rn"]), (gSp, a["rp"])):
+            ds = J0 * j_eps / r
             dG_deps += g * (np.bincount(kL, ds, N)
                             + np.bincount(kR, ds, N)) * inv
     if top[1] is not None:

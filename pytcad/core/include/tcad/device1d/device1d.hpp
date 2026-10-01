@@ -140,10 +140,6 @@ inline constexpr int kLsMaxHalvings = 10;           // _LS_MAX_HALVINGS
 inline constexpr double kLsNewtonRegion = 1e-3;     // _LS_NEWTON_REGION
 inline constexpr double kStiffDensityFloor = 1e-8;  // _STIFF_DENSITY_FLOOR
 inline constexpr double kIiJEpsRel = 1e-6;          // _II_J_EPS_REL
-// Per-edge floor of the |J| regularizer, relative to the magnitude of the
-// two SG terms whose difference IS the edge current (see device1d.cpp's
-// impact block): below it the computed current is round-off.
-inline constexpr double kIiJRoundoffRel = 1e-10;
 
 struct NewtonOptions {
     int max_iter = 100;
@@ -300,9 +296,6 @@ public:
         std::vector<double> Jn;  // per-edge scaled electron current, length N-1
         std::vector<double> Jp;
         std::vector<double> ii_gs;    // empty unless models.impact
-        // smoothed |Jn|, |Jp| per edge (times J0), the ones ii_gs is
-        // built from; empty unless models.impact
-        std::vector<double> ii_abs_jn, ii_abs_jp;
         std::vector<double> btbt_gs;  // empty unless models.btbt
         std::vector<std::int64_t> dirichlet;  // device.py's _dirichlet_rows
     };
