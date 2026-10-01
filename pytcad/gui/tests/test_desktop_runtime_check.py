@@ -172,10 +172,12 @@ def test_outside_modules_flags_a_module_loaded_from_elsewhere(tmp_path, monkeypa
         sys.modules.pop("stray_mod_p5s2", None)
 
 
-def test_addons_gate_fails_a_core_runtime_that_carries_one(tmp_path, monkeypatch):
-    (tmp_path / "gmsh").mkdir()
-    (tmp_path / "gmsh" / "__init__.py").write_text("")
-    monkeypatch.syspath_prepend(str(tmp_path))
+def test_addons_gate_fails_a_core_runtime_that_carries_one(monkeypatch):
+    # hermetic: exactly gmsh is "installed", whatever this env really has (requirements.txt installs all three)
+    real = importlib.util.find_spec
+    monkeypatch.setattr(importlib.util, "find_spec",
+                        lambda name, *a: (object() if name == "gmsh" else None) if name in cr.ADDON_PACKAGES
+                        else real(name, *a))
     rep = cr.Report()
     cr.gate_addons(rep, addon=False)
     assert rep.failed and "gmsh" in rep.rows[0]["detail"]
@@ -259,9 +261,21 @@ def test_the_script_passes_the_static_gates_on_this_checkout():
     code, out = _run("--examples", "none")
     if glob.glob(os.path.join(ROOT, "pytcad", "_core*.pyd")) + glob.glob(os.path.join(ROOT, "pytcad", "_core*.so")):
         assert _line(out, "PASS", "layout"), out
-    assert _line(out, "PASS", "addons"), out
+    # the add-on gate judges THIS interpreter: a core runtime passes it, a dev env that installed the GPL/AGPL
+    # add-ons from requirements.txt must fail it, naming exactly the ones present
+    present = [p for p in cr.ADDON_PACKAGES if importlib.util.find_spec(p) is not None]
+    if present:
+        row = _line(out, "FAIL", "addons")
+        assert row and row.endswith(": " + ", ".join(present)), out
+    else:
+        assert _line(out, "PASS", "addons"), out
     assert _line(out, "PASS", "closure"), out
-    assert "third-party loaded: numpy, pyamg, scipy" in out or "third-party loaded: numpy, scipy" in out, out
+    # charset_normalizer is optional and transitive (scipy's array_api_compat touches numpy.f2py, which imports
+    # it when installed -- requests pulls it in), so it is allowed but not required
+    loaded = re.search(r"third-party loaded: (.*)", out)
+    assert loaded, out
+    third = [m for m in loaded.group(1).strip().split(", ") if m != "charset_normalizer"]
+    assert third in (["numpy", "pyamg", "scipy"], ["numpy", "scipy"]), out
     assert _line(out, "PASS", "handshake"), out
     assert _line(out, "WARN", "reference"), out                # no --reference: not compared, and it says so
     if _accel.HAVE_ACCEL:

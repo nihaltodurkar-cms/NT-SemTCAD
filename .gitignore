@@ -44,6 +44,11 @@ env/
 # checkout (see gui/qml/Main.qml's wallpaper Image, v3.0 glassmorphism).
 !pytcad/gui/qml/assets/glass_wallpaper.png
 
+# Exception: the native desktop UI render goldens ARE the reference
+# (gui/tests/test_desktop_ui_render.py reads them, and their manifest.json
+# records the rendering environment they were captured in).
+!pytcad/desktop/tests/ui/goldens/*.png
+
 # Superpowers brainstorming visual-companion scratch (mockups, session state)
 .superpowers/
 
