@@ -1,684 +1,165 @@
-<div align="center">
-
 # PyTCAD
 
-**A compact, validated TCAD toolkit** — self-consistent drift-diffusion device simulation in 1D/2D/3D and process simulation, structured the way commercial TCAD is structured (Sentaurus Process → Sentaurus Device, Silvaco Athena → Atlas).
+A compact, validated TCAD toolkit: self-consistent drift-diffusion device
+simulation in 1D/2D/3D plus process simulation, with a C++ numerical engine,
+a Python API, and a native C++/Qt Widgets desktop app. Every model states its
+equation, its provenance (theory, measurement or fit) and where it breaks.
 
-[![Python](https://img.shields.io/badge/python-3.9+-3776AB?style=for-the-badge&logo=python&logoColor=white)](pytcad/requirements.txt)
-[![C++ core](https://img.shields.io/badge/core-C%2B%2B20-00599C?style=for-the-badge&logo=cplusplus&logoColor=white)](pytcad/core)
-[![Qt Widgets](https://img.shields.io/badge/desktop-Qt%20Widgets-41CD52?style=for-the-badge&logo=qt&logoColor=white)](pytcad/desktop)
-[![License: MIT](https://img.shields.io/badge/license-MIT-8A2BE2?style=for-the-badge)](LICENSE)
+**Platform: Windows only.** The project, its golden values and CI
+(`.github/workflows/ci.yml`, `windows-latest`) target Windows.
+License: MIT.
 
-<sub>No black boxes — every model states its equation, its provenance (theory / measurement / empirical fit), and where it breaks.</sub>
-
-</div>
-
-<br>
-
-<details open>
-<summary><strong>Contents</strong></summary>
-
-- [0 · The C++ engine (M31)](#sec0)
-- [1 · The device equations](#sec1)
-- [2 · Numerics — why it's built this way](#sec2)
-- [3 · Physical models](#sec3)
-- [4 · Validation](#sec4)
-- [5 · Usage](#sec5)
-- [6 · Honest limits of this code](#sec6)
-- [7 · Where to read more](#sec7)
-
-</details>
-
-Roughly 3,000 lines for the numerical core below (1D + 2D + 3D, including heterojunction materials and trap-assisted tunneling); the Semiconductor Workbench domain layer (`workbench/`) and the desktop GUI (`gui/`) are separate and documented in `gui/README.md`. A 20-page illustrated user guide with real GUI screenshots lives in `docs/user-guide/`.
-
-<details>
-<summary><strong>Repository layout</strong></summary>
+## Repository layout
 
 ```
-pytcad/
-  constants.py   physical constants, thermal voltage
-  materials.py   ni(T), mobility, lifetimes, bandgap narrowing, recombination;
-                 Si, Ge, GaAs (heterostructure parameter sets)
-  mesh.py        non-uniform meshing + Debye-length adequacy check
-  process.py     implantation, diffusion, Deal-Grove oxidation
-  fermi.py       complete Fermi-Dirac integrals F_{1/2}, F_{-1/2},
-                 inverse, FD intrinsic density, tabulated fast path
-                 (M13, COMPLETE: wired through the full solver core)
-  device.py      drift-diffusion: Poisson + both continuity equations;
-                 per-node heterojunction materials (M11); Hurkx trap-
-                 assisted tunneling (M12); impact ionization (M15);
-                 local Kane/Hurkx BTBT (M16); surface recombination
-                 velocity S_n/S_p (M14)
-  transient.py   time-dependent drift-diffusion (M17): backward-Euler/
-                 theta-scheme, step/ramp/pulse waveforms, driving
-                 Device1D through its own residual/Jacobian externally
-  btbt.py        BTBT coefficients A, B (Hurkx Table I silicon), pure module
-  moscap.py      MOS capacitor, quasi-static C-V, interface traps (M14);
-                 density-gradient quantum correction (M20)
-  dg.py          M20 analysis layer: DG quantum potential, Airy triangular-
-                 well reference, Schrödinger-Poisson inversion-layer solver
-  linsolve.py    direct/GMRES/BiCGStAB + ILU, node-block-Jacobi and Schur
-                 preconditioners (M22)
-  mesh2d.py      tensor-product 2D mesh + Debye-length adequacy check
-  device2d.py    2D drift-diffusion: box-integration Poisson + continuity;
-                 Lombardi CVT surface mobility (M14); S_n/S_p surface
-                 recombination velocity for arbitrary contact shapes (M14)
-  transient2d.py time-dependent drift-diffusion for Device2D (M17),
-                 same external-driver pattern as transient.py
-  mosfet.py      2D MOSFET builder + Id-Vg sweep
-  mesh3d.py      tensor-product 3D mesh + Debye-length adequacy check
-  device3d.py    3D drift-diffusion: box-integration Poisson + continuity
-  process2d.py   M23: mask-driven 2D deposit/etch, oxidation, implants
-  levelset2d.py, oxidize_levelset.py, silicide_levelset.py
-                 M35 S1-S4: signed-distance multi-material level-set
-                 process geometry (real deposit/etch topology, embedded
-                 2D oxidant-diffusion oxidation + dopant transport
-                 across the moving boundary, patterned masks, facet
-                 epitaxy, CMP, silicidation) -- 2D only; 3D (S5/S6)
-                 not yet decided, see pytcad/README.md
-  ted.py         M24: pair diffusion/segregation/clustering (TED)
-  mc_implant.py  M25: Monte-Carlo (BCA) implantation
-  finfet3d.py, gmsh_finfet3d.py, characterization.py
-                 M26: 3D tri-gate FinFET (structured + unstructured-
-                 tet-extruded), Vth/SS/DIBL extraction
-  schottky.py    M28: Schottky/tunnel contact thermionic-emission
-                 physics, Richardson constants, image-force lowering
-  circuit.py     M27: MNA circuit solver -- V/I sources, R, C, diode,
-                 level-1 MOSFET, plus DeviceStamp (a real Device1D as
-                 a nonlinear element via finite-difference conductance)
-  hydrodynamic.py
-                 M29: local energy-balance carrier-temperature closure
-                 -- energy relaxation length, heating trend,
-                 carrier-temperature-driven impact ionization
-examples/        p-n diode, full process flow, MOS C-V, 2D MOSFET Id-Vg,
-                 3D-reduces-to-2D validation, LOCOS flow, TED anneal,
-                 MC implantation, Schottky diode I-V, 3D FinFET DIBL,
-                 mixed-mode circuit (ring oscillator), hydrodynamic
-                 carrier-temperature closure
-tests/           1200+ tests: analytic-limit validation, published-value
-                   physics benchmarks, headless GUI tests — fast suite
-                   (`-m "not slow"`) currently 1239 collected (as of
-                   2026-09-06), 0 known failures -- the M20 Schrödinger-
-                   Poisson reference solver's once-flaky eigensolver
-                   test is now fixed (a genuinely symmetric Hamiltonian
-                   solved directly via eigh_tridiagonal, not iterative
-                   eigsh)
-workbench/       Semiconductor Workbench domain layer: Region /
-                 DomainDevice / MaterialLibrary (Si, Ge, GaAs, InGaAs,
-                 AlGaAs) / ModelCatalog as pure data; lossless adapters
-                 to DeviceSpec; SolverBackend protocol (pytcad + devsim);
-                 observables; published-value-gated physics
-                 (impact ionization, Fowler-Nordheim/WKB tunneling);
-                 deck front end — see ARCHITECTURE.md
-docs/user-guide/ in-depth PDF guide (20 pages) with live-app screenshots
+pytcad/                 project root (run commands from here)
+  pytcad/               numerical core: Device1D/2D/3D, MOSCapacitor, process,
+                        materials, meshes, transient/AC, thermal, continuation
+  core/                 C++ engine, built as the extension module pytcad._core
+  workbench/            domain layer: regions, material library, model catalog,
+                        SolverBackend, analysis, splits/batch/calibration/study
+  gui/services/         Qt-free business logic shared by the backend service
+  backend_service/      JSON-RPC service the desktop app's backend process runs
+  desktop/              native C++20 / Qt 6 Widgets / VTK desktop app
+  tests/, gui/tests/    pytest suites
+  benchmarks/           performance cases and checked-in BASELINE.md
+  examples/             runnable examples (01_pn_diode.py, 02_process_flow.py, ...)
+ARCHITECTURE.md         roadmap, capability matrix, milestone status
+CLAUDE.md               rules and gotchas for contributors and AI agents
 ```
 
-</details>
+## Build and install
 
----
+`pytcad._core` is **required**: Device1D, process simulation, AMR, the
+nonlocal tunneling tracer, self-heating assembly and the direct-solve session
+are compiled. `import pytcad` works without it, but those calls raise an
+`ImportError` naming the build command.
 
-<a name="sec0"></a>
-## 0 · The C++ engine (M31) — required as of M43 phase 4 (2026-09-16)
-
-The numerically intensive layer was extracted into a C++ engine under
-`pytcad/core/`, exposed as the single extension module `pytcad._core`.
-Through M43 phase 3 this was *optional* -- `pytcad/_accel.py` soft-imported
-it and fell back to a pure-Python reference body per kernel. **As of M43
-phase 4, that fallback was removed at the user's explicit request**: the
-pure-Python bodies for the mesh-geometry kernels, the process/adaptivity
-kernels, the M34-S4 nonlocal path tracer, and the M43 thermal-grid assembly
-no longer exist. `pytcad._accel.require_accel()` raises a clear
-`ImportError` naming the build command below if `_core` is not importable
-when one of those functions is called. `import pytcad` itself still never
-fails without the extension (`_accel.py`'s own docstring), but calling
-`process.diffuse_numeric`, `ted.diffuse_with_defects`,
-`adapt_unstructured.indicator_*_tri`/`debye_ratio_tri`,
-`unstructured_assembly{,3d}.build_*`, `nonlocal_path.build_structured`, or
-`thermal_grid._residual_jacobian_grid` now requires it.
+The C++ compiler lives in its own conda env (MinGW `g++` from conda-forge),
+never in the Python env; `_core` links the MinGW runtime statically.
 
 ```bash
-# in-place dev build (nothing installed; the .so lands in pytcad/)
+cd pytcad
+pip install -r requirements.txt                    # library, tests, optional deps
+conda create -n tcad-cpp -c conda-forge gxx binutils cmake ninja
 cmake -S core -B build/dev -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-      -DTCAD_INPLACE_OUTPUT=ON
+      -DTCAD_INPLACE_OUTPUT=ON \
+      -DCMAKE_CXX_COMPILER=<tcad-cpp>/Library/bin/g++.exe \
+      -DCMAKE_AR=<tcad-cpp>/Library/bin/x86_64-w64-mingw32-ar.exe \
+      -DCMAKE_RANLIB=<tcad-cpp>/Library/bin/x86_64-w64-mingw32-ranlib.exe \
+      -DCMAKE_PREFIX_PATH=<python-env>/Library      # Eigen3 (conda: eigen)
 cmake --build build/dev
 python -c "from pytcad import _accel; print(_accel.status())"
 ```
 
-**`PYTCAD_ACCEL` is now read ONLY by `linsolve.py`'s PETSc backend
-selection** (`0` forces the petsc4py path, `1`/unset selects the compiled
-PETSc path when `_core` was built with it) -- it no longer affects any
-other kernel, and there is no pure-Python mode left to select for the
-kernels named above. `1` (or leaving it unset) is the default. The
-"run both ways, `PYTCAD_ACCEL=0` and `=1`" test-suite convention this
-section used to prescribe is retired for that reason: a no-extension run
-can no longer pass the suite.
-`PYTCAD_NUM_THREADS` defaults to **1**, deliberately: parallel
-floating-point reductions are not reproducible, and this project gates
-on bit-identity.
+Python ≥ 3.11. Eigen3 is required at build time; PETSc is optional
+(`TCAD_WITH_PETSC=AUTO`). With `mkl` in the Python env, 2D/3D direct solves
+use MKL PARDISO (loaded at run time), otherwise Eigen SparseLU. The desktop
+app has its own build: see `pytcad/desktop/README.md`.
 
-What it buys so far, measured rather than asserted -- the unstructured
-mesh geometry precompute, which was the hard blocker for large 3D:
-
-| kernel | Python | C++ | |
-|---|---|---|---|
-| `build_unstructured_stencil` (2D) | 77k tri/s | 3.16M tri/s | 41x |
-| `build_unstructured_stencil3d` | 48k tet/s | 1.20M tet/s | 25x |
-| `build_edge_flux_geometry3d` | 3.7k tet/s | 1.99M tet/s | **539x** |
-
-A 998,250-tet mesh builds its full edge-flux geometry in **0.71 s**;
-the Python path extrapolates to ~285 s.
-
-Scope, plan, gates and honest limits: `pytcad/M31-CPP-ARCHITECTURE-PLAN.md`.
-Roadmap beyond it: `ARCHITECTURE.md` sections 4c (M31-M40), 4d (the
-dimensional debt and the road to full 3D) and 4e (how this is meant to
-beat Sentaurus/Atlas, and where it deliberately concedes).
-
-<a name="sec1"></a>
-## 1 · The device equations
-
-We solve the steady-state van Roosbroeck system self-consistently:
-
-$$\frac{d}{dx}\left(\varepsilon \frac{d\psi}{dx}\right) = -q\left(p - n + N_D^+ - N_A^-\right)$$
-
-$$\frac{dJ_n}{dx} = +qR, \qquad \frac{dJ_p}{dx} = -qR$$
-
-with the drift-diffusion constitutive relations and the Einstein relation $D = \mu k_BT/q$:
-
-$$J_n = q\mu_n n E + qD_n \frac{dn}{dx}, \qquad J_p = q\mu_p p E - qD_p \frac{dp}{dx}$$
-
-| Symbol | Meaning | Units |
-|---|---|---|
-| $\psi$ | electrostatic potential | V |
-| $n, p$ | electron / hole density | cm⁻³ |
-| $J_n, J_p$ | current densities | A/cm² |
-| $R$ | net recombination rate | cm⁻³s⁻¹ |
-| $N_D^+, N_A^-$ | ionised donor / acceptor density | cm⁻³ |
-| $\varepsilon$ | permittivity | F/cm |
-| $V_T = k_BT/q$ | thermal voltage (25.852 mV at 300 K) | V |
-
-### Assumptions, and where each one fails
-
-| Assumption | Fails when |
-|---|---|
-| Boltzmann statistics (default; `Models(fd=True)` available) | doping ≳ 10¹⁹ cm⁻³ (degeneracy) — the code warns you unless FD is enabled |
-| Full dopant ionisation | cryogenic temperature; deep dopants |
-| Classical (no quantisation) | thin-oxide inversion layers: real charge centroid sits ~1 nm deep, so $C_{max}$ is overestimated by 10–20% |
-| Local mobility model | quasi-ballistic transport in sub-30 nm channels |
-| Local impact-ionisation / BTBT models (`Models(impact=True)`, `Models(btbt=True)` available, 1D) | avalanche breakdown needs voltage continuation; nonlocal tunneling paths (GIDL at large reverse bias), direct gate leakage below ~2 nm oxide |
-| Isothermal by default | steady-state 1D self-heating (M19, `pytcad.thermal`) is available as an outer isothermal-DD + Gummel thermal loop, not a monolithic coupled solve; 2D/transient self-heating not built |
-| Steady-state solve is the default | time-domain (M17, `pytcad.transient`/`transient2d`) is now available for 1D/2D, reachable from the GUI's Transient tab; small-signal AC (M18, `pytcad.ac`) is now available for 1D, library-only (no GUI) |
-
----
-
-<a name="sec2"></a>
-## 2 · Numerics — why it's built this way
-
-**Scharfetter–Gummel currents.** The interface current is
-
-$$J_{n,i+1/2} = \frac{qD_n}{h}\Big[n_{i+1}B(\delta) - n_i B(-\delta)\Big], \qquad \delta = \frac{\psi_{i+1}-\psi_i}{V_T}, \qquad B(x)=\frac{x}{e^x-1}$$
-
-This integrates the drift-diffusion equation *exactly* under the assumption that $J$ and $E$ are constant across one cell. It is the single most important numerical ingredient. **Common mistake:** central-differencing the drift term. That scheme oscillates and produces negative carrier densities as soon as the potential drop across a cell exceeds $\sim 2V_T$ (52 mV) — which is true essentially everywhere inside a depletion region. Correctness here is not a refinement; it is the difference between a working solver and one that diverges.
-
-**Scaling.** Newton on raw variables is hopeless ($\psi \sim 1$, $n \sim 10^{20}$, $R \sim 10^{25}$). We use de Mari-style scaling with one deviation: concentrations are scaled by the **peak doping**, not by $n_i$. Scaling by $n_i$ makes the majority density $\sim 10^7$ in scaled units, and the Poisson residual then loses ~8 significant digits to cancellation — the residual stalls at $10^{-3}$ and never converges to tolerance. Scaling by $N_{peak}$ keeps every majority term at order unity.
-
-$$\psi \to \psi/V_T,\quad n,p \to n/N_{peak},\quad x \to x/L_D,\quad L_D = \sqrt{\varepsilon V_T/(qN_{peak})}$$
-
-**Newton with an analytic Jacobian.** Fully coupled, block-tridiagonal, sparse, with damping on $\Delta\psi$ and multiplicative clamping on $n,p$ so densities stay positive. `test_jacobian_matches_finite_differences` checks every derivative against finite differences — if you extend the physics, run that test first.
-
-**Convergence is judged on the update, not the residual.** The Poisson residual subtracts terms of order $1/h^2$ and hits a floating-point noise floor well above any sensible tolerance. Watching $|F|$ instead of $|\Delta u|$ makes a converged solve look like a failure.
-
-**Meshing.** `mesh.check_mesh` reports the worst $h/L_D$; keep it below ~1. A uniform mesh fine enough for the junction is wastefully fine in the bulk, and a uniform mesh coarse enough for the bulk silently gets the built-in field wrong.
-
----
-
-<a name="sec3"></a>
-## 3 · Physical models
-
-| Model | Form | Provenance |
-|---|---|---|
-| $n_i(T)$ | $\sqrt{N_cN_v}\,e^{-E_g/2k_BT}$, Varshni $E_g(T)$ | theory + measured band parameters |
-| Mobility vs doping | Caughey–Thomas: $\mu_{min} + \frac{\mu_{max}-\mu_{min}}{1+(N/N_{ref})^\alpha}$ | **empirical fit** |
-| Velocity saturation | Canali: $\mu_0/[1+(\mu_0E/v_{sat})^\beta]^{1/\beta}$ | **empirical fit**, applied lagged |
-| SRH | $\dfrac{np-n_{ie}^2}{\tau_p(n+n_{ie})+\tau_n(p+n_{ie})}$ | theory (mid-gap traps); $\tau$ from **fit** |
-| Auger | $(C_nn+C_pp)(np-n_{ie}^2)$ | measured $C_n, C_p$ |
-| Bandgap narrowing | Slotboom: $\Delta E_g = E_0[\ln(N/N_0)+\sqrt{\ln^2(N/N_0)+\tfrac12}]$ | **empirical fit** to BJT data |
-| Heterojunction band offsets | position-dependent $\varepsilon$, $\chi$, $E_g$; offsets enter through $\ln(n_{ie})$ edge factors with carrier-specific deltas | theory (Anderson rule via $n_{ie}$) |
-| Trap-assisted tunneling | Hurkx: SRH denominator with WKB-enhanced densities, $\tau_p(n + n_{ie}(1{+}P_p)) + \tau_n(p + n_{ie}(1{+}P_n))$ | theory (Hurkx et al. 1992); WKB factors SI-calibrated |
-| Fermi-Dirac statistics | $n = N_c F_{1/2}(\eta)$ with nu-factor generalized Scharfetter-Gummel (`Models(fd=True)`); incomplete ionization for shallow B/P/As behind `Models(incomplete_ion=True)` | theory (parabolic-band FD; Bessemoulin-Christensen modified SG); gated vs independent roots and published freeze-out curves |
-| Deal–Grove | $x^2 + Ax = B(t+\tau)$ | theory; $A,B$ Arrhenius **fits** |
-| Impact ionization | $G = [\alpha_n(E)\lvert J_n\rvert + \alpha_p(E)\lvert J_p\rvert]/q$, van Overstraeten–de Man (`Models(impact=True)`, 1D) | measured coefficients; lagged-source coupling |
-| Band-to-band tunneling | $G = AF^2e^{-B/F}$ local Kane/Hurkx (`Models(btbt=True)`, 1D) | Hx Table I Si coefficients (M16) |
-| Surface mobility | Lombardi CVT: $1/\mu = 1/\mu_{CT}+1/\mu_{ph}+1/\mu_{SR}$ (`Models(surface_mobility=True)`, 2D MOS channel) | Lombardi 1988; simplified phonon term, uncalibrated against published values -- blocked on a paywalled source (M14 G-A) |
-| Surface recombination velocity | Robin BC $J_n\cdot\hat n = qS_n(n-n_0)$ (mirrored for holes) at any ohmic contact (`Models(S_n=...)`/`S_p=...`, Device1D and Device2D, arbitrary 2D contact shape) | theory (steady-state particle conservation in the boundary half-box); M14 |
-| Density gradient | $\Lambda = -\frac{\gamma\hbar^2}{2m^\ast q}\frac{(\sqrt n)''}{\sqrt n}$, $n \to n\,e^{-\Lambda/V_T}$ (`Models(dg=True)` / `MOSCapacitor(dg=True)`, equilibrium) | Ancona–Stafford 1999; gated vs the code's own Schrödinger–Poisson solve + Airy analytics (M20) |
-
-**Mobility gotcha:** the argument is the *total* ionised impurity concentration $N_A + N_D$, not the net doping $|N_D - N_A|$. Using the net value badly overestimates mobility in compensated regions. `Device1D` takes `Ntotal` separately for exactly this reason.
-
----
-
-<a name="sec4"></a>
-## 4 · Validation
-
-The fast suite (`pytest tests/ gui/tests/ -n 6 -m "not slow" -q`)
-currently reports 1028 passed, 1 xfailed (M14 G-A, blocked
-on paywalled Lombardi constants), and 0 known failures -- the M20
-Schrödinger-Poisson reference solver's once-flaky eigensolver test is
-now fixed (a genuinely symmetric Hamiltonian solved directly via
-eigh_tridiagonal, not iterative eigsh). Every verification
-result is classified as one of
-**literature benchmark** (agrees with measured published values),
-**analytical validation** (agrees with closed-form theory independent of
-the solver), **model parameterization** (fitted constant transcribed
-correctly, applicability stated), or **numerical regression**
-(self-consistency gate). Selected results for an abrupt 10¹⁷/10¹⁷ Si junction, 2 µm long, 300 K:
-
-| Quantity | PyTCAD | Analytic | |
-|---|---|---|---|
-| Built-in potential | 0.8302 V | 0.8300 V | $V_T\ln(N_AN_D/n_i^2)$ |
-| $J$ at 0.5 V forward | 1.280×10⁻² A/cm² | 1.321×10⁻² A/cm² | short-base ideal diode |
-| Ideality factor (0.3–0.75 V) | 1.003 | 1 | |
-| Current continuity $\sigma(J_n{+}J_p)/\bar J$ | < 10⁻⁸ | 0 | |
-| Mesh refinement (2× finer) | < 3% change | — | |
-
-MOS-C, 5 nm oxide, n⁺poly on p-Si 10¹⁷:
-
-| | PyTCAD | Depletion approx. |
-|---|---|---|
-| $C_{max}$ | 0.672 µF/cm² | $C_{ox}$ = 0.691 |
-| $C_{min}$ | 0.096 µF/cm² | 0.087 |
-| $V$ at $C_{min}$ | −0.04 V | $V_{th}$ = +0.09 V |
-
-The reverse-leakage test is worth reading: the current does **not** saturate. It grows as roughly $(V_{bi}+V)^{1.16}$, because the width over which *both* carriers drop below $n_i$ — and hence $R \to -n_i/(\tau_n+\tau_p)$ — widens faster than the depletion width itself at moderate bias. The solver reproduces this and $J = q\int(-R)\,dx$ closes to 3%.
-
-Newer physics gates (each lands in `tests/test_model_benchmarks.py` or a dedicated acceptance test **before** any feature uses it):
-
-- **Heterojunctions (M11):** finite-difference Jacobian across a Si/GaAs interface < 5×10⁻⁵; Anderson band step at the interface; carrier-specific equilibrium detailed balance on both sides (the check that catches a shared band-offset delta); homojunction path bit-identical to the uniform-material code.
-- **Trap-assisted tunneling (M12):** FD-Jacobian with traps on < 5×10⁻⁵; traps-off results bit-identical (`array_equal`) to the SRH-only solver; the Hurkx enhancement factor verified against the first-principles WKB factor law over 10⁷→5×10¹⁰ V/m (monotone onset, low-field limit exactly 1).
-- **Tunneling module (M12-S1):** Fowler–Nordheim constants and slope gated against published values; WKB κ and transmission against the analytic forms.
-
----
-
-<a name="sec5"></a>
-## 5 · Usage
+## Usage
 
 ```python
 import numpy as np
-from pytcad import Device1D, Models, process
+from pytcad import Device1D, Models, MOSCapacitor, process
 from pytcad.mesh import graded_mesh, check_mesh
 
-# --- structure: abrupt p-n junction, 2 um, junction at 1 um
 x   = graded_mesh(2e-4, [1e-4], h_min=1e-8, h_max=1e-6)   # cm
 dop = np.where(x < 1e-4, -1e17, 1e17)                     # cm^-3, + is n-type
-check_mesh(x, dop)
+check_mesh(x, dop)                                        # worst h / L_D
 
 dev = Device1D(x, dop, T=300.0, models=Models(bgn=True, auger=True))
 J   = dev.iv_sweep(np.arange(0, 0.75, 0.05))              # A/cm^2
-
 Ec, Ev, EFn, EFp = dev.band_diagram()
-n, p, E = dev.n_cm3, dev.p_cm3, dev.E_field
-```
 
-Process flow, feeding the device solver:
+C = process.implant(x, "P", energy_keV=50, dose=3e14)
+C = process.diffuse_numeric(x, C, "P", T_C=950, t_s=1800)
+dev2 = Device1D(x, C - 1e16, Ntotal=C + 1e16)             # Ntotal: mobility needs NA+ND
 
-```python
-C   = process.implant(x, "P", energy_keV=50, dose=3e14)
-C   = process.diffuse_numeric(x, C, "P", T_C=950, t_s=1800)
-xj  = process.junction_depth(x, C - 1e16)
-tox = process.oxide_thickness(900.0, 1.0, ambient="dry")   # um
-dev = Device1D(x, C - 1e16, Ntotal=C + 1e16)
-```
-
-MOS capacitor:
-
-```python
-from pytcad import MOSCapacitor
 mos = MOSCapacitor(Nsub=-1e17, tox_cm=5e-7, gate="n+poly", Qf=1e12)
-phis, Qg, C = mos.cv_sweep(np.linspace(-2, 2, 201))
-print(mos.analytic_landmarks())     # phi_F, W_max, C_ox, C_min, V_th, V_FB
+phis, Qg, Cg = mos.cv_sweep(np.linspace(-2, 2, 201))
 ```
 
-Heterostructure (per-node material list — Si, Ge, GaAs available in
-`pytcad.materials`; InGaAs/AlGaAs via the workbench `MaterialLibrary`):
+More in `pytcad/examples/` (process flow, MOS C-V, 2D MOSFET Id-Vg,
+3D-reduces-to-2D, TED anneal, MC implant, Schottky diode, 3D FinFET DIBL,
+mixed-mode circuit, hydrodynamic closure).
 
-```python
-from pytcad.materials import SILICON, GAAS
-mats = [SILICON]*10 + [GAAS]*10             # interface exactly at node 10
-dev = Device1D(x, dop, T=300.0, material=mats)
-```
+## Equations and numerics
 
-Trap-assisted tunneling (Hurkx enhancement of SRH; trap energy as
-fraction of $E_g$):
+Steady-state van Roosbroeck system: Poisson
+$\nabla\cdot(\varepsilon\nabla\psi) = -q(p - n + N_D^+ - N_A^-)$ and
+continuity $\nabla\cdot J_n = qR$, $\nabla\cdot J_p = -qR$ with
+drift-diffusion currents.
 
-```python
-dev = Device1D(x, dop, T=300.0, models=Models(srh=True, tat=True,
-                                              trap_et_rel=0.5))
-```
+- **Scharfetter–Gummel fluxes**, exact for constant $J$ and $E$ across a cell.
+- **Scaling** by peak doping (not $n_i$): $\psi/V_T$, $n/N_{peak}$, $x/L_D$.
+- **Fully coupled Newton** with an analytic Jacobian, gated against finite
+  differences (5×10⁻⁵); convergence judged on the update, not the residual.
+- **Meshing:** keep $h/L_D \lesssim 1$; tensor-product 2D/3D meshes,
+  adaptive refinement, and gmsh-based unstructured 2D/3D.
+- **Continuation:** adaptive bias stepping and pseudo-arclength
+  (`pytcad.continuation`) for avalanche folds.
 
-Run everything:
+## Physical models
+
+Switched through `Models(...)`; capability per dimension is in
+`ARCHITECTURE.md`.
+
+| Model | Form / source |
+|---|---|
+| Mobility | Caughey–Thomas (doping), Canali (field); Lombardi CVT surface mobility (`surface_mobility`, 2D) |
+| Recombination | SRH, Auger; Hurkx trap-assisted tunneling (`tat`) |
+| Statistics | Boltzmann default; Fermi–Dirac (`fd`), incomplete ionization (`incomplete_ion`) |
+| Bandgap narrowing | Slotboom (`bgn`) |
+| Heterojunctions | per-node materials (Si, Ge, GaAs; InGaAs/AlGaAs via the workbench library), Anderson offsets, thermionic interfaces (`thermionic`) |
+| Impact ionization | van Overstraeten–de Man, local (`impact`) and nonlocal effective field (`impact_nonlocal`) |
+| Band-to-band tunneling | local Kane/Hurkx (`btbt`), nonlocal path WKB (`btbt_nonlocal`) |
+| Quantum correction | density gradient (`dg`, `MOSCapacitor(dg=True)`) |
+| Surface recombination | Robin BC at contacts (`S_n`, `S_p`) |
+| Energy balance | electron energy transport (`energy_balance`) |
+| Other analyses | transient, small-signal AC, self-heating, Schottky contacts, mixed-mode circuit |
+| Process | implant (LSS tables, Monte-Carlo BCA), diffusion, TED, Deal–Grove; level-set 2D/3D deposit/etch/oxidation/silicidation |
+
+**Mobility gotcha:** doping mobility uses total ionized impurities
+$N_A+N_D$, not net doping; pass `Ntotal` for compensated regions.
+
+## Validation
+
+New physics lands with a published-value benchmark in
+`tests/test_model_benchmarks.py` before any feature uses it; numerical paths
+are gated by FD-Jacobian, reduction (3D→2D→1D) and bit-identity tests.
+Example: abrupt 10¹⁷/10¹⁷ Si diode, $J(0.5\,\mathrm{V}) = 1.280\times10^{-2}$
+A/cm² vs 1.321×10⁻² from the short-base ideal-diode formula.
 
 ```bash
-python examples/01_pn_diode.py         # -> pn_diode.png
-python examples/02_process_flow.py     # -> process_flow.png
-python examples/03_mos_cv.py           # -> mos_cv.png
-python examples/04_mosfet_idvg.py      # -> mosfet_idvg.png
-python examples/05_3d_reduces_to_2d.py # -> 3d_reduces_to_2d.png
-pytest tests/ gui/tests/               # full suite, serial
-pytest tests/ gui/tests/ -n 6 -m "not slow" -q   # fast dev loop (parallel)
+cd pytcad
+python -m pytest tests/ gui/tests/ -n 6 -m "not slow and not timing" -q   # fast
+python -m pytest tests/ gui/tests/ -m timing -q                           # serial
+python -m pytest tests/ gui/tests/ -n 6 -m slow -q                        # slow gates
 ```
 
-Everything -- library, GUI, tests, and optional deps (gmsh, devsim,
-mpmath) -- is in one file: `pip install -r requirements.txt` (verified
-on Linux and Windows, see the file's own header). Cap parallel workers
-at `-n 6` and set `OPENBLAS_NUM_THREADS=1` -- see CLAUDE.md's Commands
-section for why.
+Set `OPENBLAS_NUM_THREADS=1` for parallel runs. Known open failure:
+`test_m15_ionization.py::test_g_d_breakdown_within_ten_percent` (see
+`ARCHITECTURE.md`).
 
----
+## Limits
 
-<a name="sec6"></a>
-## 6 · Honest limits of *this* code
+- Drift-diffusion (plus a local/electron-only energy balance): no
+  Monte-Carlo or quantum transport; density gradient is equilibrium-only.
+- LSS implant tables are amorphous-Si moments (no channeling); diffusion
+  and TED are lumped engineering models, not coupled point-defect PDEs.
+- Deal–Grove under-predicts thin dry oxides (the initial-thickness term is a fit).
+- Quasi-static C-V only.
+- M14 absolute surface-mobility calibration is open (paywalled source).
 
-- **The 1D core** has no short-channel-effect modeling beyond drift-diffusion, no LOCOS/STI, and no unstructured mesh. A real $I_d$–$V_g$ MOSFET sweep with a gate-controlled channel *is* now available — see the "2D MOSFET (new)" subsection below.
-- **Implant tables are approximate** LSS moments for *amorphous* Si, good to ~5–10%. They contain **no channelling**, which in crystalline Si can put a tail 1–2 decades deeper. Pass `Rp`/`dRp` from SRIM for anything real.
-- **Diffusion is intrinsic and constant-$D$.** No extrinsic (charged-defect) enhancement above $n_i(T)$, no transient enhanced diffusion from implant damage, no oxidation-enhanced diffusion, no dopant–defect pair kinetics. These dominate real junction formation below ~1000 °C.
-- **Deal–Grove under-predicts thin dry oxides.** The $x_i \approx 25$ nm initial thickness is a fudge factor, not physics.
-- **Quantum corrections: density-gradient only, equilibrium-only.** `MOSCapacitor(dg=True)` and `Device1D(Models(dg=True))` add the Ancona–Stafford density-gradient correction (inversion centroid ~1 nm off the interface, $C_{max}$ lowered) via a coupled-Newton solve (not a lagged outer loop), gated against the code's own Schrödinger–Poisson solve (`pytcad/dg.py`) and the literature ~1 nm centroid — all M20 gates green. DG transport in `solve_bias`, 2D/3D, and dg+FD/dg+incomplete-ion compositions are refused (M20 scope); $\gamma=1$ is still the uncalibrated Bohm value (a boundary-condition fix closed the gates, not a gamma retune). No poly depletion; $D_{it}$ is available (M14).
-- **Quasi-static C-V only.** A 1 MHz measurement gives the high-frequency curve, where $C$ stays near $C_{min}$ in inversion because minority carriers cannot follow.
+## Further reading
 
-### 2D MOSFET (new)
-
-<details>
-<summary><strong>Expand: 2D MOSFET</strong></summary>
-
-There is now a 2D extension (`mesh2d.py`'s `Mesh2D`, `device2d.py`'s `Device2D`, and `mosfet.py`'s `build_mosfet`/`id_vg_sweep`) that solves full drift-diffusion on a tensor-product mesh and produces a real $I_d$–$V_g$ transfer curve with gate-controlled subthreshold switching — see `examples/04_mosfet_idvg.py`. It reuses the same Scharfetter–Gummel/Newton/scaling machinery described above, extended to a 2D box-integration Poisson/continuity assembly. For exactly what's in scope versus deferred (no $I_d$–$V_d$ family sweep, no 2D process simulation, structured rectangular mesh only — no unstructured/triangular mesh, no Canali velocity-saturation mobility in 2D), the original internal design notes for this sub-project are not included in this repository checkout.
-
-</details>
-
-### 3D Solver (new)
-
-<details>
-<summary><strong>Expand: 3D Solver</strong></summary>
-
-There is now a true 3D extension (`mesh3d.py`'s `Mesh3D`, `device3d.py`'s `Device3D`) that solves full 3D drift-diffusion on a tensor-product Cartesian mesh (independent, non-uniform spacing per axis). It generalizes the same box-integration/edge-scatter assembly used in 1D and 2D: each mesh edge (now three families — x, y, z) scatters a Scharfetter–Gummel flux to its two endpoint nodes, giving a 7-point stencil per equation (block-heptadiagonal Jacobian for the coupled $\psi$/$n$/$p$ Newton system) and implicit zero-flux Neumann boundaries wherever an edge is simply absent. Boundary conditions are geometry-agnostic: `add_contact`/`add_gate` take arbitrary node-index arrays, not device-specific shapes. `GateBC` carries a `normal_axis` (`'x'`/`'y'`/`'z'`) so a gate face can sit on any of the three axes — this is what a wrapped/tri-gate device needs, and `pytcad/finfet3d.py`'s `build_finfet3d` now exercises `'y'` (top gate) and `'z'` (both sidewalls) together on a single device.
-
-**Validation.** The primary correctness gate is dimensional reduction: a z-invariant 3D structure must reproduce the already-validated 2D solver exactly. `tests/test_validation_3d.py` checks this at equilibrium and forward bias, and `examples/05_3d_reduces_to_2d.py` makes it visual — extruding a p-n junction in z, solving both 2D and 3D, and plotting the difference. Measured on this repo: max $|\psi_{3D}-\psi_{2D}|$ = 1.11e-16 V, max $|J_{3D}-J_{2D}|$ = 3.98e-10 A/cm² — both at floating-point noise level, not just within the tests' (looser) 1e-6 V / 1e-3 relative tolerances. The analytic Newton Jacobian is independently checked against finite differences (worst relative error < 1e-3 across 30 random sampled columns via sparse column-slice extraction — never `J.toarray()` on the full matrix), and terminal-current extraction (residual-based, not edge-walking) conserves charge to <1e-6 relative error on a two-terminal 3D resistor.
-
-**Current limitations, stated honestly.** A structured tri-gate FinFET template now exists (`pytcad/finfet3d.py`'s `build_finfet3d`, on this same tensor-product `Device3D`/`Mesh3D` core) with literature-trend DIBL/subthreshold-swing gates — GAA nanowire/nanosheet templates remain deferred to future sub-projects. 3D process simulation (implant/diffusion/oxidation) is still 1D/2D-only (`process.py`/`process2d.py`), except that `pytcad/gmsh_finfet3d.py` can now extrude a `process2d`-built 2D etch profile into a 3D tet mesh (geometry only, not a full 3D process solve). Since 2026-09-18, the 2D process representation itself is a real signed-distance level set (`pytcad/levelset2d.py`, `oxidize_levelset.py`, `silicide_levelset.py` — M35 S1-S4: real deposit/etch topology, embedded 2D oxidant-diffusion oxidation replacing the old column-independent Deal-Grove kernel, dopant transport across the moving oxidation boundary, patterned masks, facet-dependent epitaxy, CMP, and a silicidation solver with no built-in named silicide), but this is still 2D only — a 3D level set and a real 3D doping field sampled from it (M35 S5/S6) are a deliberate, not-yet-decided next step, not landed; see `pytcad/README.md`'s "Level-set 2D process geometry" section and `pytcad/M35-3D-PROCESS-PLAN.md`. The default path is a direct sparse solve (`scipy.sparse.linalg.spsolve`); `pytcad/linsolve.py` provides GMRES with node-block-Jacobi and Schur-complement preconditioners (M22, `precond="schur"`) for the large coupled systems, but the direct path remains the default until iteration counts are measured across the suite. Since 2026-09-02, `Device3D.solve_equilibrium`/`solve_bias` also accept `linsolve="bicgstab"`/`"gmres"` (AMG-preconditioned, optional `pyamg` dependency) and `linsolve="gpu_direct"` (CUDA via optional `cupy`) — 8x-44x faster for a large equilibrium solve, 2.8x for a large bias solve respectively, but measurably worse than `"direct"` below roughly 20,000-50,000 nodes, which is why `"direct"` stays the default rather than either becoming it; `gui/services/solver_runner.py` picks automatically for GUI-driven 3D jobs based on mesh size and what's installed. A 4-rank MPI Schwarz domain decomposition (`gui/services/mpi_schwarz_runner.py`) also exists at the GUI layer for large 3D jobs: 5.1x on the geometry it was first measured against, extended to voltage sweeps (2.7x on a 3-point sweep) and to picking whichever of x/y/z is actually safe to split along, rather than only x — pn_junction_3d, refused outright by an x-only check, now qualifies via a z-split (1.5x). It is NOT safe for every geometry: a device whose doping varies along the candidate axis converges far slower or not at all, and (a real bug found and fixed) a device with a gate contact whose own `normal_axis` matches the candidate axis can converge to a silently WRONG answer even when the doping check alone would call that axis safe — the GUI checks both the doping array and every registered gate's normal_axis, and refuses the MPI path whenever either is unsafe. Which engine actually ran a given result (direct / AMG / GPU / MPI Schwarz) is now shown in the GUI's own status bar rather than being a silent internal choice. See M22-LINSOLVE-PLAN.md sections 9-13 for the full record. The direct-solve scaling cost this whole paragraph is otherwise about is real and measured: benchmarking a uniformly-doped cubic resistor showed solve time growing from 3.0s at N=8,000 nodes to 51.8s at N=27,000 (an 18x jump for 3.4x more nodes — clearly superlinear LU fill-in), and N=64,000 did not complete a single solve within 30 minutes, with the unattended sweep's memory reaching ~19 GB before being killed. **In practice this solver is only usable up to roughly N≈27,000 nodes (≈81,000 DOF) on 30 GB-class hardware without one of the alternatives above; do not attempt 40³+ meshes without one.** No claim of parity with commercial 3D TCAD tools is made or intended. GAA nanowire/nanosheet templates remain future sub-project work; the full design rationale and explicit out-of-scope list otherwise live in this sub-project's internal design notes, not included in this repository checkout.
-
-</details>
-
-### Transient simulation (new)
-
-<details>
-<summary><strong>Expand: Transient simulation</strong></summary>
-
-M17 adds time-dependent drift-diffusion for both `Device1D`
-(`pytcad/transient.py`) and `Device2D` (`pytcad/transient2d.py`):
-backward-Euler/theta-scheme time-stepping, three per-contact waveform
-primitives (step, ramp, pulse), and adaptive time-stepping (grows on
-easy Newton solves, shrinks and retries on failure). Both modules drive
-the device through its own residual/Jacobian from the OUTSIDE, the same
-pattern `continuation.py` already established for bias continuation —
-`device.py`/`device2d.py` were never touched. Real, physically
-meaningful transients are reproduced: dielectric relaxation decaying
-with $\tau=\varepsilon/\sigma$, and a forward-to-reverse diode switch
-showing a measurable charge-storage delay before the current actually
-drops. Reachable end-to-end from the desktop GUI's new **Transient**
-tab (armed waveform + run duration/step, plotted as current vs. time),
-backed by a schema-v3 result file. Honest limits: gate-contact
-voltages are not yet waveform-driven (only ohmic contacts); an armed
-transient config is not persisted across project save/load; only a
-scalar current-vs-time series is stored, not per-step field snapshots;
-one quantitative diode-turn-off charge-storage estimate was
-investigated and left an honest partial result rather than a forced
-tolerance (see `pytcad/M17-TRANSIENT-PLAN.md` section 5). Small-signal
-AC/frequency-domain analysis (M18, `pytcad.ac`) is now available for
-`Device1D` — admittance/Y(f)/C(f)/G(f) — library-only, no GUI exposure
-yet, no Device2D. See `pytcad/M18-AC-PLAN.md`.
-
-</details>
-
-### Desktop GUI (new)
-
-<details>
-<summary><strong>Expand: Desktop GUI</strong></summary>
-
-There is now a PySide6 / Qt Quick desktop frontend in `gui/` (currently
-v0.1 – v0.6) that solves devices in a background process and
-visualizes the result, without the GUI ever blocking or the numerical
-engine changing by a single line. It now covers: a built-in 2D MOSFET
-example (v0.1); a Structure + Mesh workbench for building and
-validating devices from regions, contacts and gates (v0.2); a Process
-Workbench driving pytcad's own 1D substrate/implant/anneal/oxidize
-operations with per-species doping tracking (v0.3); single-contact
-voltage sweeps with curve plotting and derived readouts — Imax/Imin,
-Ion/Ioff, and a max-gm threshold estimate for gate sweeps (v0.4); and
-an explicit, versioned schema for solved-result files that every result
-is now validated against on load, plus per-run provenance and
-convergence-trace records (v0.5.0), and a second, genuine solver
-backend: DEVSIM -- its own mesh built from the same device-spec job,
-full drift-diffusion via devsim's canonical silicon physics, optional
-dependency, off unless installed (M7, including warm-started contact-
-bias ramps and voltage sweeps with cross-backend I-V validation against
-the homegrown engine). Since then the GUI has grown: viewport **Bands**
-and **Recombination** modes with an all-models-off comparison overlay
-and a **Physics Lab** panel (every catalog model as a checkbox with its
-equation and reference); **family (batch) sweeps** that re-solve one
-device for a set of stepped terminal voltages and overlay all curves
-with a legend; a dedicated **MOS C–V** mode running the validated
-`MOSCapacitor` core through the standard job pipeline; deck-driven
-sessions via **File → Open Deck...**; and versioned project files (schema v5)
-carrying structure, mesh, sweep, process state, and the Physics Lab's
-model config. v0.6 added a **runtime state validation** system (`GuiStateValidator`) that monitors solver state, QML component health, and result integrity, with a live `StatusIndicator` in the app footer showing validation status, plus a `ValidationBanner` component and `ValidatedTextField` for inline input validation. See `gui/README.md` for install/run instructions and the full version-by-version detail. A real-QML end-to-end smoke test
-(`gui/tests/test_smoke_e2e.py`) drives every exposed parameter across
-the GUI's two device-construction paths (Process Flow, always 1D;
-Structure/Device-Builder templates, always 2D). v0.6 Phase 2c added a
-solver backend selector (pytcad/devsim, gated on compatible 1D devices),
-v0.6.1 (`3D-VISUALIZATION-PLAN.md`) added the first GUI path to a
-`Device3D` -- one hand-built quick-load example plus a separate
-PyVista/VTK viewer window with interactive isosurface controls for an
-already-solved 3D result; and M17 phase 3 added a **Transient** tab
-(arm a per-contact waveform, run it through the existing subprocess
-pipeline unchanged, plot current vs. time) backed by a schema-v3
-result file.
-Still not a complete TCAD workbench: no GUI-level 3D device
-CONSTRUCTION (only that one fixed example feeds the 3D viewer; there is
-no Structure/Process-workbench equivalent for 3D) -- 3D visualization
-ITSELF is no longer limited to isosurfaces: volumetric rendering,
-animated bias-sweep playback, and an exploded multi-layer structural
-view all shipped in 3D-VISUALIZATION-PLAN.md phases 3-5; the DEVSIM
-backend solves 1D two-terminal
-silicon devices only (a devsim
-`edge_volume_model` unit anomaly is documented in `benchmarks/`); impact
-ionization is solver-coupled and Physics-Lab-selectable for the
-homegrown 1D backend only, not DEVSIM; and the C–V result surfaces
-through the result store rather than a dedicated plot (see
-`gui/README.md`'s "Honest limits" for the full, current list).
-
-</details>
-
-### Workbench domain layer (new)
-
-<details>
-<summary><strong>Expand: Workbench domain layer</strong></summary>
-
-The first milestone of the Semiconductor Workbench plan
-(`ARCHITECTURE.md`) is now in place: `workbench/core/` holds pure-data
-domain objects — `Region` (a named rectangle of material + uniform net
-doping), `ContactDef` (edge-defined or node-map terminals), and
-`DomainDevice` (a whole device in either *imported* form — explicit mesh
-axes + array doping, as the solver boundary defines it today — or
-*authored* form — regions over a width × height extent with a mesh
-hint) — plus a `MaterialLibrary` and a `ModelCatalog`.
-
-The catalog is the educational piece: every physics model the solver
-actually implements (Caughey–Thomas doping mobility, Canali velocity
-saturation, Shockley–Read–Hall, Auger, Slotboom bandgap narrowing) is
-registered with its equation, the exact `Semiconductor` parameter names
-it consumes, literature references, and an honest applicability note —
-including `field_mobility`'s 1D-only status. Model configs are validated
-against this registry instead of being free-form dicts.
-
-Discipline kept: **zero numerical or GUI changes.** `DeviceSpec` remains
-the wire/project format; `DomainDevice` is its derived domain view, and
-the adapters (`workbench/adapters/spec.py`) prove lossless round-trips
-against both shipped examples by delegating region-authored devices to
-the existing `StructureModel.to_device_spec()` builder rather than
-reimplementing it. Known asymmetries are stated, not hidden: an armed
-sweep is job-level configuration and does not ride on a DomainDevice;
-region-authored bias is derived from contact voltages and conflicts are
-rejected; non-silicon region materials fail loudly because the numerical
-core implements silicon only.
-
-</details>
-
-### Run provenance & convergence records (new)
-
-<details>
-<summary><strong>Expand: Run provenance & convergence records</strong></summary>
-
-Every solved result file is now self-describing (result schema v2,
-additive over v1): it carries its mesh as flat node coordinates, the
-exact physics-model flags and Newton options that produced it, and a
-per-stage convergence trace — iteration counts and residual norms for
-equilibrium, bias, and every sweep point. The capture works by teeing
-the solver's own verbose output, so the numerical engine is untouched;
-a test pins the output format so silent drift fails loudly. Files
-self-validate on load against the versioned schema. This is the
-substrate the planned "Physics Lab" UI will use to *show which
-equations produced a quantity and how the solve actually converged*.
-
-</details>
-
-### Store, analysis & solver-backend boundaries (new)
-
-<details>
-<summary><strong>Expand: Store, analysis & solver-backend boundaries</strong></summary>
-
-The M3 milestone of the Semiconductor Workbench plan is in place:
-
-- **One store protocol.** The `ResultStore` ABC now carries the sweep
-  and solved-result contracts with honest defaults; the controller asks
-  stores instead of type-checking them against `NpzResultStore`, so a
-  future backend's store plugs in by satisfying an interface. Process
-  checkpoints are a real subclass; the visualization layer reads the
-  selected step through a public accessor.
-- **An observables layer** (`workbench/analysis/`): backend-agnostic,
-  array-based physics readouts — current extremes, Ion/Ioff, max-gm Vth
-  (delegating to the existing, GUI-proven math so parity is exact), plus
-  new gm(Vg) curves and band diagrams (E_c/E_v/E_Fn/E_Fp) computed from
-  plain physical-unit arrays, verified to match the core's own
-  band-diagram routine bit-for-bit on real solved data.
-- **A SolverBackend protocol** (`workbench/solvers/base.py`): backends
-  are addressed by id behind one file-based interface; the homegrown
-  runner is the reference implementation. A golden test proves runs
-  routed through the protocol are identical to direct calls. The door
-  now has a second engine behind it: `workbench/solvers/
-  devsim_backend.py` builds its own DEVSIM mesh from the same
-  DeviceSpec job, solves drift-diffusion equilibrium and warm-started
-  contact-bias ramps/sweeps with devsim's own silicon physics, emits
-  schema-v2 results (including a convergence trace parsed by the same
-  RunRecord reader), and is validated by cross-backend tests: the same
-  1D diode swept by both engines produces I–V curves agreeing to a
-  constant factor ~2 set by the engines' tabulated-ni difference, with
-  both matching the analytic built-in potential within 5%. DEVSIM stays
-  an optional dependency; the registry auto-detects it.
-
-</details>
-
-### Heterostructure materials & 1D heterojunction core (new)
-
-<details>
-<summary><strong>Expand: Heterostructure materials & 1D heterojunction core</strong></summary>
-
-The M11 slice set brings real heterostructures. `workbench/core/
-materials.py` adds Ge, GaAs, InGaAs and an AlGaAs factory to the
-`MaterialLibrary` (Varshni bandgap, Caughey–Thomas mobility, permittivity,
-electron affinity — each with its provenance), `DomainDevice` accepts a
-material per region, and the wire format carries `region_materials`.
-The numerical side (`Device1D`) accepts a per-node material list:
-permittivity becomes position-dependent and enters Poisson in flux
-form, while band offsets enter the currents through position-dependent
-$n_{ie}$ with **carrier-specific** edge factors (electron
-$\Delta\psi + \Delta\ln n_{ie}$, hole $\Delta\psi - \Delta\ln n_{ie}$ —
-opposite signs; a shared delta passes a Jacobian check but breaks hole
-detailed balance, which is exactly the equilibrium test that guards it).
-
-</details>
-
-### Tunneling: Fowler–Nordheim/WKB and trap-assisted (new)
-
-<details>
-<summary><strong>Expand: Tunneling: Fowler–Nordheim/WKB and trap-assisted</strong></summary>
-
-Two M12 pieces. `workbench/physics/tunneling.py` is the analysis layer:
-Fowler–Nordheim constants and slope, and triangular-barrier WKB
-$\kappa$ and transmission, each gated in `tests/test_model_benchmarks.py`
-against published values. The solver-side piece is **trap-assisted
-tunneling** in `Device1D` (Hurkx-style): with `Models(tat=True)`, the
-SRH denominator gains WKB escape-probability enhancements
-$P_{n,p} = \exp(-B_{n,p}\,\varphi^{3/2}/F)$ evaluated on the edge field
-in SI units, with the trap level set by `trap_et_rel` as a fraction of
-$E_g$. The frozen-field approximation (probabilities refreshed once per
-bias point, omitted from the analytic Jacobian) is documented, and an
-honest physical note ships with it: bulk-silicon midgap TAT is
-negligible at any realizable junction field — the enhancement targets
-oxides, high-bandgap and narrow-gap materials, which is why the
-acceptance test gates the *factor law* over synthetic fields rather
-than device currents.
-
-<a name="sec7"></a>
-</details>
-
-## 7 · Where to read more
-
-- **Selberherr, *Analysis and Simulation of Semiconductor Devices* (1984)** — still the reference for the discretised equations, scaling, and Scharfetter–Gummel. Computational.
-- **Scharfetter & Gummel, *IEEE Trans. Electron Devices* 16, 64 (1969)** — the original exponential-fitting scheme, ~10 pages. Computational.
-- **Vasileska, Goodnick & Klimeck, *Computational Electronics* (2010)** — bridges drift-diffusion, hydrodynamic, and Monte Carlo. Computational.
-- **Plummer, Deal & Griffin, *Silicon VLSI Technology*** — the process side: implantation, diffusion, oxidation, with the models actually used in fabs. Experimental/empirical.
-- **Deal & Grove, *J. Appl. Phys.* 36, 3770 (1965)** — the oxidation model, and honest about its thin-oxide failure. Experimental + theory.
-- **Sze & Ng, *Physics of Semiconductor Devices*** — the analytic limits every one of these tests checks against. Theory.
-**Project roadmap.** `ARCHITECTURE.md` section 4b governs all future
-capability growth (three parity tiers, milestones M13–M30 with
-published-value acceptance gates). M13 (Fermi-Dirac statistics), M15
-(impact ionization), M16 (BTBT, gate-verified), M17 (transient
-simulation — 1D core, 2D core, and GUI wiring), M18 (small-signal AC —
-1D, library-only), M19 (self-heating — 1D steady-state), M20
-(density-gradient quantum correction — coupled-Newton, all gates
-green), M21 (meshing, including phase 3 unstructured/gmsh support and
-its `Device2D(unstructured=True)` integration), and M22 (linear solver
-modernization, including the Schur-complement preconditioner) are all
-COMPLETE or landed for their stated scope, apart from M14's own open
-G-A item (blocked on a paywalled source). Each milestone's own plan
-doc states its honest remaining limits (2D/transient extensions, GUI
-exposure, etc. — none of these are hidden gaps, just explicitly
-descoped next phases). The milestone specs live in `pytcad/M14-…`
-through `pytcad/M22-…` plan files.
-
-As of 2026-09-06, M23 (2D process geometry), M24 (pair diffusion/TED),
-M25 (Monte-Carlo implantation), M26 (3D generalization: structured
-tri-gate FinFET + unstructured-tet gate BC/process-extrusion pipeline),
-M27 (mixed-mode device + circuit: MNA solver + `DeviceStamp`), M28
-(Schottky/tunnel contacts + gate stacks), and M29 (hydrodynamic/
-energy-balance: a local carrier-temperature closure, not the full
-self-consistent transport solve the milestone's own "genuinely
-stretch" framing anticipated) have also landed, each to a disclosed
-simplification-slice level — see `ARCHITECTURE.md` section 4b.5 and
-`pytcad/README.md`'s "Mixed-mode device + circuit", "Hydrodynamic /
-energy-balance carrier temperature", and "Process expansion, Schottky
-contacts, and 3D FinFET" sections for the full record. M30 (workbench/
-interop) remains not started.
-
-- **Hurkx, Klaassen & Knuvers, *IEEE Trans. Electron Devices* 39, 331 (1992)** — the trap-assisted tunneling recombination model (heavy-doping variant adapted here with explicit WKB factors). Theory + measurement.
-
-### Workflow front end (new)
-
-<details>
-<summary><strong>Expand: Workflow front end</strong></summary>
-
-`workbench/workflow.py` adds a Silvaco/Sentaurus-flavoured text deck as
-a front door to the Device Builder templates: `TEMPLATE nmos` plus
-KEY = value lines translates into a real DomainDevice through the same
-validated path the GUI uses, with line-numbered error reporting. A thin
-translation layer only — never a second simulation path.
-</details>
-
+- `ARCHITECTURE.md` — roadmap, capability matrix, milestone status
+- `CLAUDE.md` — engineering rules and known gotchas
+- `pytcad/README.md` — numerical-core details
+- `pytcad/desktop/README.md`, `pytcad/NATIVE-DESKTOP-PLAN.md` — desktop app
+- `pytcad/benchmarks/README.md` — performance suite
+- Removed documents (milestone `M*-PLAN.md` files, `history.md`,
+  `Architecture_Master_Plan.md`, `docs/user-guide/`) are in git history:
+  find the deleting commit with `git log --all -- <path>`, then
+  `git show <commit>^:<path>`.
