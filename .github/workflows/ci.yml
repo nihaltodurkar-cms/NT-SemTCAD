@@ -172,9 +172,9 @@ jobs:
                 -DCMAKE_PREFIX_PATH="$(cygpath -m "$CONDA_PREFIX")/Library" \
                 -DPython_EXECUTABLE="$(cygpath -m "$(which python)")"
           cmake --build build/dev
-      - name: Trace N=2e16
+      - name: Same-state check vs container reference
         working-directory: pytcad
-        run: python ../.github/diag/fold_trace.py . 2e16
+        run: python ../.github/diag/state_check.py check . ../.github/diag/state_2e16.npz
 
   wheel:
     name: wheel builds
