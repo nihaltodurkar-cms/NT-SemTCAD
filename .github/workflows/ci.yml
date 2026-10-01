@@ -72,11 +72,17 @@ jobs:
       - name: Install
         working-directory: pytcad
         run: |
-          conda install -y -c conda-forge mkl eigen
+          conda install -y -c conda-forge mkl eigen nlohmann_json
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install nanobind scikit-build-core
           conda create -y -p "$RUNNER_TEMP/tcad-cpp" -c conda-forge gxx binutils cmake ninja
+          # gui/tests/test_desktop_platform_core.py compiles the desktop's
+          # platform core with the g++ on PATH and no -I for nlohmann/json:
+          # expose ONLY that header dir to it, not all of Library/include.
+          mkdir -p "$RUNNER_TEMP/json-inc"
+          cp -r "$(cygpath -u "$CONDA_PREFIX")/Library/include/nlohmann" "$RUNNER_TEMP/json-inc/"
+          echo "CPLUS_INCLUDE_PATH=$(cygpath -w "$RUNNER_TEMP/json-inc")" >> "$GITHUB_ENV"
       # The compiler env's Library/bin goes on PATH for THIS step only
       # (cc1plus needs its DLLs); the import check runs in the next step
       # without it, proving _core has no runtime coupling to that env.

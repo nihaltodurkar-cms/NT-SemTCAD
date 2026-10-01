@@ -181,7 +181,7 @@ if ($isWin) {
                 $raw = & $pyExe (Join-Path $PSScriptRoot "loaded_modules.py") --prefix $Stage 2>&1
                 $code = $LASTEXITCODE
                 $txtOut = ($raw | Out-String).Trim()
-                if ($code -ne 0) { $A.loaded += [pscustomobject]@{ program = $label; note = "loaded_modules.py exit $code: $txtOut" } }
+                if ($code -ne 0) { $A.loaded += [pscustomobject]@{ program = $label; note = "loaded_modules.py exit ${code}: $txtOut" } }
                 else {
                     $j = $txtOut | ConvertFrom-Json
                     foreach ($mod in @($j.matches)) { $A.loaded += [pscustomobject]@{ program = $label; module = $mod.module; path = $mod.path; fromStage = [bool]$mod.fromStage } }

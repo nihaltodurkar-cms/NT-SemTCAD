@@ -12,6 +12,11 @@ import sys
 def _strip_target(path):
     if ":" in path:
         head, tail = path.split(":", 1)
+        # "C:\..." is a LOCAL Windows path (OpenSSH's scp treats a
+        # one-letter "host" as a drive letter too). Stripping "C:" left a
+        # drive-relative path that resolved against the CWD's drive.
+        if len(head) == 1 and head.isalpha():
+            return path
         if "@" in head or head and "/" not in head:
             return tail
     return path
