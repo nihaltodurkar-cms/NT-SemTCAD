@@ -1180,6 +1180,53 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
         }
     }
 
+    // Regularized |Jn|, |Jp| per edge (M15 impact ionization). Computed
+    // whatever the models: device.py's _ii_compute_gs_frozen reads them
+    // back; only the impact block below consumes them in F/J.
+    std::vector<double> sgn_n(Ne), sgn_p(Ne);
+    {
+        // SG term magnitudes per edge: an edge current's round-off
+        // scale is kIiJRoundoffRel times these (see below).
+        std::vector<double> tn(Ne), tp(Ne);
+        for (int k = 0; k < Ne; ++k) {
+            tn[k] = std::abs(an[k]) * (std::abs(n[k + 1] * Bp[k]) + std::abs(n[k] * Bm[k]));
+            tp[k] = std::abs(ap[k]) * (std::abs(p[k + 1] * Bm_h[k]) + std::abs(p[k] * Bp_h[k]));
+        }
+        // j_eps scales with the device's largest RESOLVED edge current:
+        // a round-off-sized |J| (heavily doped contact regions) must not
+        // set it, or the regularizer itself follows round-off.
+        double jmax = 1e-300;
+        for (int k = 0; k < Ne; ++k)
+            jmax = std::max({jmax, std::abs(Jn[k]) - kIiJRoundoffRel * tn[k],
+                             std::abs(Jp[k]) - kIiJRoundoffRel * tp[k]});
+        const double j_eps = kIiJEpsRel * jmax;
+        // Per-edge regularizer: never below the edge current's own
+        // round-off. Jn = an (n_R B+ - n_L B-) can be the difference of
+        // two terms ~1e15x larger than itself (the n+ edge of a reverse-
+        // biased junction), so its computed value -- and with only the
+        // global j_eps, its smoothed sign -- is round-off, and dG/dn
+        // there flipped sign between builds at the same state. Below
+        // en the edge contributes ~j_eps (|J| unknown, not noise) and a
+        // ~0 derivative; above it |J| is shifted by en - j_eps, a
+        // kIiJRoundoffRel-relative change of the SG terms. Where en ==
+        // j_eps this is the old expression exactly. den/dn is dropped
+        // from the Jacobian: it is O(kIiJRoundoffRel) of dJ/dn.
+        std::vector<double> aJn(Ne), aJp(Ne);
+        for (int k = 0; k < Ne; ++k) {
+            const double en = std::max(j_eps, kIiJRoundoffRel * tn[k]);
+            const double ep = std::max(j_eps, kIiJRoundoffRel * tp[k]);
+            const double rn = std::sqrt(Jn[k] * Jn[k] + en * en);
+            const double rp = std::sqrt(Jp[k] * Jp[k] + ep * ep);
+            aJn[k] = (rn - (en - j_eps)) * J0_;
+            aJp[k] = (rp - (ep - j_eps)) * J0_;
+            sgn_n[k] = Jn[k] / rn;
+            sgn_p[k] = Jp[k] / rp;
+        }
+        out.ii_abs_jn = aJn;
+        out.ii_abs_jp = aJp;
+    }
+    const std::vector<double>& aJn = out.ii_abs_jn;
+    const std::vector<double>& aJp = out.ii_abs_jp;
     // --- M15 impact ionization / M16 local BTBT (device.py's blocks
     // after both continuity rows, before Dirichlet stamping; interior
     // nodes only). Node field E_i = 0.5 (e_{i-1} + e_i), e_k = |dpsi_k|
@@ -1209,21 +1256,6 @@ Device1D::ResidualJacobian Device1D::residual_jacobian(
             // (homojunction, no thermionic: identical deltas), so one
             // j_eps serves value and derivative alike, as device.py
             // requires.
-            double jmax = 1e-300;
-            for (int k = 0; k < Ne; ++k)
-                jmax = std::max({jmax, std::abs(Jn[k]), std::abs(Jp[k])});
-            // numpy: max(max|Jn|, max|Jp|, 1e-300) -- same value.
-            const double j_eps = kIiJEpsRel * jmax;
-            const double e2 = j_eps * j_eps;
-            std::vector<double> aJn(Ne), aJp(Ne), sgn_n(Ne), sgn_p(Ne);
-            for (int k = 0; k < Ne; ++k) {
-                const double rn = std::sqrt(Jn[k] * Jn[k] + e2);
-                const double rp = std::sqrt(Jp[k] * Jp[k] + e2);
-                aJn[k] = rn * J0_;
-                aJp[k] = rp * J0_;
-                sgn_n[k] = Jn[k] / rn;
-                sgn_p[k] = Jp[k] / rp;
-            }
             const double Kgen = 0.5 / (ph::kIiQ * R0_);
             // M34-S2: with impact_nonlocal alpha sees a per-carrier
             // EFFECTIVE field; its psi-dependence is dense and stamped

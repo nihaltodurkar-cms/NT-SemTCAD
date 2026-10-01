@@ -197,6 +197,17 @@ _STIFF_DENSITY_FLOOR = 1e-8
 # everywhere else is far below the 5e-5 FD-Jacobian gate and orders of
 # magnitude below the physics being resolved).
 _II_J_EPS_REL = 1e-6
+# ...and that regularizer is floored, per edge, at the edge current's own
+# round-off: _II_J_ROUNDOFF_REL times the two SG terms whose difference
+# IS the edge current. On the n+ edge of a reverse-biased junction those
+# terms are ~1e15x the current, so the computed current there is round-
+# off; with only the global eps (itself set by a round-off-sized maximum)
+# its smoothed sign -- hence dG/dn -- followed round-off and differed
+# between compiler builds at the same state (M15 G-D: Windows traced past
+# the breakdown fold to 41.6 V vs 35.7 V; tests/test_m15_ii_roundoff.py).
+# Mirrors kIiJRoundoffRel (core/include/tcad/device1d/device1d.hpp); used
+# by ii_grid.py for Device2D/Device3D.
+_II_J_ROUNDOFF_REL = 1e-10
 
 
 def _ii_smooth_abs(J, eps):
@@ -1149,11 +1160,9 @@ class Device1D:
         currents at (psi, n, p). No state is touched."""
         bc = self._contact_values([0.0, 0.0])
         out = self._assemble(psi, n, p, bc, self._frozen_inputs(psi, touch=False))
-        Jn, Jp = np.asarray(out[4]), np.asarray(out[5])
-        j_eps = _II_J_EPS_REL * max(float(np.abs(Jn).max()),
-                                    float(np.abs(Jp).max()), 1e-300)
-        aJn = _ii_smooth_abs(Jn, j_eps) * self.J0
-        aJp = _ii_smooth_abs(Jp, j_eps) * self.J0
+        # the compiled assembly's own regularized |Jn|, |Jp| (round-off-
+        # floored per edge, see _II_J_ROUNDOFF_REL)
+        aJn, aJp = np.asarray(out[9]), np.asarray(out[10])
         Sn = np.empty(self.N); Sn[0], Sn[-1] = aJn[0], aJn[-1]
         Sn[1:-1] = aJn[:-1] + aJn[1:]
         Sp = np.empty(self.N); Sp[0], Sp[-1] = aJp[0], aJp[-1]
@@ -1247,7 +1256,7 @@ class Device1D:
                 "SchottkyContact (A_star given) is refused: both "
                 "mechanisms would compete for the same boundary row "
                 "(M46-S2 scope; unvalidated composition).")
-        F, rows, cols, vals, Jn, Jp, drows, ii_gs, btbt_gs = self._assemble(
+        F, rows, cols, vals, Jn, Jp, drows, ii_gs, btbt_gs, _, _ = self._assemble(
             psi, n, p, bc, self._frozen_inputs(psi), theta, n_lag, Jn_lag, Qheat_lag)
         F = np.asarray(F)
         M = F.size
