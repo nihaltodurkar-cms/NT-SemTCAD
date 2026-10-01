@@ -1,7 +1,7 @@
 #include "ui/win32/uia_provider.hpp"
 
 #include "ui/win32/dwrite_text.hpp"
-#include "ui/win32/line_edit.hpp"
+#include "ui/win32/text_input.hpp"
 
 #include <UIAutomationCoreApi.h>
 
@@ -51,22 +51,46 @@ CONTROLTYPEID controlType(Role r) {
         case Role::ScrollBar: return UIA_ScrollBarControlTypeId;
         case Role::Image: return UIA_ImageControlTypeId;
         case Role::Custom: return UIA_CustomControlTypeId;
+        case Role::Table: return UIA_TableControlTypeId;
+        case Role::Header: return UIA_HeaderControlTypeId;
+        case Role::HeaderItem: return UIA_HeaderItemControlTypeId;
+        case Role::DataItem: return UIA_DataItemControlTypeId;
+        case Role::Splitter: return UIA_ThumbControlTypeId;
+        case Role::Separator: return UIA_SeparatorControlTypeId;
+        case Role::Window: return UIA_WindowControlTypeId;
+        case Role::Dialog: return UIA_WindowControlTypeId;
+        case Role::MenuBar: return UIA_MenuBarControlTypeId;
         default: return UIA_PaneControlTypeId;
+    }
+}
+
+// The visible children as UI Automation sees them: a structural widget (a view's clipping viewport) is skipped and its
+// children are the parent's (N3e).
+void collectChildren(Widget* w, std::vector<Widget*>& out) {
+    for (auto& c : w->children()) {
+        if (!c->isVisibleSelf()) continue;
+        if (c->accessibleIsStructural()) collectChildren(c.get(), out);
+        else out.push_back(c.get());
     }
 }
 
 std::vector<Widget*> visibleChildren(Widget* w) {
     std::vector<Widget*> v;
-    for (auto& c : w->children())
-        if (c->isVisibleSelf()) v.push_back(c.get());
+    collectChildren(w, v);
     return v;
 }
 
-// -- the Text pattern's range over a LineEdit ---------------------------------------------------------------------
+Widget* accessibleParent(Widget* w) {
+    Widget* p = w->parent();
+    while (p && p->accessibleIsStructural()) p = p->parent();
+    return p;
+}
+
+// -- the Text pattern's range over a TextInput (LineEdit, PlainTextEdit) ---------------------------------------------------------------------
 
 class TextRange final : public ITextRangeProvider {
 public:
-    TextRange(UiaElement* owner, LineEdit* edit, std::size_t a, std::size_t b) : owner_(owner), edit_(edit), a_(a), b_(b) {
+    TextRange(UiaElement* owner, TextInput* edit, std::size_t a, std::size_t b) : owner_(owner), edit_(edit), a_(a), b_(b) {
         owner_->AddRef();
     }
     STDMETHODIMP QueryInterface(REFIID riid, void** out) override {
@@ -97,7 +121,8 @@ public:
     std::pair<std::size_t, std::size_t> unitAt(TextUnit u, std::size_t p) const {
         if (u == TextUnit_Character) return {model().snap(p), p >= len() ? len() : model().nextStop(model().snap(p))};
         if (u == TextUnit_Word) return model().wordAt(p);
-        return {0, len()};  // Format, Line, Paragraph, Page, Document: one line of text
+        if (u == TextUnit_Line || u == TextUnit_Paragraph) return edit_->lineRangeAt(p);  // hard lines (see TextInput)
+        return {0, len()};  // Format, Page, Document
     }
     std::size_t step(TextUnit u, std::size_t p, bool forward) const {  // the next / previous unit start
         if (u == TextUnit_Character) return forward ? model().nextStop(p) : model().prevStop(p);
@@ -109,12 +134,29 @@ public:
             if (p == 0) return 0;
             return model().wordAt(model().prevStop(p)).first;
         }
+        if (u == TextUnit_Line || u == TextUnit_Paragraph) {
+            const std::size_t at = std::min(p, len());
+            if (forward) {
+                const std::size_t e = edit_->lineRangeAt(at).second;
+                return e < len() ? e + 1 : p;  // past the line feed; on the last line there is nowhere to go
+            }
+            const std::size_t s = edit_->lineRangeAt(at).first;
+            return s == 0 ? 0 : edit_->lineRangeAt(s - 1).first;
+        }
         return forward ? len() : 0;
     }
     int moveEndpoint(std::size_t& e, TextUnit u, int count) const {
         int moved = 0;
-        while (count > 0 && e < len()) e = step(u, e, true), --count, ++moved;
-        while (count < 0 && e > 0) e = step(u, e, false), ++count, --moved;
+        while (count > 0 && e < len()) {
+            const std::size_t n = step(u, e, true);
+            if (n == e) break;  // on the last unit: nothing further to move to
+            e = n, --count, ++moved;
+        }
+        while (count < 0 && e > 0) {
+            const std::size_t n = step(u, e, false);
+            if (n == e) break;
+            e = n, ++count, --moved;
+        }
         return moved;
     }
 
@@ -170,11 +212,14 @@ public:
     STDMETHODIMP GetBoundingRectangles(SAFEARRAY** out) override {
         if (!alive()) return UIA_E_ELEMENTNOTAVAILABLE;
         clamp();
-        const RECT r = edit_->rangeScreenRect(a_, b_);
-        *out = SafeArrayCreateVector(VT_R8, 0, 4);
-        double v[4] = {static_cast<double>(r.left), static_cast<double>(r.top), static_cast<double>(r.right - r.left),
-                       static_cast<double>(r.bottom - r.top)};
-        for (LONG i = 0; i < 4; ++i) SafeArrayPutElement(*out, &i, &v[i]);
+        const std::vector<RECT> rects = edit_->rangeScreenRects(a_, b_);  // one per line (and per direction run)
+        *out = SafeArrayCreateVector(VT_R8, 0, static_cast<ULONG>(4 * rects.size()));
+        LONG i = 0;
+        for (const RECT& r : rects) {
+            const double v[4] = {static_cast<double>(r.left), static_cast<double>(r.top), static_cast<double>(r.right - r.left),
+                                 static_cast<double>(r.bottom - r.top)};
+            for (double d : v) SafeArrayPutElement(*out, &i, const_cast<double*>(&d)), ++i;
+        }
         return S_OK;
     }
     STDMETHODIMP GetEnclosingElement(IRawElementProviderSimple** out) override {
@@ -234,7 +279,7 @@ public:
 private:
     LONG refs_ = 1;
     UiaElement* owner_;
-    LineEdit* edit_;
+    TextInput* edit_;
     std::size_t a_, b_;
 };
 
@@ -259,14 +304,16 @@ bool UiaHost::onGetObject(WPARAM wp, LPARAM lp, LRESULT* result) {
 }
 
 UiaElement* UiaHost::element(Widget* w) {
-    if (!w) return nullptr;
+    if (!w || dying_.count(w)) return nullptr;  // (a widget on its way out gets no new element)
     if (auto it = elements_.find(w); it != elements_.end()) return it->second;
     auto* e = new UiaElement(this, w, next_id_++);
     elements_.emplace(w, e);
-    if (auto* le = dynamic_cast<LineEdit*>(w)) le->on_accessible_value_changed = [this, le] { valueChanged(le); };
-    if (w->accessibleRange().valid || (w->accessibleHasValue() && !dynamic_cast<LineEdit*>(w)))
+    if (auto* le = dynamic_cast<TextInput*>(w)) le->on_accessible_value_changed = [this, le] { valueChanged(le); };
+    if (w->accessibleRange().valid || (w->accessibleHasValue() && !dynamic_cast<TextInput*>(w)))
         w->accessible_range_changed = [this, w] { rangeChanged(w); };
     if (w->accessibleExpandState() >= 0) w->accessible_expand_changed = [this, w] { expandChanged(w); };
+    w->accessible_current_changed = [this, w] { currentChanged(w); };
+    w->accessible_structure_changed = [this, w] { structureChanged(w); };
     return e;
 }
 
@@ -277,18 +324,41 @@ void UiaHost::widgetGone(Widget* w) {
         for (auto& c : x->children()) walk(c.get());
     };
     walk(w);
+    // Two phases. UiaDisconnectProvider calls back into the providers (Navigate and the like) while it runs; those calls
+    // must find the dying widgets' elements already detached, and must not make NEW elements for widgets that are about
+    // to be freed (found with AddressSanitizer: an element made for a released editor during the disconnect outlived it).
+    for (Widget* x : sub) dying_.insert(x);
+    std::vector<UiaElement*> gone;
     for (Widget* x : sub) {
         auto it = elements_.find(x);
         if (it == elements_.end()) continue;
-        UiaDisconnectProvider(static_cast<IRawElementProviderSimple*>(it->second));
         it->second->detach();  // a client still holding it gets UIA_E_ELEMENTNOTAVAILABLE
-        it->second->Release();
+        gone.push_back(it->second);
         elements_.erase(it);
     }
+    for (UiaElement* e : gone) {
+        UiaDisconnectProvider(static_cast<IRawElementProviderSimple*>(e));
+        e->Release();
+    }
+    for (Widget* x : sub) dying_.erase(x);
+}
+
+void UiaHost::currentChanged(Widget* container) {
+    if (container && container->hasFocus()) focusChanged(container);  // the focus event names the current item
+}
+
+void UiaHost::structureChanged(Widget* w) {
+    ++events_;
+    ++structure_events_;
+    if (w && UiaClientsAreListening())
+        UiaRaiseStructureChangedEvent(static_cast<IRawElementProviderSimple*>(element(w)), StructureChangeType_ChildrenInvalidated, nullptr, 0);
 }
 
 void UiaHost::focusChanged(Widget* w) {
     ++events_;
+    if (w) {
+        if (Widget* child = w->accessibleFocusChild()) w = child;  // a list's focus is on its current item
+    }
     if (w && UiaClientsAreListening())
         UiaRaiseAutomationEvent(static_cast<IRawElementProviderSimple*>(element(w)), UIA_AutomationFocusChangedEventId);
 }
@@ -370,16 +440,24 @@ STDMETHODIMP UiaElement::QueryInterface(REFIID riid, void** out) {
     else if (riid == __uuidof(IExpandCollapseProvider)) *out = static_cast<IExpandCollapseProvider*>(this);
     else if (riid == __uuidof(ISelectionItemProvider)) *out = static_cast<ISelectionItemProvider*>(this);
     else if (riid == __uuidof(ITextProvider)) *out = static_cast<ITextProvider*>(this);
+    else if (riid == __uuidof(ISelectionProvider)) *out = static_cast<ISelectionProvider*>(this);
+    else if (riid == __uuidof(IScrollProvider)) *out = static_cast<IScrollProvider*>(this);
+    else if (riid == __uuidof(IScrollItemProvider)) *out = static_cast<IScrollItemProvider*>(this);
+    else if (riid == __uuidof(IGridProvider)) *out = static_cast<IGridProvider*>(this);
+    else if (riid == __uuidof(IGridItemProvider)) *out = static_cast<IGridItemProvider*>(this);
+    else if (riid == __uuidof(ITableProvider)) *out = static_cast<ITableProvider*>(this);
+    else if (riid == __uuidof(ITableItemProvider)) *out = static_cast<ITableItemProvider*>(this);
     else return E_NOINTERFACE;
     AddRef();
     return S_OK;
 }
 
-LineEdit* UiaElement::edit() const { return dynamic_cast<LineEdit*>(w_); }
+TextInput* UiaElement::edit() const { return dynamic_cast<TextInput*>(w_); }
 
 IRawElementProviderFragment* UiaElement::wrap(Widget* w) {
     if (!w || !host_) return nullptr;
     auto* e = static_cast<IRawElementProviderFragment*>(host_->element(w));
+    if (!e) return nullptr;
     e->AddRef();
     return e;
 }
@@ -401,6 +479,13 @@ STDMETHODIMP UiaElement::GetPatternProvider(PATTERNID id, IUnknown** out) {
     else if (id == UIA_RangeValuePatternId) has = w_->accessibleRange().valid;
     else if (id == UIA_ExpandCollapsePatternId) has = w_->accessibleExpandState() >= 0;
     else if (id == UIA_TextPatternId) has = edit() != nullptr;
+    else if (id == UIA_SelectionPatternId) has = w_->accessibleIsSelectionContainer();
+    else if (id == UIA_ScrollPatternId) has = w_->accessibleScroll().valid;
+    else if (id == UIA_ScrollItemPatternId) has = w_->accessibleSelectionContainer() != nullptr || w_->accessibleCell().valid;
+    else if (id == UIA_GridPatternId) has = w_->accessibleIsGrid();
+    else if (id == UIA_TablePatternId) has = w_->accessibleIsGrid();
+    else if (id == UIA_GridItemPatternId) has = w_->accessibleCell().valid;
+    else if (id == UIA_TableItemPatternId) has = w_->accessibleCell().valid && w_->accessibleCell().grid && !w_->accessibleCell().grid->accessibleColumnHeaders().empty();
     if (has) {
         *out = static_cast<IRawElementProviderSimple*>(this);
         AddRef();
@@ -428,9 +513,9 @@ STDMETHODIMP UiaElement::GetPropertyValue(PROPERTYID id, VARIANT* v) {
         case UIA_HelpTextPropertyId: if (!w_->toolTip.empty()) v->vt = VT_BSTR, v->bstrVal = bstr(w_->toolTip); break;
         case UIA_ClassNamePropertyId: v->vt = VT_BSTR; v->bstrVal = SysAllocString(L"TcadWidget"); break;
         case UIA_FrameworkIdPropertyId: v->vt = VT_BSTR; v->bstrVal = SysAllocString(L"TCAD"); break;
-        case UIA_IsEnabledPropertyId: boolean(w_->isEnabled()); break;
-        case UIA_IsKeyboardFocusablePropertyId: boolean(w_->acceptsFocus(FocusReason::Other)); break;
-        case UIA_HasKeyboardFocusPropertyId: boolean(w_->hasFocus()); break;
+        case UIA_IsEnabledPropertyId: boolean(w_->accessibleEnabled()); break;
+        case UIA_IsKeyboardFocusablePropertyId: boolean(w_->accessibleFocusable()); break;
+        case UIA_HasKeyboardFocusPropertyId: boolean(w_->accessibleFocused()); break;
         case UIA_IsOffscreenPropertyId: boolean(!w_->isVisible()); break;
         case UIA_IsControlElementPropertyId:
         case UIA_IsContentElementPropertyId: boolean(true); break;
@@ -450,12 +535,12 @@ STDMETHODIMP UiaElement::Navigate(NavigateDirection d, IRawElementProviderFragme
     if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
     Widget* target = nullptr;
     if (d == NavigateDirection_Parent) {
-        if (w_ != &host_->root()) target = w_->parent();  // the root's parent is the window's own element
+        if (w_ != &host_->root()) target = accessibleParent(w_);  // the root's parent is the window's own element
     } else if (d == NavigateDirection_FirstChild || d == NavigateDirection_LastChild) {
         const auto kids = visibleChildren(w_);
         if (!kids.empty()) target = d == NavigateDirection_FirstChild ? kids.front() : kids.back();
-    } else if (w_ != &host_->root() && w_->parent()) {
-        const auto sibs = visibleChildren(w_->parent());
+    } else if (w_ != &host_->root() && accessibleParent(w_)) {
+        const auto sibs = visibleChildren(accessibleParent(w_));
         auto it = std::find(sibs.begin(), sibs.end(), w_);
         if (it != sibs.end()) {
             if (d == NavigateDirection_NextSibling && it + 1 != sibs.end()) target = *(it + 1);
@@ -519,7 +604,10 @@ STDMETHODIMP UiaElement::GetFocus(IRawElementProviderFragment** out) {
     *out = nullptr;
     if (!host_) return UIA_E_ELEMENTNOTAVAILABLE;
     Widget* f = host_->router().focusWidget();
-    if (f && f != &host_->root()) *out = wrap(f);
+    if (f && f != &host_->root()) {
+        if (Widget* child = f->accessibleFocusChild()) f = child;  // a list's focus is its current item
+        *out = wrap(f);
+    }
     return S_OK;
 }
 
@@ -631,11 +719,13 @@ STDMETHODIMP UiaElement::Select() {
 
 STDMETHODIMP UiaElement::AddToSelection() {
     if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (w_->accessibleSelectionContainer()) return w_->accessibleAddToSelection() ? S_OK : UIA_E_INVALIDOPERATION;  // a view's own rules
     return w_->accessibleSelectionState() == 1 ? S_OK : UIA_E_INVALIDOPERATION;  // single selection: only a no-op
 }
 
 STDMETHODIMP UiaElement::RemoveFromSelection() {
     if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (w_->accessibleSelectionContainer()) return w_->accessibleRemoveFromSelection() ? S_OK : UIA_E_INVALIDOPERATION;
     return w_->accessibleSelectionState() == 1 ? UIA_E_INVALIDOPERATION : S_OK;  // a checked radio stays checked
 }
 
@@ -646,12 +736,31 @@ STDMETHODIMP UiaElement::get_IsSelected(BOOL* r) {
 }
 
 STDMETHODIMP UiaElement::get_SelectionContainer(IRawElementProviderSimple** out) {
-    *out = nullptr;  // radio groups have no container element (no Selection pattern on a parent yet)
-    return w_ ? S_OK : UIA_E_ELEMENTNOTAVAILABLE;
+    *out = nullptr;  // radio groups have no container element
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (Widget* c = w_->accessibleSelectionContainer()) {
+        auto* e = host_->element(c);
+        if (!e) return S_OK;
+        *out = static_cast<IRawElementProviderSimple*>(e);
+        e->AddRef();
+    }
+    return S_OK;
+}
+
+HRESULT UiaElement::widgetArray(const std::vector<Widget*>& ws, SAFEARRAY** out) {
+    *out = SafeArrayCreateVector(VT_UNKNOWN, 0, static_cast<ULONG>(ws.size()));
+    LONG i = 0;
+    for (Widget* w : ws) {
+        IRawElementProviderSimple* p = static_cast<IRawElementProviderSimple*>(host_->element(w));
+        if (p) SafeArrayPutElement(*out, &i, p);  // AddRefs
+        ++i;
+    }
+    return S_OK;
 }
 
 STDMETHODIMP UiaElement::GetSelection(SAFEARRAY** out) {
-    LineEdit* e = edit();
+    if (w_ && !edit() && w_->accessibleIsSelectionContainer()) return widgetArray(w_->accessibleSelection(), out);
+    TextInput* e = edit();
     if (!e) return UIA_E_ELEMENTNOTAVAILABLE;
     const auto [a, b] = e->model().selection();
     ITextRangeProvider* r = new TextRange(this, e, a, b);
@@ -663,7 +772,7 @@ STDMETHODIMP UiaElement::GetSelection(SAFEARRAY** out) {
 }
 
 STDMETHODIMP UiaElement::GetVisibleRanges(SAFEARRAY** out) {
-    LineEdit* e = edit();
+    TextInput* e = edit();
     if (!e) return UIA_E_ELEMENTNOTAVAILABLE;
     ITextRangeProvider* r = new TextRange(this, e, 0, e->text().size());
     *out = SafeArrayCreateVector(VT_UNKNOWN, 0, 1);
@@ -679,7 +788,7 @@ STDMETHODIMP UiaElement::RangeFromChild(IRawElementProviderSimple*, ITextRangePr
 }
 
 STDMETHODIMP UiaElement::RangeFromPoint(UiaPoint p, ITextRangeProvider** out) {
-    LineEdit* e = edit();
+    TextInput* e = edit();
     if (!e) return UIA_E_ELEMENTNOTAVAILABLE;
     const std::size_t at = e->offsetAtScreen({static_cast<LONG>(p.x), static_cast<LONG>(p.y)});
     *out = new TextRange(this, e, at, at);
@@ -687,7 +796,7 @@ STDMETHODIMP UiaElement::RangeFromPoint(UiaPoint p, ITextRangeProvider** out) {
 }
 
 STDMETHODIMP UiaElement::get_DocumentRange(ITextRangeProvider** out) {
-    LineEdit* e = edit();
+    TextInput* e = edit();
     if (!e) return UIA_E_ELEMENTNOTAVAILABLE;
     *out = new TextRange(this, e, 0, e->text().size());
     return S_OK;
@@ -696,6 +805,178 @@ STDMETHODIMP UiaElement::get_DocumentRange(ITextRangeProvider** out) {
 STDMETHODIMP UiaElement::get_SupportedTextSelection(SupportedTextSelection* s) {
     *s = SupportedTextSelection_Single;
     return S_OK;
+}
+
+// -- Selection (a container's), Scroll, Grid and Table (N3e) ---------------------------------------------------------
+
+STDMETHODIMP UiaElement::get_CanSelectMultiple(BOOL* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleCanSelectMultiple();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_IsSelectionRequired(BOOL* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleSelectionRequired();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::Scroll(ScrollAmount h, ScrollAmount v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    const AccessibleScroll s = w_->accessibleScroll();
+    auto amount = [](ScrollAmount a) {
+        switch (a) {
+            case ScrollAmount_LargeDecrement: return -2;
+            case ScrollAmount_SmallDecrement: return -1;
+            case ScrollAmount_SmallIncrement: return 1;
+            case ScrollAmount_LargeIncrement: return 2;
+            default: return 0;
+        }
+    };
+    const int ha = amount(h), va = amount(v);
+    if ((ha != 0 && !s.horizontal) || (va != 0 && !s.vertical)) return UIA_E_INVALIDOPERATION;  // it cannot scroll that way
+    w_->accessibleScrollBy(ha, va);
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::SetScrollPercent(double h, double v) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    const AccessibleScroll s = w_->accessibleScroll();
+    auto bad = [](double p) { return p != UIA_ScrollPatternNoScroll && (p < 0 || p > 100); };
+    if (bad(h) || bad(v)) return E_INVALIDARG;
+    if ((h != UIA_ScrollPatternNoScroll && !s.horizontal) || (v != UIA_ScrollPatternNoScroll && !s.vertical)) return UIA_E_INVALIDOPERATION;
+    w_->accessibleSetScrollPercent(h == UIA_ScrollPatternNoScroll ? -1 : h, v == UIA_ScrollPatternNoScroll ? -1 : v);
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_HorizontalScrollPercent(double* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    const AccessibleScroll s = w_->accessibleScroll();
+    *r = s.horizontal ? s.h_percent : UIA_ScrollPatternNoScroll;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_VerticalScrollPercent(double* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    const AccessibleScroll s = w_->accessibleScroll();
+    *r = s.vertical ? s.v_percent : UIA_ScrollPatternNoScroll;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_HorizontalViewSize(double* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleScroll().h_view;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_VerticalViewSize(double* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleScroll().v_view;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_HorizontallyScrollable(BOOL* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleScroll().horizontal;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_VerticallyScrollable(BOOL* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleScroll().vertical;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::ScrollIntoView() {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    w_->accessibleScrollIntoView();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::GetItem(int row, int column, IRawElementProviderSimple** out) {
+    *out = nullptr;
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (row < 0 || column < 0 || row >= w_->accessibleRowCount() || column >= w_->accessibleColumnCount()) return E_INVALIDARG;
+    if (Widget* cell = w_->accessibleGridCell(row, column)) {
+        auto* e = host_->element(cell);
+        if (!e) return S_OK;
+        *out = static_cast<IRawElementProviderSimple*>(e);
+        e->AddRef();
+    }
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_RowCount(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleRowCount();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_ColumnCount(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleColumnCount();
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_Row(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleCell().row;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_Column(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleCell().column;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_RowSpan(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleCell().row_span;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_ColumnSpan(int* r) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    *r = w_->accessibleCell().column_span;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::get_ContainingGrid(IRawElementProviderSimple** out) {
+    *out = nullptr;
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    if (Widget* g = w_->accessibleCell().grid) {
+        auto* e = host_->element(g);
+        if (!e) return S_OK;
+        *out = static_cast<IRawElementProviderSimple*>(e);
+        e->AddRef();
+    }
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::GetRowHeaders(SAFEARRAY** out) { return widgetArray({}, out); }  // no row headers: the row numbers are decoration
+
+STDMETHODIMP UiaElement::GetColumnHeaders(SAFEARRAY** out) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    return widgetArray(w_->accessibleColumnHeaders(), out);
+}
+
+STDMETHODIMP UiaElement::get_RowOrColumnMajor(RowOrColumnMajor* r) {
+    *r = RowOrColumnMajor_RowMajor;
+    return S_OK;
+}
+
+STDMETHODIMP UiaElement::GetRowHeaderItems(SAFEARRAY** out) { return widgetArray({}, out); }
+
+STDMETHODIMP UiaElement::GetColumnHeaderItems(SAFEARRAY** out) {
+    if (!w_) return UIA_E_ELEMENTNOTAVAILABLE;
+    const AccessibleCell cell = w_->accessibleCell();
+    std::vector<Widget*> one;
+    if (cell.valid && cell.grid) {
+        const auto headers = cell.grid->accessibleColumnHeaders();
+        if (cell.column >= 0 && cell.column < static_cast<int>(headers.size())) one.push_back(headers[static_cast<std::size_t>(cell.column)]);
+    }
+    return widgetArray(one, out);
 }
 
 }  // namespace tcad::ui

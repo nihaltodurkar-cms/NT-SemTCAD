@@ -17,6 +17,7 @@
 #include "ui/core/geometry.hpp"
 #include "ui/core/painter.hpp"
 
+#include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -30,6 +31,8 @@ namespace tcad::ui {
 class Layout;
 class InputRouter;
 class PopupService;
+class Clipboard;
+class InlineEditor;
 class Widget;
 
 using TimerId = std::uint64_t;
@@ -53,6 +56,10 @@ public:
     virtual TimerService* timers() { return nullptr; }
     virtual void widgetGone(Widget*) {}                   // a widget (and its subtree) left the tree or died
     virtual PopupService* popups() { return nullptr; }    // top-level popup windows (N3c; ui/core/popup.hpp)
+    virtual Clipboard* clipboard() { return nullptr; }    // the system clipboard (N3d; ui/core/clipboard.hpp)
+    // The editor a view opens over an item (N3e; ui/core/inline_editor.hpp). Null: items are not editable.
+    virtual std::unique_ptr<InlineEditor> createInlineEditor();  // (defined in widget.cpp: InlineEditor is incomplete here)
+    virtual bool canCreateInlineEditor() const { return false; }
     // Tell a screen reader something happened to `w` that is not a property change: the highlighted row of an open
     // drop-down (UI Automation's notification event). No-op without one.
     virtual void announce(Widget*, std::string_view) {}
@@ -68,7 +75,8 @@ enum class Cursor { Inherit, Arrow, IBeam, Hand, SizeWE, SizeNS, SizeAll, Cross,
 // types and patterns: Invoke for Button/MenuItem, Toggle when accessibleToggleState() has a value, Value when
 // accessibleHasValue(), Text for an edit (ui/win32/uia_provider.cpp).
 enum class Role { Pane, Group, Text, Edit, Button, CheckBox, RadioButton, ComboBox, Slider, List, ListItem, Tree,
-                  TreeItem, Tab, TabItem, Menu, MenuItem, ToolBar, StatusBar, ProgressBar, ScrollBar, Image, Spinner, Custom };
+                  TreeItem, Tab, TabItem, Menu, MenuItem, ToolBar, StatusBar, ProgressBar, ScrollBar, Image, Spinner, Custom,
+                  Table, Header, HeaderItem, DataItem, Splitter, Separator, Window, Dialog, MenuBar };
 
 // RangeValue (N3b: sliders and spin boxes): a number within [minimum, maximum]; `small_step` is one arrow key,
 // `large_step` one page. `valid` false: the widget has no range.
@@ -76,6 +84,21 @@ struct AccessibleRange {
     bool valid = false;
     double value = 0, minimum = 0, maximum = 0, small_step = 1, large_step = 10;
     bool read_only = false;
+};
+
+// Scroll (N3e: lists, tables, trees, the multi-line edit; later scroll areas): the view's position as UI Automation's
+// Scroll pattern says it -- percentages of the scrollable range and the share of the content in view.
+struct AccessibleScroll {
+    bool valid = false;
+    bool horizontal = false, vertical = false;      // can scroll that way (the bar is needed)
+    double h_percent = 0, v_percent = 0;            // 0..100
+    double h_view = 100, v_view = 100;              // percent of the content visible
+};
+// A cell of a grid (UI Automation's GridItem).
+struct AccessibleCell {
+    bool valid = false;
+    int row = 0, column = 0, row_span = 1, column_span = 1;
+    Widget* grid = nullptr;
 };
 
 // A mouse event as a widget sees it: positions in DIPs, `pos` relative to the widget.
@@ -114,6 +137,11 @@ public:
     }
     Widget* adopt(std::unique_ptr<Widget> child);
     std::unique_ptr<Widget> release(Widget* child);  // null if not a child
+    // Reorders the children (their paint order, and the order UI Automation lists them in): a view keeps its rows in row
+    // order after some were created later than the rows below them.
+    void sortChildren(const std::function<bool(const Widget*, const Widget*)>& before) {
+        std::stable_sort(children_.begin(), children_.end(), [&](const auto& a, const auto& b) { return before(a.get(), b.get()); });
+    }
     Widget* root();
     Widget* findChild(std::string_view name);         // depth-first, this widget included
     std::string name;
@@ -209,6 +237,8 @@ public:
     // True: this key goes to the widget BEFORE the window's shortcuts (Qt's ShortcutOverride), e.g. an edit's Ctrl+A.
     virtual bool overridesShortcut(const platform::KeyEvent&) const { return false; }
     virtual bool wantsTab() const { return false; }  // true: Tab/Shift+Tab are keys for it, not focus moves
+    // As wantsTab, per direction (N3e: a table takes Tab to the next cell, except from its last one, where Tab leaves it).
+    virtual bool wantsTabKey(bool /*forward*/) const { return wantsTab(); }
     virtual void focusChanged(bool /*in*/, FocusReason) {}
     virtual void hoverChanged(bool /*entered*/) {}
     virtual void activateMnemonic() { setFocus(FocusReason::Mnemonic); }
@@ -216,6 +246,9 @@ public:
     // -- accessibility (N2f). The name is what a screen reader says (UIA Name); `name` above is the automation id.
     std::string accessibleName;
     virtual Role accessibleRole() const { return Role::Pane; }
+    // True: a layout helper with no meaning of its own (a view's clipping viewport); UI Automation skips it and shows
+    // its children as the parent's (N3e).
+    virtual bool accessibleIsStructural() const { return false; }
     virtual bool accessibleHasValue() const { return false; }
     virtual std::string accessibleValue() const { return {}; }
     virtual bool accessibleSetValue(std::string_view) { return false; }
@@ -233,6 +266,43 @@ public:
     virtual int accessibleExpandState() const { return -1; }
     virtual void accessibleExpand(bool /*open*/) {}
     std::function<void()> accessible_expand_changed;  // set by the window's UIA host
+    // Selection container (N3e): a list, a tree or a table says which of its items are selected; each item names its
+    // container. Selecting through UI Automation goes through the item (accessibleSelect / AddToSelection / Remove).
+    virtual bool accessibleIsSelectionContainer() const { return false; }
+    virtual std::vector<Widget*> accessibleSelection() const { return {}; }
+    virtual bool accessibleCanSelectMultiple() const { return false; }
+    virtual bool accessibleSelectionRequired() const { return false; }
+    virtual Widget* accessibleSelectionContainer() const { return nullptr; }
+    virtual bool accessibleAddToSelection() { return false; }
+    virtual bool accessibleRemoveFromSelection() { return false; }
+    // Scroll and ScrollItem: a view scrolls; one of its (realized) items can be scrolled into view.
+    virtual AccessibleScroll accessibleScroll() const { return {}; }
+    virtual void accessibleScrollBy(int /*h_amount*/, int /*v_amount*/) {}  // UIA ScrollAmount: -2 large dec, -1 small dec, 0, 1, 2
+    virtual void accessibleSetScrollPercent(double /*h*/, double /*v*/) {}   // -1: leave that axis
+    virtual void accessibleScrollIntoView() {}
+    // Grid / Table: a table's size, its cells, its column headers; a cell's place.
+    virtual bool accessibleIsGrid() const { return false; }
+    virtual int accessibleRowCount() const { return 0; }
+    virtual int accessibleColumnCount() const { return 0; }
+    virtual Widget* accessibleGridCell(int /*row*/, int /*column*/) const { return nullptr; }
+    virtual AccessibleCell accessibleCell() const { return {}; }
+    virtual std::vector<Widget*> accessibleColumnHeaders() const { return {}; }
+    // Focus inside a widget (N3e): a list keeps the keyboard focus itself, but UI Automation's focus is on its current
+    // item. The container names that child (null: itself); an item says whether it is the focused one.
+    virtual Widget* accessibleFocusChild() const { return nullptr; }
+    virtual bool accessibleEnabled() const { return isEnabled(); }  // a menu entry that cannot be used is exposed disabled (N3f)
+    virtual bool accessibleFocused() const { return hasFocus(); }
+    virtual bool accessibleFocusable() const { return acceptsFocus(FocusReason::Other); }
+    // Set by the window's UIA host: the container's current item changed (raises the focus event), and its children came or
+    // went (raises the structure-changed event).
+    std::function<void()> accessible_current_changed;
+    std::function<void()> accessible_structure_changed;
+    void notifyCurrentChanged() const {
+        if (accessible_current_changed) accessible_current_changed();
+    }
+    void notifyStructureChanged() const {
+        if (accessible_structure_changed) accessible_structure_changed();
+    }
     void notifyExpandChanged() const {
         if (accessible_expand_changed) accessible_expand_changed();
     }

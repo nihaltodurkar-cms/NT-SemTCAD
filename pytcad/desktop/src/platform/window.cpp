@@ -49,6 +49,20 @@ std::expected<std::unique_ptr<Window>, std::string> Window::create(const WindowO
         pw->hwnd_ = ph;
         return pw;
     }
+    if (o.dialog_owner) {  // a dialog: a caption and a close button, never sized, not in the taskbar (it is owned)
+        const DWORD dstyle = WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
+        const DWORD dex = WS_EX_DLGMODALFRAME;
+        const UINT ddpi = GetDpiForWindow(o.dialog_owner);
+        RECT dr{0, 0, MulDiv(o.width, static_cast<int>(ddpi), 96), MulDiv(o.height, static_cast<int>(ddpi), 96)};
+        AdjustWindowRectExForDpi(&dr, dstyle, FALSE, dex, ddpi);
+        std::unique_ptr<Window> dw(new Window());
+        dw->dialog_ = true;
+        HWND dh = CreateWindowExW(dex, kClassName, o.title.c_str(), dstyle, CW_USEDEFAULT, CW_USEDEFAULT, dr.right - dr.left, dr.bottom - dr.top,
+                                  o.dialog_owner, nullptr, GetModuleHandleW(nullptr), dw.get());
+        if (!dh) return std::unexpected(lastErrorText("CreateWindowEx (dialog)"));
+        dw->hwnd_ = dh;
+        return dw;
+    }
     const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN | WS_CLIPSIBLINGS;
     const UINT dpi = GetDpiForSystem();
     RECT r{0, 0, MulDiv(o.width, static_cast<int>(dpi), 96), MulDiv(o.height, static_cast<int>(dpi), 96)};
@@ -176,13 +190,21 @@ LRESULT Window::handle(UINT msg, WPARAM wp, LPARAM lp) {
             if (!handlers.on_close_requested || handlers.on_close_requested()) DestroyWindow(hwnd_);
             return 0;
         case WM_DESTROY:
-            if (!popup_) PostQuitMessage(0);  // a popup going away is not the application ending
+            if (!popup_ && !dialog_) PostQuitMessage(0);  // a popup or a dialog going away is not the application ending
             return 0;
         case WM_MOUSEACTIVATE:
             if (popup_) return MA_NOACTIVATE;  // clicking a popup leaves the owner active
             break;
         case WM_MOVE:
             if (handlers.on_moved) handlers.on_moved();
+            break;
+        case WM_SYSCOLORCHANGE:
+        case WM_THEMECHANGED:
+        case WM_SETTINGCHANGE:  // high contrast turned on or off, the colours changed: the framework re-reads them (N3f)
+            if (handlers.on_system_colors_changed) handlers.on_system_colors_changed();
+            break;
+        case WM_SYSCHAR:  // the framework's own Alt+<letter> mnemonics: nothing for Windows to beep about (Alt+Space stays the system menu's)
+            if (wp != L' ' && handlers.on_key) return 0;
             break;
         case WM_SETFOCUS:
         case WM_KILLFOCUS:

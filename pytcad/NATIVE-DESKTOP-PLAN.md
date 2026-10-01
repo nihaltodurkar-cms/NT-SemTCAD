@@ -7697,7 +7697,7 @@ maps to the window colour. Windows edits show it; N3's LineEdit must too.
 multi-line edits, lists, trees, tabs, splitters, scroll areas, toolbars, menus, tooltips and modal dialogs, sized by
 the Qt census in §27.7. Per-widget behaviour and accessibility-tree tests.
 
-### 27.8 N3 -- the widget set: detailed plan (2026-10-01; N3a (27.8.2), N3b (27.8.3) and N3c (27.8.4) COMPLETE on Windows; N3d next)
+### 27.8 N3 -- the widget set: detailed plan (2026-10-01; N3a-N3f (27.8.2-27.8.7) COMPLETE on Windows; N4 (docking) next)
 
 N3 builds the widgets the ported panels need on N2's framework (§27.7), ordered by the Qt census so the most-used
 widgets land first. The ideas and mockups the user reviewed are the artifact "N3 Widget Set"
@@ -7723,9 +7723,11 @@ high contrast, and the N2 gate (`verify_native_n2.ps1`) still passing.
 | N3a basics -- DONE (27.8.2) | `Label` (word wrap with height-for-width in Box/Form/Stack layouts; Form's `addRow(text, field)`; buddy mnemonics), `PushButton`, `CheckBox`, `RadioButton` + `ButtonGroup`, `GroupBox`; widget contents margins; keyboard cues | QLabel 86, QPushButton 128, QCheckBox 49, QRadioButton 8, QButtonGroup 1, QGroupBox 14 |
 | N3b numbers -- DONE (27.8.3) | `SpinBox`, `DoubleSpinBox` (decision 1; decade stepping), `Slider` (linear only: no log slider is used) | QDoubleSpinBox 144, QSpinBox 40, QSlider 18 (lines naming the class, measured 2026-10-01; the earlier 111/23/15 counted differently) |
 | N3c choice -- DONE (27.8.4) | popup windows (per-monitor DPI, flip near screen edges), `ComboBox` with typeahead (non-editable) | QComboBox 24 widgets (51 lines naming the class; the earlier 114 counted calls) |
-| N3d text | `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit` (multi-line, capped log that follows the end), selectable labels | QLineEdit 39, QPlainTextEdit 14 |
-| N3e collections | a virtualized row engine; `ListView`, `TableView`, `TreeView`; tab-separated copy; in-place editors | QListWidget 42, QTableWidget 15, QTreeWidget 3 |
-| N3f containers | `TabWidget`, `Splitter` (the VTK child resized when the drag ends), `ScrollArea`, `Action`/`Menu`/`MenuBar`/`ToolBar`, `ToolTip` popup, modal `Dialog`/`MessageBox` (default button) | QTabWidget 4, QSplitter 14, QScrollArea 2, QAction 51, QMenu 9, QToolBar 2, setToolTip 28, QMessageBox 12 |
+| N3d text -- DONE (27.8.5) | `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit` (multi-line, capped log that follows the end), selectable labels | QLineEdit 39, QPlainTextEdit 14 |
+| N3e collections -- DONE (27.8.6) | a virtualized row engine; `ListView`, `TableView`, `TreeView`; tab-separated copy; in-place editors | QListWidget 42, QTableWidget 15, QTreeWidget 3 |
+| N3f containers -- DONE (27.8.7) | `TabWidget`, `Splitter` (the VTK child resized when the drag ends), `ScrollArea`, `Action`/`Menu`/`MenuBar`/`ToolBar`, `ToolTip` popup, modal `Dialog`/`MessageBox` (default button) | QTabWidget 4, QSplitter 14, QScrollArea 2, QAction 51, QMenu 9, QToolBar 2, setToolTip 28, QMessageBox 12 |
+
+**There is no dark theme** (the user, 2026-10-01): every golden is the light theme or Windows high contrast, and nothing in N3 adds or claims a dark mode.
 
 **N2 carry-overs, placed:** height-for-width (N3a); keyboard cues (N3a); double-click word selection, multi-line
 edits, bidi-aware selection painting, the inactive selection in high contrast (N3d); UIA structure-changed events
@@ -7969,3 +7971,128 @@ a press on a non-client area of the owner (its title bar) does not close the pop
 The gallery (`tcad_ui_demo --gallery`) has a "Model" combo.
 
 **Next: N3d**, text: `LineEdit` completed (validators, placeholder, context menu, double-click word, inactive selection in high contrast), `PlainTextEdit`, selectable labels.
+
+#### 27.8.5 N3d: text -- BUILT AND PASSING on Windows (2026-10-01)
+
+**Scope, measured in desktop/src:** 39 `QLineEdit` and 14 `QPlainTextEdit` (the log consoles), plus one selectable label (`Qt::TextSelectableByMouse`, the telemetry
+panel). Not built: echo modes, input masks, completers, max length, rich text, syntax highlighting, text cursor objects.
+
+**Design.** One base, `win32/text_input.*` (`TextInput`), under `LineEdit` and `PlainTextEdit`: the TSF store and context (IME, emoji panel, dictation), the
+clipboard, the shared keys (Left/Right with Ctrl by word and Shift to select, Home/End, Backspace/Delete, Ctrl+A/C/X/V/Z/Y, Ctrl+Insert, Shift+Insert, Shift+Delete),
+the mouse selection (a press, Shift+press, a double click selects a word, a drag extends, the drag keeps scrolling past the edge), and the caret blink at the system
+rate. `core/edit_model.*` is the portable text model (`setFilter` is a validator's veto, `forceReplace` is the program's edit for logs, `lineStart`/`lineEnd`).
+- `LineEdit`: `DoubleValidator` (`widgets/validator.*`, scientific entry: `1e17`, `-2.5E-3`; an invalid state is drawn invalid and nothing is clamped), a placeholder,
+  `on_return_pressed`, `on_commit` (`editingFinished`: only when the text changed and is valid, decision 4), Tab captured or not (`setCaptureTab`).
+- `PlainTextEdit`: lays text out per hard line and realizes only the lines in view; `appendLine` with a
+  `LineFormat` (colour, bold, italic), follow-the-end, a maximum line count, a vertical and a horizontal `ScrollBar` (`widgets/scroll_bar.*`), UIA Scroll.
+- Selectable `Label` (`setSelectable`): mouse and key selection, Ctrl+A/C, copy to the clipboard.
+- The clipboard is a `UiHost` service (`core/clipboard.hpp`); the Windows one converts LF to CRLF on the way out and back on the way in.
+- Selection painting is bidi-aware: `TextEngine::selectionRects` (DirectWrite `HitTestTextRange`); the inactive selection stays visible, and in high contrast it is an
+  outline when inactive and highlight-text on the highlight when active (`core/selection.hpp`). `TextStyle` gained `italic`.
+- UI Automation: Text pattern over `TextInput` with Character, Word, Line and Paragraph units, per-line bounding rectangles, selection, and the Scroll pattern on the
+  multi-line edit.
+
+**Gates, all run:**
+- Portable (`test_ui_text_widgets.cpp`, 30 tests; the edit model, the validator, the label, the scroll bar, the selection painting, the log's line management).
+- Windows (`test_ui_text_edits_win32.cpp`, 34 tests): real messages -- the validator, `editingFinished`'s rule, the placeholder, double-click word, the inactive selection
+  (and its high-contrast form), the multi-line edit's lines, formats, line cap and trimming, scroll bars (a real thumb drag), wheel, follow-the-end, Up/Down/Home/End/Page,
+  wrapped lines, drags (also past the edge), copy with line breaks, read-only, the Insert and Delete chords, Tab leaving the edit, the selectable label, bidi selection
+  rectangles, italic metrics, and the real UIA client (Text by line with a rectangle per line, the scroll bars and Scroll, names); goldens `n3d_text@*`/`n3d_text_hc@*`.
+  Two earlier goldens were re-captured ON PURPOSE (the selected text is now highlight-text in high contrast): `n3b_numbers_hc@*` and `n2f_high_contrast@*`.
+- Mutation-checked, **38 of 38 caught** (one, D30, first survived; its test was strengthened, the mutant was not dropped).
+
+**Limits, stated:** bidi is DirectWrite's (the test pins the visual positions of a selection); no real IME was driven in this session (TSF's own candidate window is TSF's); a
+program's `appendLine` is not an undo step and clears the undo history.
+
+#### 27.8.6 N3e: lists, tables and trees -- BUILT AND PASSING on Windows (2026-10-01)
+
+**Scope, measured in desktop/src:** 42 `QListWidget`, 15 `QTableWidget`, 3 `QTreeWidget`. Built: items with text, check state, flags (enabled, selectable, editable),
+user data under roles; single and extended selection; `currentRow`/`currentItem`; in-place edit of items and cells; copy as tab-separated text. Not built: sorting, drag and
+drop, icons, delegates, the model/view API.
+
+**Design.** `widgets/item_view.*` is a VIRTUALIZED UNIFORM-ROW engine: only the rows in view exist as widgets (`ItemRow`, children of a structural `ItemViewport`), so the
+cost follows the window, not the model. Rows keep their widget identity when rows are inserted or removed (they are re-indexed), which is what lets UIA
+elements survive. `ListView`, `TableView` (cell or row selection, a header band, in-place edit, TSV copy) and `TreeView` (a flattened list of the visible items;
+`addItem`, not `addChild`, which would hide `Widget::addChild`) sit on it; `ColumnHeaderBand`/`ColumnModel` are shared by the table and the tree (drag a column edge to resize).
+Keys: arrows, Page, Home/End (Ctrl moves the current row without selecting, Shift extends), Ctrl+A, Space toggles a check or selects, typeahead, F2 edits, Enter commits,
+Escape cancels, Tab moves to the next editable cell, Ctrl+C copies. The in-place editor is a real `LineEdit` (`LineEditEditor`) made through `UiHost::createInlineEditor`.
+- UI Automation: List, Table and Tree with Selection, SelectionItem, Scroll, ScrollItem, Grid, GridItem, Table, TableItem, ExpandCollapse and Toggle; row elements are
+  list items, cells are grid items with row and column headers; structure-changed events when realized rows come and go (the N2 carry-over, placed here);
+  focus-child events follow the current row.
+- ASAN found a real bug (heap-use-after-free): `UiaDisconnectProvider` called back into providers and created new elements for dying widgets. `UiaHost::widgetGone` is
+  now two-phase with a `dying_` set.
+
+**Gates, all run:**
+- Portable: `test_ui_lists.cpp` 31, `test_ui_tables.cpp` 27, `test_ui_trees.cpp` 22 tests.
+- Windows (`test_ui_collections_win32.cpp`, 17 tests): real clicks, drags and keys; in-place editing with the real editor (typing, Enter, Escape, Tab and Shift+Tab, the
+  focus leaving); TSV on the real clipboard; column resizing; the real UIA client for list, table (cells by position, a cell that is not on screen is reached by scrolling)
+  and tree (open and close; items named by their columns); goldens `n3e_collections@*`/`n3e_collections_hc@*` (looked at).
+- Mutation-checked, **60 of 60 caught** after strengthening: two survived the first run (rows scrolled out never released; rows not re-indexed on insert) and so did two
+  more (the selection-container branch of `AddToSelection` and Shift+Tab in the editor); each got a test, none was dropped.
+
+**Limits, stated:** UI Automation sees only the REALIZED rows (a client that wants row 90 000 scrolls to it, which `ScrollItem` and the Grid pattern's `GetItem` do); the
+tree's UIA tree is FLAT (every visible item a sibling carrying an expand state; there is no nested element tree); uniform
+row heights only; no sorting, no drag and drop, no column reordering.
+
+#### 27.8.7 N3f: containers, menus, tool tips and message boxes -- BUILT AND PASSING on Windows (2026-10-01)
+
+**Scope, measured in desktop/src:** QTabWidget 4, QSplitter 14, QScrollArea 2, QAction 51, QMenu 9, QToolBar 2, `setToolTip` 28, QMessageBox 12. Built: actions with a `&`
+mnemonic, a shortcut (`Ctrl+O`, `F5`, `Shift+F5`), enabled, checkable, tool tip, `triggered`, `toggled`; menus with submenus and separators; a menu bar; a tool bar of actions
+with separators and an embedded widget; a splitter with collapsible children and a drag; a scroll area following the focus; a message box (Information/Warning/Question/
+Critical, standard buttons, a default). Not built: icons on actions, action groups, several shortcuts per action, floating tool bars, movable or closable tabs,
+tab-bar scroll buttons, hidden splitter children, `QDialog` beyond the message box.
+
+**Design (decision 3: menus are drawn, in top-level popup windows).**
+- Portable (`tcad_ui_core`): `widgets/action.*` (`Action`, `ActionManager`: shortcuts registered in the window's `ShortcutMap`, fired only while the action is enabled and
+  visible; changes reach every place that shows the action through listeners), `widgets/menu.*` (`Menu`, `MenuPopup`, `MenuItemWidget`: entries, separators, submenus, check
+  marks, shortcut text, mnemonics, the keyboard and a 250 ms submenu delay), `menu_bar.*` (the Alt tap, Alt+letter, Left/Right between titles, hover switching while a menu is
+  open), `tool_bar.*` (`ToolButton`s on a roving tab stop; `ToolTipLabel`), `tab_widget.*` (Ctrl+Tab, Ctrl+PageUp/Down from anywhere inside, mnemonics, Left/Right/Home/End on
+  the bar), `splitter.*` (opaque and non-opaque drags with a ghost line, collapsible children that snap shut below half their minimum, keyboard handles, RangeValue),
+  `scroll_area.*` (follows the focus, wheel, UIA Scroll), `message_box.*` (`MessageBoxContent`), `edit_context_menu.*` (Undo, Cut, Copy, Paste, Delete, Select All; a
+  selectable label gets Copy and Select All). The router gained a key filter (an open menu takes every key first), an Alt-tap handler, focus observers and
+  `ShortcutMap::remove`; the popup contract gained `PopupRequest`/`PopupSide` and `placePopupBeside` (a submenu goes beside its entry and flips to the other side at the screen edge).
+- Win32: `win32/popup_window.*` is now a STACK (a submenu is a child popup in its own window; closing one closes everything above it) with a separate TOOL-TIP slot (a tip
+  neither dismisses nor is dismissed by menus; it hangs below and right of the pointer); `win32/message_box_window.*` (a real owned dialog window; `exec` is MODAL -- the owner is
+  disabled, its popups dismissed and a nested loop runs until a button is pressed; `show` is non-modal and frees itself). `PushButton::setDefault` draws the accent ring. The
+  window handles `WM_SETTINGCHANGE`/`WM_THEMECHANGED`/`WM_SYSCOLORCHANGE` (live high-contrast change: the palette is re-read, popups dismissed, everything repainted -- the N2
+  carry-over) and swallows `WM_SYSCHAR` so Alt+letter mnemonics do not beep. `TextInput` and the selectable `Label` open the edit menu on a right click, Menu or Shift+F10.
+- Message box rules (Qt's): the escape button is the named one, else Cancel, else the only button, else No, else Close; with none (Save/Discard) the window's close button is
+  ignored; Enter presses the default (the named one, else the first), Ctrl+C copies Windows' message-box text form; it answers once.
+- UI Automation: MenuBar, MenuItem (Invoke, ExpandCollapse for submenus and titles, Toggle for check marks, disabled entries exposed disabled, separators exposed as
+  separators), ToolBar, Tab and TabItem (SelectionItem), Splitter (RangeValue), Dialog.
+
+**Gates, all run:**
+- Portable: `test_ui_menus.cpp` 48 and `test_ui_chrome.cpp` 38 tests; `tcad_ui_core_tests` **361/361** (was 165 at N3c).
+- Windows (`test_ui_chrome_win32.cpp`, 15 tests; `tcad_ui_render_tests` **140/140**, **63 goldens exact**, was 74 and 39): a click on a title opens the menu in its own window and a
+  click in THAT window runs the action; a disabled entry is taken and nothing runs; a press outside closes; the Alt tap, arrows, Alt+F; a submenu in a second window beside the first
+  and Escape closing one level; tool tips after the pointer rests, placed below-right of the pointer, gone on a press; a tab click and a splitter drag with real messages; the modal
+  box with its nested loop answered by a real Enter, Escape and a click, the owner disabled meanwhile and enabled after; the non-modal box and its close button (No for Yes/No, ignored
+  for Save/Discard); a system-colour change re-read with popups dismissed; the right-click menu of an edit (an empty clipboard hides Paste, Select All, Paste, Undo, Delete, the Menu key and
+  Shift+F10) and of a label; the real UIA client on the bar, the titles, ExpandCollapse and an open menu's items. Goldens `n3f_chrome@*`/`n3f_chrome_hc@*` (a window with the bar, tool
+  bar, splitter, tabs) and `n3f_menu@*`/`n3f_menu_hc@*` (the File menu's own window); all looked at.
+- Mutation-checked, **69 of 69 caught** in the final run. Of 74 first written, 23 survived: 17 got a test (a non-checkable `setChecked` reporting toggled, a submenu entry losing its highlight
+  or its pending delay, the disabled-entry UIA state, the Left arrow of a tool bar, the tool-tip height, Ctrl+Shift+Tab, every message-box rule, the edit menu's states and its Delete, the
+  tool tip's offset, an Alt auto-repeat after another key); 1 was a badly written mutant (equivalent by construction: replaced by a real one); 4 were EQUIVALENT or defensive and were dropped, each for a reason read from the code: the menu bar's `openIndex() >= 0` guard in its
+  key filter and the `switching_to_` guard (the router has ONE key-filter slot, so an open menu's filter always replaces the bar's), a title click on an OPEN menu (the press filter closes it
+  first), and `Splitter::endDrag`'s `!opaque_` (an opaque drag already equals `pending_`); and one line was DEAD and was removed (the edit menu's own `setFocus`: the right-button press already
+  focuses the edit). Two mutants that were first "caught" only by a use-after-free in the test fixture were re-checked and now need real tests (`showing_a_second_popup...`).
+- **AddressSanitizer** over both test binaries found, and I fixed: `ToolButton` and `MenuPopup` (closed, waiting in the window's graveyard) touching an action or menu that died first -- a closed
+  menu now detaches from its actions and forgets its menu (`MenuPopup::detachActions`) -- and four TEST bugs (a probe reading a member after its own handler deleted it; a combo test's handler
+  counting into a dead local; two N3f fixtures destroying the action manager before the widgets listening to it). Both binaries now run clean under ASAN, except the render suite's memory-growth gate
+  (`resize_and_dpi_churn_does_not_leak`: +303 MB against a 16 MB budget, which ASAN's shadow memory and quarantine inflate by design; it passes in the normal build).
+- `verify_native_n2.ps1 -Result mosfet_2d.npz`: ALL STEPS PASSED (core 361, render 140 with 63 goldens exact, debug soak 0/25, the stage and no-Qt checks, N1 and the spike). The legacy Qt build
+  (`build.ps1`) builds. The desktop wrapper pytest, serial, every file that names this plan: 915 passed, 56 skipped, 2 failed -- the same 2 `test_desktop_runtime_check.py`
+  failures as at N3b/N3c (no `tetgen` in this env). (A first run under `-n 4` also failed `test_desktop_hardening.py`'s memory-slope soak; it passes serially.)
+  `gui/tests/test_desktop_ui_render.py` pins changed: 165 to 361 and 74 to 140 tests, the 21 golden names (63 images; the File menu's popup sizes pinned per scale), the new UIA interfaces, and the
+  TSF `blank_doc_` pin now reads `text_input.cpp` (the code moved there at N3d).
+
+**Limits, stated:** the tab bar has no scroll buttons (a bar wider than its widget is cut); the splitter has no hidden children (collapsing is to size 0); menus and tool tips are DRAWN windows,
+so they do not follow a theme the framework does not know and are not the shell's (no right-to-left mirroring, no animation, no shadow); a menu opened by the mouse shows its `&` underlines only in
+high contrast or with "always show cues" (Windows hides them until Alt); a tool tip takes the DPI of the monitor where the pointer is when it appears; no per-monitor re-placement while a menu is
+open (it is dismissed on a move, resize or DPI change); the edit menu has no Right-to-left reading order or Unicode control character entries (0 uses); a message box is one dialog layout (an
+icon, wrapped text up to 360 DIPs, right-aligned buttons), no checkbox, no details pane.
+
+**Not done:** the manual Narrator check (a menu should read "menu item, Open, Ctrl+O"; a submenu "collapsed"; Alt should read "menu bar"); a real-display multi-monitor check of popup flipping; the
+Splitter's "the VTK child is resized when the drag ends" behaviour (the non-opaque mode is built and tested; wiring it to the VTK child is N4/N5's job).
+
+**Next: N4**, docking (Advanced Docking System replacement), then N5 (`PlotView` and the panels).

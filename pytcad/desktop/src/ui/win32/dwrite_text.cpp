@@ -51,18 +51,18 @@ std::wstring toUtf16(std::string_view utf8) {
 DWriteTextEngine::DWriteTextEngine(IDWriteFactory2* factory) : factory_(factory) {}
 
 IDWriteTextFormat* DWriteTextEngine::format(const TextStyle& style) {
-    const auto key = std::make_tuple(style.size, style.bold, static_cast<int>(style.family));
+    const auto key = std::make_tuple(style.size, style.bold, static_cast<int>(style.family), style.italic);
     if (auto it = formats_.find(key); it != formats_.end()) return it->second.Get();
     const wchar_t* family = style.family == FontFamily::Monospace ? L"Consolas" : L"Segoe UI";
     ComPtr<IDWriteTextFormat> f;
     if (FAILED(factory_->CreateTextFormat(family, nullptr, style.bold ? DWRITE_FONT_WEIGHT_SEMI_BOLD : DWRITE_FONT_WEIGHT_NORMAL,
-                                          DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, style.size, L"en-us", &f)))
+                                          style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, style.size, L"en-us", &f)))
         return nullptr;
     return formats_.emplace(key, f).first->second.Get();
 }
 
 DWriteTextEngine::Entry* DWriteTextEngine::entry(std::string_view utf8, const TextStyle& style, float w, float h) {
-    Key key{std::string(utf8), style.size, w, h, style.bold, style.wrap,
+    Key key{std::string(utf8), style.size, w, h, style.bold, style.wrap, style.italic,
             static_cast<int>(style.family), static_cast<int>(style.halign), static_cast<int>(style.valign)};
     if (auto it = entries_.find(key); it != entries_.end()) {
         ++hits_;
@@ -168,6 +168,27 @@ RectF DWriteTextEngine::caretRect(std::string_view utf8, const TextStyle& style,
     if (FAILED(e->layout->HitTestTextPosition(static_cast<UINT32>(at_end ? idx - 1 : idx), at_end ? TRUE : FALSE, &x, &y, &m)))
         return {};
     return {x, y, 0.0f, m.height};
+}
+
+std::vector<RectF> DWriteTextEngine::selectionRects(std::string_view utf8, const TextStyle& style, float max_width, std::size_t start,
+                                                    std::size_t end) {
+    if (start > end) std::swap(start, end);
+    end = std::min(end, utf8.size());
+    if (start >= end) return {};
+    TextStyle s = style;
+    s.color = {};
+    s.valign = VAlign::Top;  // as hitTest
+    Entry* e = entry(utf8, s, max_width > 0 ? max_width : kUnbounded, kUnbounded);
+    if (!e) return {};
+    const std::size_t a = u16Index(*e, start), b = u16Index(*e, end);
+    if (b <= a) return {};
+    UINT32 n = 0;
+    e->layout->HitTestTextRange(static_cast<UINT32>(a), static_cast<UINT32>(b - a), 0, 0, nullptr, 0, &n);  // the count
+    std::vector<DWRITE_HIT_TEST_METRICS> m(n);
+    if (n == 0 || FAILED(e->layout->HitTestTextRange(static_cast<UINT32>(a), static_cast<UINT32>(b - a), 0, 0, m.data(), n, &n))) return {};
+    std::vector<RectF> out;
+    for (UINT32 i = 0; i < n; ++i) out.push_back({m[i].left, m[i].top, m[i].width, m[i].height});
+    return out;
 }
 
 std::vector<std::size_t> DWriteTextEngine::caretStops(std::string_view utf8, const TextStyle& style) {

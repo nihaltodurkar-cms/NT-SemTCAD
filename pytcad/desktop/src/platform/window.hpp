@@ -30,6 +30,7 @@ struct WindowOptions {
     int width = 1280, height = 800;                  // the client area, LOGICAL px at the system DPI
     std::optional<WindowPlacement> placement;        // restored when it still lies on a monitor
     std::optional<PopupOptions> popup;               // a popup instead of a normal window (width/height are ignored)
+    HWND dialog_owner = nullptr;                     // N3f: a DIALOG owned by this window (caption, no sizing; centred by the caller)
 };
 
 class Window {
@@ -46,6 +47,7 @@ public:
         std::function<bool()> on_set_cursor;                 // WM_SETCURSOR over the client area: true = cursor set (N2c)
         std::function<void()> on_moved;                      // WM_MOVE: the window moved on the screen (N3c: popups close)
         std::function<void()> on_capture_lost;               // the mouse capture was taken away mid-press (N2c)
+        std::function<void()> on_system_colors_changed;      // WM_SYSCOLORCHANGE / WM_THEMECHANGED / WM_SETTINGCHANGE (N3f: high contrast on or off)
         std::function<std::optional<LRESULT>(WPARAM, LPARAM)> on_get_object;  // WM_GETOBJECT: UI Automation (N2f)
     };
 
@@ -76,6 +78,7 @@ private:
     HWND hwnd_ = nullptr;
     bool tracking_leave_ = false;
     bool popup_ = false;
+    bool dialog_ = false;
     unsigned buttons_down_ = 0;
     wchar_t high_surrogate_ = 0;
 };

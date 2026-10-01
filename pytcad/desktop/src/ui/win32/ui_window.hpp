@@ -13,6 +13,7 @@
 #pragma once
 
 #include "platform/window.hpp"
+#include "ui/core/clipboard.hpp"
 #include "ui/core/input_router.hpp"
 #include "ui/core/widget.hpp"
 #include "ui/render/window_surface.hpp"
@@ -35,6 +36,7 @@ public:
         int width = 800, height = 600;         // client area, logical px at the system DPI
         std::optional<double> scale_override;  // pin the DPI scale (tests)
         std::optional<platform::PopupOptions> popup;  // a popup window (N3c; ui/win32/popup_window.hpp), not a normal one
+        HWND dialog_owner = nullptr;                  // a dialog of this window (N3f; ui/win32/message_box_window.hpp)
     };
 
     static std::expected<std::unique_ptr<UiWindow>, std::string> create(std::shared_ptr<RenderDevice> device,
@@ -52,6 +54,7 @@ public:
     std::shared_ptr<RenderDevice> renderDevice() const { return device_; }
     bool hasScaleOverride() const { return scale_override_.has_value(); }
     PopupWindowService& popupService();  // made on first use; also what popups() hands to widgets
+    int paletteChanges() const { return palette_changes_; }  // how many times the system's colours were re-read while running (tests)
     // Windows high contrast (N2f): read SPI_GETHIGHCONTRAST and the system colours into the style's palette.
     static bool applySystemHighContrast();
 
@@ -80,6 +83,9 @@ public:
     void widgetGone(Widget* w) override;
     PopupService* popups() override;
     void announce(Widget* w, std::string_view text) override;
+    Clipboard* clipboard() override;
+    std::unique_ptr<InlineEditor> createInlineEditor() override;
+    bool canCreateInlineEditor() const override { return true; }
 
 private:
     UiWindow();
@@ -94,6 +100,7 @@ private:
     std::unique_ptr<UiaHost> uia_;
     std::unique_ptr<TimerService> timers_;
     std::unique_ptr<PopupWindowService> popups_;
+    std::unique_ptr<Clipboard> clipboard_;
     std::optional<double> scale_override_;
     double scale_ = 1.0;
     SizeI client_;
@@ -104,6 +111,7 @@ private:
     int layout_passes_ = 0;
     int frames_ = 0;
     int paint_requests_ = 0;
+    int palette_changes_ = 0;
 };
 
 }  // namespace tcad::ui

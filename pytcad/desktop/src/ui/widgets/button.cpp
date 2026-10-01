@@ -215,8 +215,9 @@ void PushButton::paint(Painter& p) {
     const Color fill = token(!on ? T::AlternateBase : isDown() ? T::Focus : isHovered() ? T::AccentSoft : T::Base);
     p.fillRoundedRect(all, st.corner_radius, fill);
     const bool ring = hasFocus() && on;
-    const auto c = p.crisp(all, ring ? st.focus_width : st.border_width);
-    p.strokeRoundedRect(c.rect, st.corner_radius, token(ring ? T::Focus : on ? T::BorderStrong : T::Border), c.width);
+    const bool ring_default = isDefault() && on && !ring;  // the dialog's default button: the accent ring
+    const auto c = p.crisp(all, ring || ring_default ? st.focus_width : st.border_width);
+    p.strokeRoundedRect(c.rect, st.corner_radius, token(ring ? T::Focus : ring_default ? T::Accent : on ? T::BorderStrong : T::Border), c.width);
     TextStyle ts;
     ts.color = token(!on ? T::TextFaint : isDown() ? T::OnAccent : T::Text);
     ts.halign = HAlign::Center;

@@ -19,6 +19,10 @@ UI_SRC = os.path.join(DESK, "src", "ui")
 UI_TESTS = os.path.join(DESK, "tests", "ui")
 EXE = os.path.join(ROOT, "build", "desktop-native", "tcad_ui_render_tests.exe")
 CORE_EXE = os.path.join(ROOT, "build", "desktop-native", "tcad_ui_core_tests.exe")
+# every golden the Windows gate compares: the N2 scenes, then each N3 slice's (light, then high contrast -- there is no dark theme)
+GOLDEN_NAMES = ("n2a_scene", "n2b_panel", "n2d_text", "n2e_edit", "n2f_high_contrast", "n3a_widgets", "n3a_widgets_hc", "n3b_numbers", "n3b_numbers_hc",
+                "n3c_combo", "n3c_combo_hc", "n3c_popup", "n3c_popup_hc", "n3d_text", "n3d_text_hc", "n3e_collections", "n3e_collections_hc",
+                "n3f_chrome", "n3f_chrome_hc", "n3f_menu", "n3f_menu_hc")
 QT = re.compile(r"#\s*include\s*<Q|\bQ[A-Z][A-Za-z]+\b|\bQt[A-Z0-9]|Q_OBJECT|qtadvanceddocking|QVTK")
 
 
@@ -86,21 +90,26 @@ def test_goldens_and_their_environment_are_recorded():
     # user's ClearType Tuner values that D2D's default text rendering parameters come from
     assert set(man["environment"]) == {"d3d10warp.dll", "d2d1.dll", "DWrite.dll", "Segoe UI", "Consolas", "Nirmala UI",
                                        "Microsoft YaHei", "Yu Gothic UI", "Segoe UI Emoji", "text rendering params"}
-    names = ("n2a_scene", "n2b_panel", "n2d_text", "n2e_edit", "n2f_high_contrast", "n3a_widgets", "n3a_widgets_hc", "n3b_numbers", "n3b_numbers_hc",
-             "n3c_combo", "n3c_combo_hc", "n3c_popup", "n3c_popup_hc")
+    names = GOLDEN_NAMES
     assert set(man["images"]) == {f"{n}@{p}.png" for n in names for p in (100, 150, 200)}
     canvas = {"n2a_scene": (320, 200), "n2b_panel": (360, 400), "n2d_text": (440, 330), "n2e_edit": (300, 120),
               "n2f_high_contrast": (300, 160), "n3a_widgets": (400, 330), "n3a_widgets_hc": (400, 330),
               "n3b_numbers": (400, 330), "n3b_numbers_hc": (400, 330),
-              "n3c_combo": (400, 200), "n3c_combo_hc": (400, 200)}
+              "n3c_combo": (400, 200), "n3c_combo_hc": (400, 200),
+              "n3d_text": (420, 430), "n3d_text_hc": (420, 430), "n3e_collections": (440, 560), "n3e_collections_hc": (440, 560),
+              "n3f_chrome": (420, 240), "n3f_chrome_hc": (420, 240)}
     # a popup is as big as its content at the scale it opens at, so its size is pinned per scale, not scaled
     popup = {100: (323, 68), 150: (322, 102), 200: (323, 136)}
+    menu = {100: (171, 166), 150: (257, 249), 200: (342, 332)}  # N3f's File menu: six entries, two separators, a submenu arrow
     for name, dims in man["images"].items():
         assert os.path.getsize(os.path.join(UI_TESTS, "goldens", name)) > 1000
         base, pct = name[:-4].split("@")
         scale = int(pct) / 100
         if base.startswith("n3c_popup"):
             assert (dims["width"], dims["height"]) == popup[int(pct)]
+            continue
+        if base.startswith("n3f_menu"):
+            assert (dims["width"], dims["height"]) == menu[int(pct)]
             continue
         w, h = canvas[base]
         assert (dims["width"], dims["height"]) == (round(w * scale), round(h * scale))
@@ -114,9 +123,8 @@ def test_render_core_gate_passes():
         pytest.skip("goldens were captured on another WARP/D2D/DirectWrite/font build: " +
                     next(l for l in out.splitlines() if "STALE" in l).strip())
     assert p.returncode == 0, out
-    assert re.search(r"^74 test\(s\), 0 failed$", out, re.M), out
-    for name in ("n2a_scene", "n2b_panel", "n2d_text", "n2e_edit", "n2f_high_contrast", "n3a_widgets", "n3a_widgets_hc", "n3b_numbers", "n3b_numbers_hc",
-             "n3c_combo", "n3c_combo_hc", "n3c_popup", "n3c_popup_hc"):
+    assert re.search(r"^140 test\(s\), 0 failed$", out, re.M), out
+    for name in GOLDEN_NAMES:
         for pct in (100, 150, 200):
             assert f"{name}@{pct}.png: 0 differing pixels" in out
     assert "child process with --debug-layer exited 0" in out
@@ -150,7 +158,7 @@ def test_layouts_build_only_the_measured_subset():
 @pytest.mark.skipif(not os.path.exists(CORE_EXE), reason="tcad_ui_core_tests not built (desktop\build.ps1 -NoLegacyQt)")
 def test_portable_core_tests_pass():
     p = subprocess.run([CORE_EXE], capture_output=True, text=True, timeout=300)
-    assert p.returncode == 0 and re.search(r"^165 test\(s\), 0 failed$", p.stdout, re.M), p.stdout + p.stderr
+    assert p.returncode == 0 and re.search(r"^361 test\(s\), 0 failed$", p.stdout, re.M), p.stdout + p.stderr
 
 
 def test_the_test_driver_never_moves_the_real_cursor_or_types_into_other_windows():
@@ -206,14 +214,15 @@ def test_the_edit_stack_is_the_measured_subset_and_tsf_is_full():
     assert "public ITextStoreACP2" in store and "public ITfContextOwnerCompositionSink" in store  # decision 27.7-2
     impl = _strip_comments(_read(UI_SRC, "win32", "tsf_text_store.cpp"))
     assert "TS_E_SYNCHRONOUS" in impl and "TS_S_ASYNC" in impl and "TS_E_NOLOCK" in impl and "queued_" in impl
-    edit = _strip_comments(_read(UI_SRC, "win32", "line_edit.cpp"))
+    edit = _strip_comments(_read(UI_SRC, "win32", "text_input.cpp"))  # the TSF code is TextInput's since N3d (LineEdit and PlainTextEdit share it)
     assert "blank_doc_" in edit  # an unfocused edit never keeps the TSF focus
 
 
 def test_every_widget_is_a_ui_automation_element_with_the_patterns_the_plan_names():
     prov = _strip_comments(_read(UI_SRC, "win32", "uia_provider.hpp"))
     for iface in ("IRawElementProviderSimple", "IRawElementProviderFragment", "IRawElementProviderFragmentRoot",
-                  "IInvokeProvider", "IToggleProvider", "IValueProvider", "IRangeValueProvider", "IExpandCollapseProvider", "ISelectionItemProvider", "ITextProvider"):
+                  "IInvokeProvider", "IToggleProvider", "IValueProvider", "IRangeValueProvider", "IExpandCollapseProvider", "ISelectionItemProvider", "ITextProvider",
+                  "ISelectionProvider", "IScrollProvider", "IScrollItemProvider", "IGridProvider", "IGridItemProvider", "ITableProvider", "ITableItemProvider"):
         assert f"public {iface}" in prov, iface
     impl = _strip_comments(_read(UI_SRC, "win32", "uia_provider.cpp"))
     assert "UiaDisconnectProvider" in impl and "UIA_E_ELEMENTNOTAVAILABLE" in impl  # a removed widget never dangles

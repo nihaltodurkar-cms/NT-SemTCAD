@@ -130,6 +130,11 @@ bool EditModel::replaceRange(std::size_t start, std::size_t end, std::string_vie
     std::string ins(utf8);
     if (!multi_line_) std::replace_if(ins.begin(), ins.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
     if (start == end && ins.empty()) return false;
+    if (filter_) {
+        std::string candidate = text_;
+        candidate.replace(start, end - start, ins);
+        if (!filter_(candidate)) return false;
+    }
     Step step{start, text_.substr(start, end - start), ins, caret_, anchor_, typing};
     text_.replace(start, end - start, ins);
     caret_ = anchor_ = start + ins.size();
@@ -144,6 +149,37 @@ bool EditModel::replaceRange(std::size_t start, std::size_t end, std::string_vie
     coalesce_ = typing;
     ++revision_;
     return true;
+}
+
+void EditModel::forceReplace(std::size_t start, std::size_t end, std::string_view utf8) {
+    start = std::min(start, text_.size());
+    end = std::clamp(end, start, text_.size());
+    std::string ins(utf8);
+    if (!multi_line_) std::replace_if(ins.begin(), ins.end(), [](char c) { return c == '\n' || c == '\r'; }, ' ');
+    auto moved = [&](std::size_t p) {
+        if (p >= end) return p - (end - start) + ins.size();
+        return std::min(p, start);  // inside the replaced range: its start
+    };
+    caret_ = moved(caret_);
+    anchor_ = moved(anchor_);
+    text_.replace(start, end - start, ins);
+    undo_.clear();
+    redo_.clear();
+    coalesce_ = false;
+    clearComposition();
+    ++revision_;
+}
+
+std::size_t EditModel::lineStart(std::size_t p) const {
+    p = std::min(p, text_.size());
+    const std::size_t at = text_.rfind('\n', p == 0 ? std::string::npos : p - 1);
+    return p == 0 || at == std::string::npos ? 0 : at + 1;
+}
+
+std::size_t EditModel::lineEnd(std::size_t p) const {
+    p = std::min(p, text_.size());
+    const std::size_t at = text_.find('\n', p);
+    return at == std::string::npos ? text_.size() : at;
 }
 
 bool EditModel::insert(std::string_view utf8, bool typing) {

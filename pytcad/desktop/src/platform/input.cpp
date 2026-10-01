@@ -67,6 +67,11 @@ bool ShortcutMap::add(std::string_view text, std::function<void()> action) {
     return true;
 }
 
+bool ShortcutMap::remove(std::string_view text) {
+    const auto s = parseShortcut(text);
+    return s && map_.erase(*s) > 0;
+}
+
 bool ShortcutMap::dispatch(const KeyEvent& e) const {
     if (!e.down || e.repeat) return false;
     const auto it = map_.find(Shortcut{e.vk, e.mods});

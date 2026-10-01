@@ -98,8 +98,9 @@ public:
                         : e.type == MouseType::Wheel ? "wheel" : "?";
         g_log.push_back(name + ":" + t + "@" + std::to_string(static_cast<int>(e.pos.x)) + "," + std::to_string(static_cast<int>(e.pos.y)) +
                         (e.clicks == 2 ? " x2" : "") + (e.dragging ? " drag" : ""));
+        const bool take = take_mouse;  // read before the handler: it may delete this widget (a_widget_deleted_by_its_own_handler...)
         if (e.type == MouseType::Down && on_down) on_down();
-        return take_mouse;
+        return take;
     }
     bool keyEvent(const KeyEvent& e) override {
         g_log.push_back(name + ":key" + std::to_string(e.vk) + (e.down ? "" : "^"));

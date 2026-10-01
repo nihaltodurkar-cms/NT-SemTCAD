@@ -70,6 +70,20 @@ public:
     // The primitive under all edits (and the TSF text store's SetText): replace [start, end) by `utf8`, caret after it.
     bool replaceRange(std::size_t start, std::size_t end, std::string_view utf8, bool typing = false);
 
+    // A veto on edits (N3d: a validator). Called with the text an edit WOULD produce; false refuses the edit (nothing
+    // changes, replaceRange returns false). Not consulted by setText, forceReplace, undo or redo: they put back text that
+    // was accepted, or that the program chose.
+    void setFilter(std::function<bool(const std::string& candidate)> f) { filter_ = std::move(f); }
+
+    // The program's edit, for logs (N3d): replaces [start, end) even in a read-only model, is NOT an undo step, and
+    // clears the undo history (the recorded steps would point at text that moved). The caret and anchor keep their
+    // place in the text: after the range they shift by the length change; inside it they go to its start.
+    void forceReplace(std::size_t start, std::size_t end, std::string_view utf8);
+
+    // The line (the text between line feeds) containing p: [start, end), end before the line feed.
+    std::size_t lineStart(std::size_t p) const;
+    std::size_t lineEnd(std::size_t p) const;
+
     // IME composition: the range being composed (empty when none).
     void setComposition(std::size_t start, std::size_t end) { comp_ = {start, end}; }
     void clearComposition() { comp_ = {0, 0}; }
@@ -95,6 +109,7 @@ private:
     void moveTo(std::size_t p, bool extend);
 
     Stops stops_;
+    std::function<bool(const std::string&)> filter_;
     bool multi_line_;
     bool read_only_ = false;
     std::string text_;

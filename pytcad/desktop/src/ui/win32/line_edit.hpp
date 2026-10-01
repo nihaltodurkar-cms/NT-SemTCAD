@@ -1,103 +1,74 @@
-// The bare single-line edit of N2e (NATIVE-DESKTOP-PLAN.md 27.7): the EditModel, drawn and driven -- enough to
-// exercise text input end to end (keys, characters, the mouse, the clipboard, TSF) before N3's LineEdit builds on it.
-//
-//   keys:  Left/Right (+Ctrl by word, +Shift to select), Home/End, Backspace/Delete (+Ctrl by word), Ctrl+A/C/X/V/Z/Y
-//          (and Ctrl+Shift+Z); these claim the key ahead of window shortcuts. Enter and losing focus report
-//          on_editing_finished (QLineEdit::editingFinished, the signal the panels use: 21 connections).
-//   mouse: a press puts the caret at the hit cluster (Shift extends), a drag extends the selection.
-//   IME:   a TSF document with this edit's TextStore gets the TSF focus while the edit has the focus; losing it moves
-//          the TSF focus to an empty document, so an IME never types into an edit that is not focused.
-//
-// Horizontal scrolling keeps the caret visible. The caret blinks at the system rate (GetCaretBlinkTime).
+// QLineEdit (N2e, completed in N3d; NATIVE-DESKTOP-PLAN.md 27.7 and 27.8.5): the single-line edit on TextInput's keys,
+// mouse, clipboard and TSF, with the QLineEdit parts the panels use (39 of them, measured 2026-10-01):
+//   * editingFinished (21 connections) -- on_editing_finished -- on Enter or when the focus leaves, as Qt, but not while
+//     a validator calls the text Intermediate or Invalid; returnPressed (1) -- on_return_pressed -- on Enter, same gate;
+//   * validators (5 uses, all one scientific-notation QDoubleValidator): setValidator. An edit that would make the text
+//     Invalid is refused (the key does nothing; a paste that would is refused whole); setText bypasses it, as in Qt;
+//   * setReadOnly (5), setPlaceholderText (2), setText/text.
+// DECISION 4 of 27.8: on_commit is the signal a port should prefer to on_editing_finished -- it fires on Enter or focus
+// loss only when the text now differs from what it was at the last setText or commit, and is acceptable. A panel that
+// relied on Qt's "also fires with no change" is checked while it is ported (N5). on_editing_finished stays Qt's (the
+// spin boxes use it, and filter by value themselves).
+// Not built (0 uses): echo modes, input masks, completers, a maximum length, a clear button.
+// Horizontal scrolling keeps the caret visible. The double click selects a word. The inactive selection stays visible.
 #pragma once
 
-#include "ui/core/edit_model.hpp"
-#include "ui/core/widget.hpp"
-#include "ui/render/render_device.hpp"
-#include "ui/win32/tsf_text_store.hpp"
-
-#include <msctf.h>
-#include <windows.h>
+#include "ui/widgets/validator.hpp"
+#include "ui/win32/text_input.hpp"
 
 #include <functional>
+#include <memory>
 #include <string>
 
 namespace tcad::ui {
 
-class LineEdit : public Widget {
+class LineEdit : public TextInput {
 public:
     explicit LineEdit(HWND window);  // the window it lives in: screen geometry for TSF, the clipboard owner
     ~LineEdit() override;
 
-    EditModel& model() { return model_; }
-    const std::string& text() const { return model_.text(); }
-    void setText(std::string_view utf8);
     std::function<void()> on_editing_finished;
-    std::function<void()> on_text_changed;
-    std::function<void(bool, FocusReason)> on_focus_changed;  // after the edit's own reaction (N3b: a spin box's)
+    std::function<void()> on_return_pressed;
+    std::function<void()> on_commit;
+
     // The text is not acceptable: a two-DIP error-coloured frame (N3b; Qt's spin boxes show no such state -- they
     // silently fix the text up, which decision 1 of 27.8 forbids).
     void setInvalid(bool on);
     bool isInvalid() const { return invalid_; }
 
-    TextStore* textStore() const { return store_; }
-    bool tsfReady() const { return doc_ != nullptr; }
-    ITfThreadMgr* tsfThreadManager() const { return tsf_.Get(); }
-    ITfDocumentMgr* tsfDocument() const { return doc_.Get(); }
-    void setCaretBlinking(bool on);  // tests: false = the caret stays visible (deterministic pixels)
+    void setValidator(std::shared_ptr<const Validator> v);
+    const Validator* validator() const { return validator_.get(); }
+    bool hasAcceptableInput() const;  // no validator: true
+
+    // Tab and Shift+Tab are keys for this edit (they reach the parent as key events) instead of moving the focus: an
+    // in-place editor reports them to its view (N3e).
+    void setCaptureTab(bool on) { capture_tab_ = on; }
+    bool wantsTabKey(bool) const override { return capture_tab_; }
 
     SizeF sizeHint() const override;
     void paint(Painter& p) override;
-    bool mouseEvent(const UiMouseEvent& e) override;
-    bool keyEvent(const platform::KeyEvent& e) override;
-    bool charEvent(char32_t c) override;
-    bool overridesShortcut(const platform::KeyEvent& e) const override;
-    void focusChanged(bool in, FocusReason why) override;
-
-    static constexpr float kPadding = 4.0f;
-
-    // Screen geometry of the text (TSF and UI Automation): a range's rectangle, the edit's, and a hit test.
-    RECT rangeScreenRect(std::size_t u8_start, std::size_t u8_end) const;
-    RECT screenRect() const;
-    std::size_t offsetAtScreen(POINT screen) const;
-
-    // Accessibility (N2f): an edit whose value is its text.
-    Role accessibleRole() const override { return Role::Edit; }
-    bool accessibleHasValue() const override { return true; }
-    std::string accessibleValue() const override { return model_.text(); }
-    bool accessibleSetValue(std::string_view v) override;
-    bool accessibleReadOnly() const override { return model_.readOnly(); }
-    std::function<void()> on_accessible_value_changed;  // set by the window's UIA host
 
 protected:
     // A text set before the first layout scrolled against a zero width: every resize re-checks the scroll
     // (found by the N2f high-contrast golden, which showed only the last character of the text).
     void resized() override { ensureCaretVisible(); }
+    std::vector<RectF> rangeRects(std::size_t a, std::size_t b) const override;
+    std::size_t offsetAt(PointF local) const override;
+    void ensureCaretVisible() override;
+    void textSet() override;
+    bool enterPressed() override;
+    void focusLost() override;
 
 private:
-    TextStyle style() const;
-    float lineHeight() const;
-    float textTop() const;  // DIPs from the widget top to the text's first line
-    std::size_t offsetAt(PointF local) const;
+    float textTop() const;                   // DIPs from the widget top to the text's first line
     float caretX(std::size_t offset) const;  // in text coordinates (before scrolling)
-    void changed(std::size_t old_u16_len);   // after any edit this widget made
-    void ensureCaretVisible();
-    void restartBlink();
-    void setupTsf();
+    void finish(bool enter);
 
-    HWND hwnd_;
-    EditModel model_;
-    TextStore* store_ = nullptr;
-    ComPtr<ITfThreadMgr> tsf_;
-    TfClientId client_ = TF_CLIENTID_NULL;
-    ComPtr<ITfDocumentMgr> doc_, blank_doc_;
-    ComPtr<ITfContext> ctx_;
-    TfEditCookie cookie_ = 0;
+    std::shared_ptr<const Validator> validator_;
+    std::string committed_;  // the text at the last setText or commit
     float scroll_ = 0;
-    bool caret_on_ = true;
-    bool blinking_ = true;
     bool invalid_ = false;
-    TimerId blink_ = 0;
+    bool capture_tab_ = false;
 };
 
 }  // namespace tcad::ui

@@ -1,6 +1,9 @@
 #include "ui/win32/ui_window.hpp"
 
 #include "ui/core/style.hpp"
+#include "ui/win32/clipboard.hpp"
+#include "ui/win32/line_editor.hpp"
+#include "ui/widgets/tool_bar.hpp"
 #include "ui/win32/popup_window.hpp"
 
 #include <UIAutomationCoreApi.h>
@@ -60,7 +63,7 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
     std::unique_ptr<UiWindow> w(new UiWindow());
     w->device_ = std::move(device);
     w->scale_override_ = o.scale_override;
-    auto win = platform::Window::create({.title = o.title, .width = o.width, .height = o.height, .popup = o.popup});
+    auto win = platform::Window::create({.title = o.title, .width = o.width, .height = o.height, .popup = o.popup, .dialog_owner = o.dialog_owner});
     if (!win) return std::unexpected(win.error());
     w->window_ = std::move(*win);
     w->scale_ = o.scale_override.value_or(w->window_->dpiScale());
@@ -115,6 +118,27 @@ std::expected<std::unique_ptr<UiWindow>, std::string> UiWindow::create(std::shar
         if (!focused && self->popups_) self->popups_->dismissAll();  // deactivated: a drop-down closes
     };
     h.on_capture_lost = [self] { self->router_->cancelGrab(); };
+    // high contrast turned on or off (or the colours changed) while running: read the system's palette again and repaint everything,
+    // popups included (they share the palette). N2's carry-over: "live theme and high-contrast changes".
+    h.on_system_colors_changed = [self] {
+        if (self->popups_) self->popups_->dismissAll();
+        applySystemHighContrast();
+        self->root_->update();
+        ++self->palette_changes_;
+    };
+    // a tool tip: after the pointer rests on a widget with tool tip text, a small popup near the pointer
+    w->router_->on_tooltip = [self](Widget* target, PointF at) {
+        if (!target || target->toolTip.empty()) {
+            if (self->popups_) self->popups_->hideToolTip();
+            return;
+        }
+        PopupRequest rq;
+        rq.anchor = self->root_.get();
+        rq.side = PopupSide::AtPoint;
+        rq.point = at;
+        rq.tooltip = true;
+        self->popupService().showRequest(rq, std::make_unique<ToolTipLabel>(target->toolTip));
+    };
     h.on_get_object = [self](WPARAM wp, LPARAM lp) -> std::optional<LRESULT> {
         LRESULT r = 0;
         if (self->uia_ && self->uia_->onGetObject(wp, lp, &r)) return r;
@@ -150,6 +174,28 @@ PopupWindowService& UiWindow::popupService() {
 }
 
 PopupService* UiWindow::popups() { return &popupService(); }
+
+namespace {
+
+// The system clipboard, owned by the window's HWND (N3d).
+class WindowClipboard final : public Clipboard {
+public:
+    explicit WindowClipboard(HWND owner) : owner_(owner) {}
+    void setText(std::string_view utf8) override { setClipboardText(owner_, utf8); }
+    std::optional<std::string> text() override { return clipboardText(owner_); }
+
+private:
+    HWND owner_;
+};
+
+}  // namespace
+
+std::unique_ptr<InlineEditor> UiWindow::createInlineEditor() { return std::make_unique<LineEditEditor>(window_->hwnd()); }
+
+Clipboard* UiWindow::clipboard() {
+    if (!clipboard_) clipboard_ = std::make_unique<WindowClipboard>(window_->hwnd());
+    return clipboard_.get();
+}
 
 void UiWindow::announce(Widget* w, std::string_view text) {
     if (uia_) uia_->announce(w, text);

@@ -411,6 +411,7 @@ TEST(the_window_dismissing_the_popup_leaves_the_combo_closed) {
     CHECK(!r.h.router.hasPressFilter());
     r.pressCombo();  // and it opens again
     CHECK(r.c->isPopupOpen());
+    r.c->accessible_expand_changed = nullptr;  // it counts into a local that is gone when the rig closes the popup again
 }
 
 TEST(changing_the_items_or_dying_closes_the_popup) {

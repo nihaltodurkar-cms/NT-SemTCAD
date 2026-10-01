@@ -55,6 +55,30 @@ public:
         if (press_filter_owner_ == owner) press_filter_owner_ = nullptr, press_filter_ = nullptr;
     }
     bool hasPressFilter() const { return static_cast<bool>(press_filter_); }
+    // While a menu is open (N3f) every key goes to it FIRST -- before the focus widget and the window's shortcuts -- and a
+    // filter that returns true has used it (the releases of the keys it took included). One at a time; `owner` as above.
+    void setKeyFilter(Widget* owner, std::function<bool(const platform::KeyEvent&)> f) {
+        key_filter_owner_ = owner;
+        key_filter_ = std::move(f);
+    }
+    void clearKeyFilter(Widget* owner) {
+        if (key_filter_owner_ == owner) key_filter_owner_ = nullptr, key_filter_ = nullptr;
+    }
+    bool hasKeyFilter() const { return static_cast<bool>(key_filter_); }
+    // A lone Alt press and release -- no other key, no mouse press in between -- is the menu bar's (Windows' own: it
+    // activates the menu bar). The handler returns true when it used it, which also keeps the system's menu mode (which a
+    // lone Alt would otherwise enter) from starting.
+    void setAltTapHandler(Widget* owner, std::function<bool()> f) {
+        alt_tap_owner_ = owner;
+        alt_tap_ = std::move(f);
+    }
+    void clearAltTapHandler(Widget* owner) {
+        if (alt_tap_owner_ == owner) alt_tap_owner_ = nullptr, alt_tap_ = nullptr;
+    }
+    // Widgets that follow the keyboard focus (a scroll area brings the focused field into view). Called after the focus
+    // moved while the window is active; removed when the owner goes.
+    void addFocusObserver(Widget* owner, std::function<void(Widget*)> fn) { focus_observers_.emplace_back(owner, std::move(fn)); }
+    void removeFocusObserver(Widget* owner);
     // The focus widget changed (null: none), while the window is active -- UI Automation's focus event (N2f).
     std::function<void(Widget*)> on_focus_changed;
 
@@ -115,6 +139,12 @@ private:
     std::vector<Widget*> dead_;
     std::function<bool(Widget*)> press_filter_;
     Widget* press_filter_owner_ = nullptr;
+    std::function<bool(const platform::KeyEvent&)> key_filter_;
+    Widget* key_filter_owner_ = nullptr;
+    std::function<bool()> alt_tap_;
+    Widget* alt_tap_owner_ = nullptr;
+    bool alt_alone_ = false;
+    std::vector<std::pair<Widget*, std::function<void(Widget*)>>> focus_observers_;
     bool cues_ = false;
     bool always_cues_ = false;
 };

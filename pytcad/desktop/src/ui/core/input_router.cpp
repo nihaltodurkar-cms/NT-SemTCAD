@@ -71,9 +71,18 @@ void InputRouter::widgetGone(Widget* w) {
     if (dead(focus_)) focus_ = nullptr;  // no focusChanged on a dying widget
     if (dead(grab_)) grab_ = nullptr, dragging_ = false;
     if (dead(press_filter_owner_)) press_filter_owner_ = nullptr, press_filter_ = nullptr;
+    if (dead(key_filter_owner_)) key_filter_owner_ = nullptr, key_filter_ = nullptr;
+    if (dead(alt_tap_owner_)) alt_tap_owner_ = nullptr, alt_tap_ = nullptr;
+    focus_observers_.erase(std::remove_if(focus_observers_.begin(), focus_observers_.end(), [&](const auto& o) { return dead(o.first); }),
+                           focus_observers_.end());
     auto it = std::find_if(hover_.begin(), hover_.end(), dead);
     hover_.erase(it, hover_.end());
     if (dead(tooltip_target_) || dead(tooltip_shown_)) hideTooltip();
+}
+
+void InputRouter::removeFocusObserver(Widget* owner) {
+    focus_observers_.erase(std::remove_if(focus_observers_.begin(), focus_observers_.end(), [&](const auto& o) { return o.first == owner; }),
+                           focus_observers_.end());
 }
 
 void InputRouter::checkFocusStillValid() {
@@ -179,6 +188,7 @@ bool InputRouter::mouse(const MouseEvent& e) {
         case MouseType::Down:
         case MouseType::DoubleClick: {
             hideTooltip();
+            alt_alone_ = false;
             const int clicks = e.type == MouseType::DoubleClick ? 2 : 1;
             if (grab_) return deliverMouse(grab_, e, p, clicks, nullptr);  // another button during a grab
             const auto chain = chainAt(p);
@@ -240,6 +250,10 @@ void InputRouter::setFocus(Widget* w, FocusReason why) {
         w->update();
     }
     if (active_ && on_focus_changed && focus_ == w) on_focus_changed(w);
+    if (active_ && focus_ == w) {
+        const auto observers = focus_observers_;  // (an observer may add or remove observers)
+        for (const auto& o : observers) o.second(w);
+    }
 }
 
 std::vector<Widget*> InputRouter::tabChain() const {
@@ -280,6 +294,23 @@ bool InputRouter::key(const KeyEvent& e) {
         }
         return false;
     };
+    // a lone Alt: pressed, then released with nothing in between (the menu bar's; see setAltTapHandler)
+    if (e.vk == keys::Menu) {
+        if (e.down) {
+            if (!e.repeat) alt_alone_ = true;
+        } else {
+            const bool tap = alt_alone_;
+            alt_alone_ = false;
+            auto handler = alt_tap_;
+            if (tap && handler && handler()) return true;
+        }
+    } else if (e.down) {
+        alt_alone_ = false;
+    }
+    if (key_filter_) {
+        auto filter = key_filter_;  // (it may close the menu, and with it clear itself)
+        if (filter(e)) return true;
+    }
     if (!e.down) return f && deliver();
     hideTooltip();
     if (e.vk == keys::Menu && !cues_) {  // Windows shows the keyboard cues from now on (WM_CHANGEUISTATE)
@@ -288,7 +319,7 @@ bool InputRouter::key(const KeyEvent& e) {
     }
     if (f && f->overridesShortcut(e) && deliver()) return true;             // (1)
     if (shortcuts_.dispatch(e)) return true;                                // (2)
-    if (e.vk == 0x09 && (e.mods == Mod::None || e.mods == Mod::Shift) && !(f && f->wantsTab()))
+    if (e.vk == 0x09 && (e.mods == Mod::None || e.mods == Mod::Shift) && !(f && f->wantsTabKey(e.mods != Mod::Shift)))
         return focusNext(e.mods == Mod::None);                             // (3)
     if (e.mods == Mod::Alt && ((e.vk >= 'A' && e.vk <= 'Z') || (e.vk >= '0' && e.vk <= '9'))) {  // (4)
         std::vector<Widget*> all;

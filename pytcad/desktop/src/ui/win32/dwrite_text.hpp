@@ -34,6 +34,8 @@ public:
     int lineCount(std::string_view utf8, const TextStyle& style, float max_width) override;
     TextHit hitTest(std::string_view utf8, const TextStyle& style, float max_width, PointF p) override;
     RectF caretRect(std::string_view utf8, const TextStyle& style, float max_width, std::size_t offset) override;
+    std::vector<RectF> selectionRects(std::string_view utf8, const TextStyle& style, float max_width, std::size_t start,
+                                      std::size_t end) override;
     std::vector<std::size_t> caretStops(std::string_view utf8, const TextStyle& style) override;
 
     // The cached layout of `utf8` in a max_width x max_height box, with the style's alignment and wrapping.
@@ -49,9 +51,9 @@ private:
     struct Key {
         std::string text;
         float size, width, height;
-        bool bold, wrap;
+        bool bold, wrap, italic;
         int family, halign, valign;
-        auto tie() const { return std::tie(text, size, width, height, bold, wrap, family, halign, valign); }
+        auto tie() const { return std::tie(text, size, width, height, bold, wrap, italic, family, halign, valign); }
         bool operator<(const Key& o) const { return tie() < o.tie(); }
     };
     struct Entry {
@@ -63,7 +65,7 @@ private:
     static std::size_t u16Index(const Entry& e, std::size_t u8_offset);
 
     ComPtr<IDWriteFactory2> factory_;
-    std::map<std::tuple<float, bool, int>, ComPtr<IDWriteTextFormat>> formats_;
+    std::map<std::tuple<float, bool, int, bool>, ComPtr<IDWriteTextFormat>> formats_;
     std::map<Key, Entry> entries_;
     std::list<Key> lru_;  // most recent first
     std::size_t hits_ = 0, misses_ = 0;

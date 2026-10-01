@@ -17,5 +17,14 @@ inline constexpr int Left = 0x25;
 inline constexpr int Up = 0x26;
 inline constexpr int Right = 0x27;
 inline constexpr int Down = 0x28;
+inline constexpr int Insert = 0x2D;
+inline constexpr int Delete = 0x2E;
+inline constexpr int Back = 0x08;
+inline constexpr int Multiply = 0x6A;  // numpad *
+inline constexpr int Add = 0x6B;       // numpad +
+inline constexpr int Subtract = 0x6D;  // numpad -
+inline constexpr int F2 = 0x71;
+inline constexpr int F10 = 0x79;
+inline constexpr int Apps = 0x5D;      // the context-menu key
 
 }  // namespace tcad::ui::keys

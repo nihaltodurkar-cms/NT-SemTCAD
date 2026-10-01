@@ -26,6 +26,7 @@ enum class FontFamily { Ui, Monospace };  // Segoe UI; Consolas (the console's F
 struct TextStyle {
     float size = 12.0f;  // DIPs (the em size)
     bool bold = false;
+    bool italic = false;  // N3d: the console's notes
     Color color{};
     HAlign halign = HAlign::Left;
     VAlign valign = VAlign::Center;
@@ -65,6 +66,17 @@ public:
     virtual RectF caretRect(std::string_view utf8, const TextStyle& style, float max_width, std::size_t offset) {
         (void)utf8, (void)style, (void)max_width, (void)offset;
         return {};
+    }
+    // The rectangles (DIPs from the top of the text's first line; one per visual line and per run of one direction) that
+    // a selection of [start, end) covers (N3d). Right-to-left runs inside left-to-right text give pieces that are not
+    // between the two caret positions, which is why this is the engine's to say. The default is one rectangle between
+    // the two caret positions, right for one line of left-to-right text.
+    virtual std::vector<RectF> selectionRects(std::string_view utf8, const TextStyle& style, float max_width, std::size_t start,
+                                              std::size_t end) {
+        if (start > end) std::swap(start, end);
+        const RectF a = caretRect(utf8, style, max_width, start), b = caretRect(utf8, style, max_width, end);
+        if (start == end) return {};
+        return {{std::min(a.x, b.x), a.y, std::fabs(b.x - a.x), a.height}};
     }
     // The UTF-8 offsets where a caret may stand: 0, every cluster start, and utf8.size(). The default: every code
     // point (right for simple text; a real engine knows conjuncts and emoji sequences).

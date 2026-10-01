@@ -11,8 +11,9 @@
 //     exclusive ButtonGroup: checking one unchecks the rest; the checked one cannot be unchecked by a click or by
 //     setChecked(false). Arrow keys move focus to the previous/next enabled, visible member (wrapping) and check it.
 //     The group is one Tab stop: its checked member, or its first member while none is checked (Windows' rule).
-// Not built (0 uses, measured): tri-state check boxes, checkable push buttons, default/auto-default push buttons
-// (the default button lands with dialogs, N3f), icons, flat buttons.
+// DEFAULT button (N3f): a PushButton can be the dialog's default (setDefault): it is drawn with the accent ring; pressing Enter
+// with the focus elsewhere in the dialog is the dialog's business (MessageBoxContent), and a focused button's own Enter clicks it.
+// Not built (0 uses, measured): tri-state check boxes, checkable push buttons, auto-default push buttons, icons, flat buttons.
 #pragma once
 
 #include "ui/core/widget.hpp"
@@ -83,6 +84,14 @@ public:
     bool keyEvent(const platform::KeyEvent& e) override;
     void paint(Painter& p) override;
     Role accessibleRole() const override { return Role::Button; }
+    void setDefault(bool on) {
+        default_ = on;
+        update();
+    }
+    bool isDefault() const { return default_; }
+
+private:
+    bool default_ = false;
 };
 
 class CheckBox : public AbstractButton {

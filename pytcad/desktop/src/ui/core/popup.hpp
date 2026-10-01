@@ -18,6 +18,18 @@
 
 namespace tcad::ui {
 
+// Where a popup goes relative to its anchor (N3f): below it (a drop-down, a menu bar's menu), beside it (a submenu), or at a
+// point of the anchor's window (a context menu: the pointer; a tool tip: near it).
+enum class PopupSide { Below, Right, AtPoint };
+
+struct PopupRequest {
+    Widget* anchor = nullptr;       // a widget of the window (or of another popup: a submenu's entry)
+    PopupSide side = PopupSide::Below;
+    PointF point{};                 // AtPoint: window DIPs of the anchor's window
+    bool child = false;             // keep the popups already open (a submenu)
+    bool tooltip = false;           // a tool tip: kept apart from the others (never dismisses them, goes when they come)
+};
+
 class PopupHandle {
 public:
     virtual ~PopupHandle() = default;
@@ -36,6 +48,8 @@ public:
     // where the screen ends (placePopup). The content is laid out at the final size before it is shown. The handle is
     // owned by the service; it is valid until close() or on_dismissed.
     virtual PopupHandle* show(Widget* anchor, std::unique_ptr<Widget> content) = 0;
+    // The same with a placement (N3f). A service that only knows the drop-down placement ignores it.
+    virtual PopupHandle* showRequest(const PopupRequest& request, std::unique_ptr<Widget> content) { return show(request.anchor, std::move(content)); }
 };
 
 struct PopupPlacement {
@@ -43,6 +57,26 @@ struct PopupPlacement {
     bool above = false;    // it opened above the anchor
     bool shrunk = false;   // it is shorter than asked: the content scrolls
 };
+
+// Beside the anchor (a submenu): to its right with the tops level, to its left when there is no room on the right, moved up
+// to fit; cut where the screen ends. Device px. (The width is the content's, never stretched to the anchor's.)
+inline PopupPlacement placePopupBeside(const RectI& anchor, SizeI want, const RectI& work) {
+    PopupPlacement out;
+    const int w = std::min(want.width, work.width);
+    int h = want.height;
+    int x = anchor.right();
+    if (x + w > work.right()) x = std::max(work.x, anchor.x - w);  // the other side
+    if (x + w > work.right()) x = work.right() - w;
+    int y = anchor.y;
+    if (h > work.height) {
+        h = work.height;
+        out.shrunk = true;
+    }
+    if (y + h > work.bottom()) y = work.bottom() - h;
+    y = std::max(y, work.y);
+    out.rect = {x, y, w, h};
+    return out;
+}
 
 // Below the anchor, left edges aligned, at least as wide as the anchor; moved left to fit the work area; above the
 // anchor when it does not fit below and does fit above; else on the roomier side, cut to fit. All in device px;

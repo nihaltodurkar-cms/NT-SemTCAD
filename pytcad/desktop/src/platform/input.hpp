@@ -54,6 +54,8 @@ class ShortcutMap {
 public:
     // False (and nothing registered) when `text` does not parse or is already taken.
     bool add(std::string_view text, std::function<void()> action);
+    // Frees a shortcut (an action that goes away, a key that is rebound); false when it does not parse or was not registered.
+    bool remove(std::string_view text);
     // Runs the action of a key-DOWN, non-repeat event that matches; true if one ran.
     bool dispatch(const KeyEvent& e) const;
     std::size_t size() const { return map_.size(); }

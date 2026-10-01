@@ -1,5 +1,6 @@
 #include "ui/core/widget.hpp"
 
+#include "ui/core/inline_editor.hpp"
 #include "ui/core/input_router.hpp"
 #include "ui/core/layout.hpp"
 
@@ -7,6 +8,8 @@
 #include <cmath>
 
 namespace tcad::ui {
+
+std::unique_ptr<InlineEditor> UiHost::createInlineEditor() { return nullptr; }
 
 Widget::Widget() = default;
 
