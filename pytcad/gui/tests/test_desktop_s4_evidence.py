@@ -170,17 +170,25 @@ def test_the_script_reports_the_staged_ucrt_and_msvc_files_and_changes_nothing(t
     assert "listed by conda-meta: 6; present in the stage: 3; absent: 3" in A["runtimeSummary"]
     assert [os.path.basename(x["path"]) for x in A["appDirDlls"]] == ["api-ms-win-crt-stdio-l1-1-0.dll"]
     assert {(x["prefix"] == str(stage / "runtime")) for x in A["packages"]} == {True, False}       # in BOTH environments
-    assert A["loaded"][0]["note"] == "skipped: not Windows"                                           # says so, does not pretend
+    if os.name == "nt":
+        # the fake stage has neither program, so each is reported missing rather than sampled
+        assert [r.get("note") for r in A["loaded"]] == ["not found", "not found"]
+    else:
+        assert A["loaded"][0]["note"] == "skipped: not Windows"                                       # says so, does not pretend
     staged = sorted(os.path.relpath(x["path"], str(stage)).replace("\\", "/") for x in B["stagedDlls"])
     assert staged == ["msvcp140.dll", "plugins/msvcp140_1.dll", "runtime/Library/bin/vcruntime140.dll",
                       "runtime/msvcp140.dll", "runtime/vcomp140.dll", "runtime/vcruntime140.dll"]      # every location of every copy, strays included
-    assert "not Windows" in B["note"] and all(r["inVsRedistFolder"] is False for r in B["comparison"])
-    # rows carry the Visual Studio copy's own facts (null when there is none) and each staged file's hash
-    assert all({"vsPath", "vsVersion", "vsSha256", "stagedSha256"} <= set(r) and r["vsVersion"] is None for r in B["comparison"])
-    # a missing redist*.txt is reported as "n/a, not false" and says REDIST authorisation is NOT established
-    assert "n/a, NOT false" in B["redistTxtNote"] and "redist_table.py" in B["redistTxtNote"]
-    assert all(r["inRedistTxt"] is None for r in B["comparison"])
-    assert "inRedistTxt=n/a" in _read(str(out / "s4-evidence.txt"))
+    # rows carry the Visual Studio copy's own facts and each staged file's hash
+    assert all({"vsPath", "vsVersion", "vsSha256", "stagedSha256"} <= set(r) for r in B["comparison"])
+    if os.name != "nt":
+        # no Visual Studio is read here, so every VS fact is null. (On Windows B reads THIS machine's real Visual
+        # Studio installation, if any, so its values are machine-dependent and only the row shape is asserted.)
+        assert "not Windows" in B["note"] and all(r["inVsRedistFolder"] is False for r in B["comparison"])
+        assert all(r["vsVersion"] is None for r in B["comparison"])
+        # a missing redist*.txt is reported as "n/a, not false" and says REDIST authorisation is NOT established
+        assert "n/a, NOT false" in B["redistTxtNote"] and "redist_table.py" in B["redistTxtNote"]
+        assert all(r["inRedistTxt"] is None for r in B["comparison"])
+        assert "inRedistTxt=n/a" in _read(str(out / "s4-evidence.txt"))
     assert "authoritative REDIST list" in B["authority"]
     assert [(c["name"], c["where"]) for c in d["C_packages"]].count(("ucrt", "runtime")) == 1
     txt = _read(str(out / "s4-evidence.txt"))

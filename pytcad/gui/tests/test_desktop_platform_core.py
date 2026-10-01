@@ -26,6 +26,14 @@ needs_cxx = pytest.mark.skipif(CXX is None, reason="no C++ compiler")
 posix = pytest.mark.skipif(os.name == "nt", reason="POSIX pipe transport")
 
 
+def _run_built(argv, **kw):
+    """Run a binary _compile() built, with ITS compiler's directory first on PATH: on Windows a MinGW binary loads
+    libstdc++-6.dll etc. from PATH, and an older copy found first (Git for Windows ships one in its own
+    mingw64\\bin) fails it at load time with STATUS_ENTRYPOINT_NOT_FOUND before any test runs."""
+    env = dict(os.environ, PATH=os.path.dirname(CXX) + os.pathsep + os.environ.get("PATH", ""))
+    return subprocess.run(argv, capture_output=True, text=True, env=env, **kw)
+
+
 def _read(*p):
     with open(os.path.join(*p), "r", encoding="utf-8") as fh:
         return fh.read()
@@ -60,7 +68,7 @@ def core_tests(tmp_path_factory):
 
 @needs_cxx
 def test_core_unit_tests_compile_clean_and_pass(core_tests):
-    p = subprocess.run([core_tests], capture_output=True, text=True, timeout=300)
+    p = _run_built([core_tests], timeout=300)
     assert p.returncode == 0, p.stdout + p.stderr
     assert re.search(r"^(\d+) test\(s\), 0 failed", p.stdout, re.M)
     assert int(re.search(r"^(\d+) test", p.stdout, re.M).group(1)) >= 30
@@ -77,7 +85,7 @@ def _server_available():
 def test_session_against_the_real_backend(tmp_path):
     out = str(tmp_path / "real")
     _compile(out, os.path.join(DESK, "tests", "platform", "test_platform_backend_posix.cpp"))
-    p = subprocess.run([out, sys.executable, ROOT], capture_output=True, text=True, timeout=600)
+    p = _run_built([out, sys.executable, ROOT], timeout=600)
     assert p.returncode == 0, p.stdout + p.stderr
     assert "4 test(s), 0 failed" in p.stdout
 
@@ -104,7 +112,7 @@ def test_mutated_session_is_caught(tmp_path, old, new, expect):
     f.write_text(text.replace(old, new, 1), encoding="utf-8")
     out = str(tmp_path / "mut")
     _compile(out, os.path.join(DESK, "tests", "platform", "test_platform_core.cpp"), src_dir=str(src))
-    p = subprocess.run([out], capture_output=True, text=True, timeout=300)
+    p = _run_built([out], timeout=300)
     assert p.returncode != 0, "the unit tests did not notice the mutation"
     runs = [l[4:] for l in p.stdout.splitlines() if l.startswith("RUN ")]
     caught = f"FAIL {expect}" in p.stdout or (p.returncode < 0 and runs and runs[-1].startswith(expect))   # failed, or aborted inside it

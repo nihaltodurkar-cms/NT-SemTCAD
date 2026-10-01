@@ -178,12 +178,23 @@ def _fake_stage(tmp_path, manifest=None):
         f = st / rel
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(b"")
-    # runtime\python.exe must RUN (make_installer.ps1 calls gen_licenses.py --verify-bundle with it):
-    # a stand-in that execs this interpreter (Linux CI; the pwsh tests need a POSIX shell)
+    # runtime\python.exe must RUN (make_installer.ps1 calls gen_licenses.py --verify-bundle with it).
     py = st / "runtime" / "python.exe"
     py.parent.mkdir(parents=True, exist_ok=True)
-    py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
-    py.chmod(0o755)
+    if os.name == "nt":
+        # Windows will not run a script named .exe: copy this interpreter and its python3*.dll, with a
+        # pyvenv.cfg whose `home` points back at it for the stdlib. Its DLLs sit in runtime\, which
+        # gen_licenses.staged_dlls() does not scan, so the empty bundle below still matches.
+        base = os.path.dirname(sys.executable)
+        shutil.copy2(sys.executable, py)
+        for dll in os.listdir(base):
+            if re.fullmatch(r"python3\d*\.dll", dll, re.IGNORECASE):
+                shutil.copy2(os.path.join(base, dll), py.parent / dll)
+        (py.parent / "pyvenv.cfg").write_text(f"home = {base}\n")
+    else:
+        # a stand-in that execs this interpreter (the pwsh tests need a POSIX shell here)
+        py.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        py.chmod(0o755)
     # a minimal valid licence bundle (P5-S4): no components, no DLLs, so it matches this stage
     lic = st / "licenses"
     lic.mkdir()

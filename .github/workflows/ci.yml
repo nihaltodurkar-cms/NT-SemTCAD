@@ -17,10 +17,19 @@
 # job to usefully prove about the bulk of the suite.
 #
 # `tests` (below) always builds the extension first and is the ONLY
-# general-purpose suite job now. `petsc` and `wheel` are unchanged --
-# petsc4py remains a real, independent second backend for
-# `method="petsc"` (untouched by the fallback removal), and the wheel
-# build was never a fallback-vs-compiled comparison to begin with.
+# general-purpose suite job now; `wheel` proves the packaged build.
+#
+# WINDOWS ONLY (2026-10-01, user decision): the project targets Windows,
+# and its bit-identity goldens (e.g. HETERO_FW_DIGESTS) are Windows
+# captures, so both jobs run on windows-latest with the SAME toolchain
+# layout as the dev machine (CLAUDE.md "The C++ engine (M31)"): MinGW
+# g++ from conda-forge in a SEPARATE compiler env (tcad-cpp), never in
+# the Python env, with _core statically linking the MinGW runtime. The
+# Python env is conda-forge too, with `mkl` so the default MKL PARDISO
+# direct solver (loaded at runtime from mkl_rt) is what the suite runs.
+# The former Linux `petsc` job is REMOVED: conda-forge publishes no
+# win-64 PETSc/petsc4py, so the PETSc gates skip (they are skipif-
+# guarded), exactly as on the dev machine without PETSc.
 #
 # Runs from pytcad/, which is the project root for this repo (see
 # CLAUDE.md "Commands").  OPENBLAS_NUM_THREADS=1 is set for the same
@@ -45,33 +54,55 @@ env:
 jobs:
   tests:
     name: full suite (compiled extension required)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash -el {0}       # -l so conda's env activation is applied
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: conda-incubator/setup-miniconda@v3
         with:
           python-version: "3.11"
-          cache: pip
-      - uses: lukka/get-cmake@latest
-      # PySide6/QML removed from this repo -- gui/tests/ is now plain
-      # Python (business logic + the backend_service RPC layer), so no
-      # Qt platform plugin or its runtime libraries are needed here.
+          miniforge-version: latest
+          activate-environment: tcad
+      # Python env: interpreter + mkl (PARDISO's runtime mkl_rt) + eigen
+      # (header-only, found via CMAKE_PREFIX_PATH). Compiler env: kept
+      # separate on purpose -- see the header comment.
       - name: Install
         working-directory: pytcad
         run: |
+          conda install -y -c conda-forge mkl eigen nlohmann_json
           python -m pip install --upgrade pip
           pip install -r requirements.txt
           pip install nanobind scikit-build-core
+          conda create -y -p "$RUNNER_TEMP/tcad-cpp" -c conda-forge gxx binutils cmake ninja
+          # gui/tests/test_desktop_platform_core.py compiles the desktop's
+          # platform core with the g++ on PATH and no -I for nlohmann/json:
+          # expose ONLY that header dir to it, not all of Library/include.
+          mkdir -p "$RUNNER_TEMP/json-inc"
+          cp -r "$(cygpath -u "$CONDA_PREFIX")/Library/include/nlohmann" "$RUNNER_TEMP/json-inc/"
+          echo "CPLUS_INCLUDE_PATH=$(cygpath -w "$RUNNER_TEMP/json-inc")" >> "$GITHUB_ENV"
+      # The compiler env's Library/bin goes on PATH for THIS step only
+      # (cc1plus needs its DLLs); the import check runs in the next step
+      # without it, proving _core has no runtime coupling to that env.
       - name: Build the extension in place
         working-directory: pytcad
         run: |
+          CPP="$(cygpath -m "$RUNNER_TEMP/tcad-cpp")/Library/bin"
+          export PATH="$(cygpath -u "$CPP"):$PATH"
           cmake -S core -B build/dev -G Ninja \
                 -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                 -DTCAD_INPLACE_OUTPUT=ON \
-                -DPython_EXECUTABLE="$(which python)"
+                -DCMAKE_CXX_COMPILER="$CPP/g++.exe" \
+                -DCMAKE_AR="$CPP/x86_64-w64-mingw32-ar.exe" \
+                -DCMAKE_RANLIB="$CPP/x86_64-w64-mingw32-ranlib.exe" \
+                -DCMAKE_PREFIX_PATH="$(cygpath -m "$CONDA_PREFIX")/Library" \
+                -DPython_EXECUTABLE="$(cygpath -m "$(which python)")"
           cmake --build build/dev
-          python -c "from pytcad import _accel; assert _accel.HAVE_ACCEL; print(_accel.status())"
+      - name: Import the extension (no compiler env on PATH)
+        working-directory: pytcad
+        run: python -c "from pytcad import _accel; assert _accel.HAVE_ACCEL; print(_accel.status())"
       - name: Fast suite
         working-directory: pytcad
         run: python -m pytest tests/ gui/tests/ -n 4 -m "not slow and not timing" -q
@@ -103,21 +134,13 @@ jobs:
             pytcad/benchmark-report.md
             pytcad/benchmark-report.json
 
-  # The `tests` job above builds WITHOUT PETSc -- pip has no practical
-  # PETSc wheel, which is exactly why M31-CPP-ARCHITECTURE-PLAN.md sec 2
-  # names conda-forge as the supported channel for the C++ build. That
-  # makes `tests` the standing proof that the PETSc-less configuration
-  # works, and this job the only place the compiled solver backend
-  # (P3b) is exercised at all. Without it, tests/test_accel_parity.py's
-  # petsc gates would skip in CI forever and nobody would notice they
-  # had stopped running.
-  petsc:
-    name: compiled PETSc backend (conda-forge)
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+  wheel:
+    name: wheel builds
+    runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
-        shell: bash -el {0}       # -l so conda's env activation is applied
+        shell: bash -el {0}
     steps:
       - uses: actions/checkout@v4
       - uses: conda-incubator/setup-miniconda@v3
@@ -125,46 +148,21 @@ jobs:
           python-version: "3.11"
           miniforge-version: latest
           activate-environment: tcad
-      - name: Install PETSc, petsc4py and the build toolchain
+      - name: Install
         run: |
-          conda install -y -c conda-forge petsc petsc4py pkg-config cmake ninja \
-                                          numpy scipy nanobind
-          pip install pytest pytest-xdist pytest-timeout
-      - name: Build the extension against PETSc
-        working-directory: pytcad
-        run: |
-          cmake -S core -B build/dev -G Ninja \
-                -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-                -DTCAD_INPLACE_OUTPUT=ON \
-                -DTCAD_WITH_PETSC=ON \
-                -DPython_EXECUTABLE="$(which python)"
-          cmake --build build/dev
-          python -c "from pytcad import _accel; assert _accel.have_petsc(), _accel.status(); print(_accel.status())"
-      # Only the solver gates: this environment deliberately does not
-      # install the GUI or meshing extras, so the full suite is not what
-      # it is here to prove. What it proves is that the compiled backend
-      # is bit-identical to petsc4py, which is a claim that can only be
-      # checked where BOTH exist.
-      - name: Solver parity gates
-        working-directory: pytcad
-        run: |
-          python -m pytest tests/test_accel_parity.py -q -k petsc
-          python -m pytest tests/test_m22_linsolve.py tests/test_accel_boundary.py -q
-
-  wheel:
-    name: wheel builds
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - uses: lukka/get-cmake@latest
+          conda install -y -c conda-forge eigen
+          python -m pip install --upgrade pip build
+          conda create -y -p "$RUNNER_TEMP/tcad-cpp" -c conda-forge gxx binutils cmake ninja
+      # scikit-build-core reads CMAKE_GENERATOR / CMAKE_ARGS; without them
+      # it would pick the runner's MSVC, which is not this project's
+      # toolchain.
       - name: Build
         working-directory: pytcad
         run: |
-          python -m pip install --upgrade pip build
+          CPP="$(cygpath -m "$RUNNER_TEMP/tcad-cpp")/Library/bin"
+          export PATH="$(cygpath -u "$CPP"):$PATH"
+          export CMAKE_GENERATOR=Ninja
+          export CMAKE_ARGS="-DCMAKE_CXX_COMPILER=$CPP/g++.exe -DCMAKE_AR=$CPP/x86_64-w64-mingw32-ar.exe -DCMAKE_RANLIB=$CPP/x86_64-w64-mingw32-ranlib.exe -DCMAKE_PREFIX_PATH=$(cygpath -m "$CONDA_PREFIX")/Library"
           python -m build --wheel
           ls -la dist/
       - uses: actions/upload-artifact@v4
